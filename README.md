@@ -4,6 +4,11 @@
   <img src="cover.png" alt="teams-live cover" width="480">
 </p>
 
+<p align="center">
+  <a href="https://nixbot.brkn.lol/repos/github/pschmitt/teams-live"><img src="https://nixbot.brkn.lol/repos/github/pschmitt/teams-live/badge.svg?branch=main" alt="nixbot"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
+</p>
+
 Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, and OpsGenie.
 
 ## Features

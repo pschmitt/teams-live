@@ -1,6 +1,8 @@
 # teams-live
 
-![teams-live cover](cover.png)
+<p align="center">
+  <img src="cover.png" alt="teams-live cover" width="480">
+</p>
 
 Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, and OpsGenie.
 

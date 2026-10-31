@@ -40,11 +40,19 @@ export class HealthMonitor {
     const errors = [];
 
     if (!authStatus.hasToken) {
-      overallStatus = 'unhealthy';
-      errors.push('Teams authentication missing or expired');
+      if (process.uptime() < 45) {
+        overallStatus = 'starting';
+      } else {
+        overallStatus = 'unhealthy';
+        errors.push('Teams authentication missing or expired');
+      }
     } else if (!trouterConnected) {
-      overallStatus = 'unhealthy';
-      errors.push('Trouter websocket disconnected');
+      if (process.uptime() < 45) {
+        overallStatus = 'starting';
+      } else {
+        overallStatus = 'unhealthy';
+        errors.push('Trouter websocket disconnected');
+      }
     }
 
     for (const [srv, s] of Object.entries(this.serviceStatus)) {

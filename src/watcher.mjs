@@ -14,6 +14,7 @@ import {
   sendDirectMessage,
   updateReply,
   getThreadMessages,
+  getMessage,
   getCalendarView,
   escapeHtml,
 } from './teams.mjs';
@@ -459,6 +460,8 @@ export class MergeRequestWatcher {
     this.completedMessages = new Set();
     this.savedEntries = new Map();
     this.userInteractions = new Map();
+    this.pendingSuggestions = new Map();
+    this.typoMessageToSuggestion = new Map();
     this.loadState();
   }
 
@@ -2866,11 +2869,31 @@ export class MergeRequestWatcher {
       }
 
       if (bestMatch && minDistance <= 3) {
-        await sendReply(
+        const fullSuggested = args.length > 0 ? `${bestMatch} ${args.join(' ')}` : bestMatch;
+        const replyRes = await sendReply(
           event.conversationId,
           event,
-          `🤔 ${toMockingCase('did you mean')} ${bestMatch}?`
+          `🤔 ${toMockingCase('did you mean')} ${fullSuggested}?`
         );
+        const replyMsgId = replyRes?.value?.timestamp || replyRes?.value?.messageId;
+        if (replyMsgId) {
+          this.cleanupSuggestions();
+          const replyIdStr = String(replyMsgId);
+          this.pendingSuggestions.set(replyIdStr, {
+            conversationId: event.conversationId,
+            replyMessageId: replyIdStr,
+            originalMessageId: String(event.messageId),
+            originalUserMri: event.fromMri,
+            originalUserName: event.from,
+            suggestedCommand: bestMatch,
+            originalArgs: args,
+            originalEvent: event,
+            createdAt: Date.now(),
+          });
+          if (event.messageId) {
+            this.typoMessageToSuggestion.set(String(event.messageId), replyIdStr);
+          }
+        }
       } else {
         await sendReply(
           event.conversationId,
@@ -2882,8 +2905,129 @@ export class MergeRequestWatcher {
     }
   }
 
+  cleanupSuggestions() {
+    const now = Date.now();
+    const TTL = 15 * 60 * 1000;
+    for (const [id, entry] of this.pendingSuggestions.entries()) {
+      if (now - entry.createdAt > TTL) {
+        this.pendingSuggestions.delete(id);
+        if (entry.originalMessageId) {
+          this.typoMessageToSuggestion.delete(entry.originalMessageId);
+        }
+      }
+    }
+  }
+
+  normalizeUserMri(mri) {
+    if (!mri) return '';
+    const str = String(mri);
+    const match = str.match(/8:orgid:([a-f0-9-]+)/i);
+    if (match) return match[1].toLowerCase();
+    const guid = str.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+    if (guid) return guid[0].toLowerCase();
+    return str.toLowerCase();
+  }
+
+  isMatchingSuggestionUser(reactorUser, originalUserMri, originalUserName) {
+    if (!reactorUser) return false;
+
+    const reactorMriNorm = this.normalizeUserMri(reactorUser.mri);
+    const targetMriNorm = this.normalizeUserMri(originalUserMri);
+
+    if (reactorMriNorm && targetMriNorm && reactorMriNorm === targetMriNorm) {
+      return true;
+    }
+
+    if (
+      reactorUser.displayName &&
+      originalUserName &&
+      reactorUser.displayName.trim().toLowerCase() === originalUserName.trim().toLowerCase()
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async handleMessageUpdate(event) {
+    const msgId = String(event.messageId);
+    let suggestion = this.pendingSuggestions.get(msgId);
+    if (!suggestion && this.typoMessageToSuggestion.has(msgId)) {
+      const replyId = this.typoMessageToSuggestion.get(msgId);
+      suggestion = this.pendingSuggestions.get(replyId);
+    }
+    if (!suggestion) return;
+
+    if (Date.now() - suggestion.createdAt > 15 * 60 * 1000) {
+      this.pendingSuggestions.delete(suggestion.replyMessageId);
+      if (suggestion.originalMessageId) {
+        this.typoMessageToSuggestion.delete(suggestion.originalMessageId);
+      }
+      return;
+    }
+
+    const checkReactions = async (convId, mId) => {
+      try {
+        const res = await getMessage(convId, mId);
+        if (!res.ok || !res.value?.reactions) return null;
+        for (const r of res.value.reactions) {
+          const key = (r.key || '').toLowerCase();
+          const isThumbUp = key === 'like' || key === '👍' || key.includes('thumb');
+          if (isThumbUp && this.isMatchingSuggestionUser(r.user, suggestion.originalUserMri, suggestion.originalUserName)) {
+            return r;
+          }
+        }
+      } catch (err) {
+        log(`Failed to fetch message ${mId} for reaction check: ${err.message}`);
+      }
+      return null;
+    };
+
+    let matchedReaction = await checkReactions(suggestion.conversationId, suggestion.replyMessageId);
+    if (!matchedReaction && suggestion.originalMessageId) {
+      matchedReaction = await checkReactions(suggestion.conversationId, suggestion.originalMessageId);
+    }
+    if (!matchedReaction) {
+      await new Promise((r) => setTimeout(r, 500));
+      matchedReaction = await checkReactions(suggestion.conversationId, suggestion.replyMessageId);
+      if (!matchedReaction && suggestion.originalMessageId) {
+        matchedReaction = await checkReactions(suggestion.conversationId, suggestion.originalMessageId);
+      }
+    }
+
+    if (!matchedReaction) return;
+
+    log(`👍 Thumb up detected from ${matchedReaction.user?.displayName || suggestion.originalUserName} on suggestion "${suggestion.suggestedCommand}"! Executing...`);
+
+    // Clean up so it executes only once
+    this.pendingSuggestions.delete(suggestion.replyMessageId);
+    if (suggestion.originalMessageId) {
+      this.typoMessageToSuggestion.delete(suggestion.originalMessageId);
+    }
+
+    // Remove warning reaction from original typo message
+    if (suggestion.originalMessageId) {
+      removeReaction(suggestion.conversationId, suggestion.originalMessageId, COMMAND_REACTIONS.warning).catch(() => {});
+    }
+
+    const reconstructedContent = suggestion.originalArgs?.length > 0
+      ? `${suggestion.suggestedCommand} ${suggestion.originalArgs.join(' ')}`
+      : suggestion.suggestedCommand;
+
+    const execEvent = {
+      ...suggestion.originalEvent,
+      content: reconstructedContent,
+      replyMessageIdToUpdate: suggestion.replyMessageId,
+    };
+
+    try {
+      await this.handleSlashCommand(execEvent);
+    } catch (err) {
+      log(`Error executing suggested command "${suggestion.suggestedCommand}": ${err.message}`);
+    }
+  }
+
   async handleIncomingEvent(event) {
-    if (event.kind !== 'NewMessage') return;
     const convId = event.conversationId;
     let decodedConvId = convId;
     try {
@@ -2891,6 +3035,13 @@ export class MergeRequestWatcher {
     } catch {}
 
     if (!this.watchedConversations.has(convId) && !this.watchedConversations.has(decodedConvId)) return;
+
+    if (event.kind === 'MessageUpdate') {
+      await this.handleMessageUpdate(event);
+      return;
+    }
+
+    if (event.kind !== 'NewMessage') return;
 
     // Ignore bot's own messages immediately to prevent self-trigger loops
     if (

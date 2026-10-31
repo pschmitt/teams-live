@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    browser-daemon = {
+      url = "github:pschmitt/browser-daemon";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     teams-auth-source = {
       url = "github:pschmitt/homeassistant-msteams";
       flake = false;
@@ -15,6 +19,7 @@
       self,
       nixpkgs,
       flake-utils,
+      browser-daemon,
       teams-auth-source,
     }:
     let
@@ -22,7 +27,10 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          msteams-mcp = pkgs.callPackage ./nix/msteams-mcp { inherit teams-auth-source; };
+          msteams-mcp = pkgs.callPackage ./nix/msteams-mcp {
+            inherit teams-auth-source;
+            inherit (browser-daemon.packages.${system}) browser-daemon-client;
+          };
           teams-live = pkgs.callPackage ./nix/package.nix { inherit msteams-mcp; };
         in
         {
@@ -65,10 +73,16 @@
       });
 
       overlays.default = _final: prev: {
-        msteams-mcp = prev.callPackage ./nix/msteams-mcp { inherit teams-auth-source; };
+        msteams-mcp = prev.callPackage ./nix/msteams-mcp {
+          inherit teams-auth-source;
+          inherit (browser-daemon.packages.${prev.stdenv.hostPlatform.system}) browser-daemon-client;
+        };
         teams-live = prev.callPackage ./nix/package.nix {
           msteams-mcp =
-            prev.msteams-mcp or (prev.callPackage ./nix/msteams-mcp { inherit teams-auth-source; });
+            prev.msteams-mcp or (prev.callPackage ./nix/msteams-mcp {
+              inherit teams-auth-source;
+              inherit (browser-daemon.packages.${prev.stdenv.hostPlatform.system}) browser-daemon-client;
+            });
         };
       };
 

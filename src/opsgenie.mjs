@@ -27,6 +27,7 @@ export class OpsGenieClient {
     base_url = 'https://api.eu.opsgenie.com/v2',
     web_base_url = 'https://germanedgecloudgmbh.app.opsgenie.com',
     onAuthError = null,
+    onSuccess = null,
   } = {}) {
     this.onCallKey = on_call_key;
     this.supportKey = support_key;
@@ -35,6 +36,7 @@ export class OpsGenieClient {
     this.baseUrl = (base_url || 'https://api.eu.opsgenie.com/v2').replace(/\/+$/, '');
     this.webBaseUrl = (web_base_url || 'https://germanedgecloudgmbh.app.opsgenie.com').replace(/\/+$/, '');
     this.onAuthError = onAuthError;
+    this.onSuccess = onSuccess;
   }
 
   isConfigured() {
@@ -76,6 +78,7 @@ export class OpsGenieClient {
       throw new Error(errStr);
     }
 
+    this.onSuccess?.('OpsGenie');
     const data = await res.json();
     return (data.data || []).map((alert) => ({
       ...alert,
@@ -114,6 +117,7 @@ export class OpsGenieClient {
       throw new Error(errStr);
     }
 
+    this.onSuccess?.('OpsGenie');
     const data = await res.json();
     return data.data?.onCallRecipients || [];
   }

@@ -86,21 +86,26 @@ async function main() {
     if (watcher) watcher.notifyAdminAuthExpired(service, errorMsg);
   };
 
+  const handleServiceSuccess = (service) => {
+    if (health) health.setServiceStatus(service.toLowerCase(), true);
+    if (watcher) watcher.notifyAdminAuthRecovered(service);
+  };
+
   const gitlab = new GitLabClient({
     ...config.gitlab,
     onAuthError: (err) => handleAuthError('GitLab', err),
+    onSuccess: () => handleServiceSuccess('GitLab'),
   });
   const jira = new JiraClient({
     ...config.jira,
     onAuthError: (err) => handleAuthError('Jira', err),
+    onSuccess: () => handleServiceSuccess('Jira'),
   });
   const opsgenie = new OpsGenieClient({
     ...config.opsgenie,
     onAuthError: (err) => handleAuthError('OpsGenie', err),
+    onSuccess: () => handleServiceSuccess('OpsGenie'),
   });
-
-  watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, authManager });
-  const systemd = new SystemdWatchdog();
 
   let trouter = null;
   let stopping = false;
@@ -113,6 +118,9 @@ async function main() {
     getTrouter: () => trouter,
   });
   health.start(15_000);
+
+  watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, authManager, health });
+  const systemd = new SystemdWatchdog();
 
   const cleanup = async (signal = 'SIGTERM') => {
     if (stopping) return;

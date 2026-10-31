@@ -1,12 +1,25 @@
 export class GitLabClient {
-  constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null } = {}) {
+  constructor({ host = 'git.wiit.one', token = null, group = '', onAuthError = null, onSuccess = null } = {}) {
     this.host = (host || 'git.wiit.one').replace(/^https?:\/\//, '').replace(/\/+$/, '');
     this.token = token;
     this.group = group;
     this.onAuthError = onAuthError;
+    this.onSuccess = onSuccess;
+    this.currentUser = null;
     this.baseUrl = `https://${this.host}/api/v4`;
     const escapedHost = this.host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     this.mrUrlRegex = new RegExp(`https?:\\/\\/${escapedHost}\\/([\\w.\\/-]+?)\\/-\\/merge_requests\\/(\\d+)`, 'g');
+  }
+
+  async getCurrentUser() {
+    if (this.currentUser) return this.currentUser;
+    if (!this.token) return null;
+    try {
+      this.currentUser = await this.request('user');
+      return this.currentUser;
+    } catch {
+      return null;
+    }
   }
 
   async request(path, { method = 'GET', body = null, timeoutMs = 30_000 } = {}) {
@@ -55,6 +68,7 @@ export class GitLabClient {
       }
       throw new Error(errStr);
     }
+    this.onSuccess?.('GitLab');
     return await res.json();
   }
 

@@ -1,8 +1,15 @@
 import fs from 'node:fs';
-import { extractMessageAuth, getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
+import {
+  extractMessageAuth,
+  getMessageAuthStatus,
+  getUserProfile,
+  getUserDisplayName,
+} from 'msteams-mcp/dist/auth/token-extractor.js';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { signInViaBrowserDaemon } from 'msteams-mcp/dist/auth/token-refresh.js';
 import { writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
+
+export { getUserProfile, getUserDisplayName };
 
 const log = (...args) => console.error(new Date().toISOString(), '[auth]', ...args);
 
@@ -26,6 +33,22 @@ export class AuthManager {
 
   getStatus() {
     return getMessageAuthStatus();
+  }
+
+  getUserProfile() {
+    try {
+      return getUserProfile();
+    } catch {
+      return null;
+    }
+  }
+
+  getUserDisplayName() {
+    try {
+      return getUserDisplayName();
+    } catch {
+      return null;
+    }
   }
 
   loadCredentialsFile({ force = false } = {}) {

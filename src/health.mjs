@@ -21,10 +21,11 @@ export class HealthMonitor {
   }
 
   setServiceStatus(service, ok, error = null) {
-    if (!this.serviceStatus[service]) return;
-    this.serviceStatus[service] = {
+    const key = String(service || '').toLowerCase();
+    if (!this.serviceStatus[key]) return;
+    this.serviceStatus[key] = {
       status: ok ? 'ok' : (error?.includes('401') || error?.includes('403') || error?.includes('auth') ? 'auth_expired' : 'error'),
-      error: error ? String(error) : null,
+      error: ok ? null : (error ? String(error) : null),
       last_check: new Date().toISOString(),
     };
     this.writeHealth();

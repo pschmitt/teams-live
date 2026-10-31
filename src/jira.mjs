@@ -1,14 +1,27 @@
 export class JiraClient {
-  constructor({ url = '', token = '', boardId = '', project = 'CKS', onAuthError = null } = {}) {
+  constructor({ url = '', token = '', boardId = '', project = 'CKS', onAuthError = null, onSuccess = null } = {}) {
     this.baseUrl = (url || '').replace(/\/+$/, '');
     this.token = token || '';
     this.boardId = String(boardId || '').trim();
     this.project = String(project || 'CKS').trim();
     this.onAuthError = onAuthError;
+    this.onSuccess = onSuccess;
+    this.currentUser = null;
   }
 
   isConfigured() {
     return Boolean(this.baseUrl && this.token);
+  }
+
+  async getCurrentUser() {
+    if (this.currentUser) return this.currentUser;
+    if (!this.isConfigured()) return null;
+    try {
+      this.currentUser = await this.request('rest/api/2/myself');
+      return this.currentUser;
+    } catch {
+      return null;
+    }
   }
 
   async request(path, { method = 'GET', body = null } = {}) {
@@ -44,6 +57,7 @@ export class JiraClient {
       }
       throw new Error(errStr);
     }
+    this.onSuccess?.('Jira');
     return await res.json();
   }
 

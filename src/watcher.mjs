@@ -409,12 +409,14 @@ function formatAlertsText(data, mode = 'all') {
 }
 
 export class MergeRequestWatcher {
-  constructor({ config, gitlab, jira, opsgenie, authManager }) {
+  constructor({ config, gitlab, jira, opsgenie, authManager, health = null }) {
     this.config = config;
     this.gitlab = gitlab;
     this.jira = jira;
     this.opsgenie = opsgenie;
     this.authManager = authManager;
+    this.health = health;
+    this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
     this.historyLimit = config.gitlab.history_limit || 50;
     this.historyMaxAgeMinutes = config.gitlab?.history_max_age_minutes ?? 10;
@@ -617,11 +619,21 @@ export class MergeRequestWatcher {
   }
 
   async notifyAdminAuthExpired(serviceName, errorDetails) {
+    const key = String(serviceName || '').toLowerCase();
+    if (!this.serviceAlertState) this.serviceAlertState = new Map();
+    const state = this.serviceAlertState.get(key) || { failing: false, lastAlert: 0 };
+
     const now = Date.now();
-    if (!this.lastAuthAlertTime) this.lastAuthAlertTime = new Map();
-    const lastAlert = this.lastAuthAlertTime.get(serviceName) || 0;
-    if (now - lastAlert < 60 * 60 * 1000) return;
-    this.lastAuthAlertTime.set(serviceName, now);
+    // Do not spam: only alert once when entering the failure state,
+    // or if at least 12 hours have elapsed during persistent failure
+    if (state.failing && now - state.lastAlert < 12 * 60 * 60 * 1000) {
+      return;
+    }
+
+    state.failing = true;
+    state.lastAlert = now;
+    state.error = errorDetails;
+    this.serviceAlertState.set(key, state);
 
     const adminConv = this.getAdminConversationId();
     if (!adminConv) return;
@@ -642,6 +654,113 @@ export class MergeRequestWatcher {
     } catch (err) {
       log(`[alert] Failed to send auth expiry alert to ${adminConv}: ${err.message}`);
     }
+  }
+
+  async notifyAdminAuthRecovered(serviceName) {
+    const key = String(serviceName || '').toLowerCase();
+    if (!this.serviceAlertState) this.serviceAlertState = new Map();
+    const state = this.serviceAlertState.get(key);
+
+    // Only notify recovery if it was previously in a failing/expired state!
+    if (!state || !state.failing) return;
+
+    state.failing = false;
+    state.error = null;
+    this.serviceAlertState.set(key, state);
+
+    const adminConv = this.getAdminConversationId();
+    if (!adminConv) return;
+
+    const hostname = os.hostname();
+    const timeStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    const msg =
+      `🟢 **Authentication Restored: ${serviceName}**\n\n` +
+      `- **Host**: \`${hostname}\`\n` +
+      `- **Service**: \`${serviceName}\`\n` +
+      `- **Status**: Connection and credentials are valid again\n` +
+      `- **Time**: ${timeStr}`;
+
+    log(`[alert] Notifying admin (${adminConv}) about ${serviceName} auth recovery`);
+    try {
+      await sendDirectMessage(adminConv, msg);
+    } catch (err) {
+      log(`[alert] Failed to send auth recovery alert to ${adminConv}: ${err.message}`);
+    }
+  }
+
+  async getConnectorsStatus() {
+    const health = this.health?.getHealth?.();
+    const services = health?.services || {};
+
+    // 1. Teams
+    const teamsProfile = this.authManager?.getUserProfile?.();
+    const authStatus = getMessageAuthStatus();
+    let teamsUserStr = 'Unknown';
+    if (teamsProfile) {
+      const parts = [teamsProfile.displayName, teamsProfile.email ? `(${teamsProfile.email})` : ''].filter(Boolean);
+      teamsUserStr = parts.join(' ') || teamsProfile.mri || 'Unknown';
+    } else if (this.selfMri) {
+      teamsUserStr = this.selfMri;
+    }
+
+    const teamsStatus = {
+      name: 'Microsoft Teams',
+      status: authStatus.hasToken ? 'ok' : 'auth_expired',
+      connected: health?.teams?.connected ?? true,
+      user: teamsUserStr,
+      details: `Token: ~${authStatus.minutesRemaining ?? 0}m | Trouter: ${health?.teams?.trouter || 'connected'}`,
+    };
+
+    // 2. GitLab
+    let glUser = null;
+    if (this.gitlab?.token) {
+      glUser = await this.gitlab.getCurrentUser().catch(() => null);
+    }
+    const glHealth = services.gitlab || {};
+    const gitlabStatus = {
+      name: 'GitLab',
+      configured: Boolean(this.gitlab?.token),
+      status: !this.gitlab?.token ? 'unconfigured' : (glHealth.status || 'ok'),
+      host: this.gitlab?.host || 'git.wiit.one',
+      group: this.gitlab?.group || '',
+      user: glUser ? `${glUser.name || ''} (@${glUser.username})`.trim() : (glHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
+      error: glHealth.error,
+    };
+
+    // 3. Jira
+    let jiraUser = null;
+    if (this.jira?.isConfigured()) {
+      jiraUser = await this.jira.getCurrentUser().catch(() => null);
+    }
+    const jiraHealth = services.jira || {};
+    const jiraStatus = {
+      name: 'Jira',
+      configured: Boolean(this.jira?.isConfigured()),
+      status: !this.jira?.isConfigured() ? 'unconfigured' : (jiraHealth.status || 'ok'),
+      url: this.jira?.baseUrl || '',
+      project: this.jira?.project || '',
+      user: jiraUser ? `${jiraUser.displayName || ''} (${jiraUser.name})`.trim() : (jiraHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
+      error: jiraHealth.error,
+    };
+
+    // 4. OpsGenie
+    const ogHealth = services.opsgenie || {};
+    const opsgenieStatus = {
+      name: 'OpsGenie',
+      configured: Boolean(this.opsgenie?.isConfigured()),
+      status: !this.opsgenie?.isConfigured() ? 'unconfigured' : (ogHealth.status || 'ok'),
+      endpoint: this.opsgenie?.baseUrl?.includes('eu') ? 'EU' : 'US',
+      onCall: Boolean(this.opsgenie?.onCallKey),
+      support: Boolean(this.opsgenie?.supportKey),
+      error: ogHealth.error,
+    };
+
+    return {
+      teams: teamsStatus,
+      gitlab: gitlabStatus,
+      jira: jiraStatus,
+      opsgenie: opsgenieStatus,
+    };
   }
 
   setSelfMri(mri) {
@@ -1426,6 +1545,26 @@ export class MergeRequestWatcher {
       const sprintAge = this.sprintCache.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
       const meetingsAge = this.meetingsCache.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
 
+      const conn = await this.getConnectorsStatus();
+      const brokenConnectors = [];
+      if (conn.teams.status !== 'ok') {
+        brokenConnectors.push(`- **Microsoft Teams**: ❌ Disconnected (${conn.teams.details})`);
+      }
+      if (conn.gitlab.status === 'auth_expired' || conn.gitlab.status === 'error') {
+        brokenConnectors.push(`- **GitLab**: ❌ ${conn.gitlab.error || 'Authentication expired'}`);
+      }
+      if (conn.jira.status === 'auth_expired' || conn.jira.status === 'error') {
+        brokenConnectors.push(`- **Jira**: ❌ ${conn.jira.error || 'Authentication expired'}`);
+      }
+      if (conn.opsgenie.status === 'auth_expired' || conn.opsgenie.status === 'error') {
+        brokenConnectors.push(`- **OpsGenie**: ❌ ${conn.opsgenie.error || 'Authentication expired'}`);
+      }
+
+      let connectorNotice = '';
+      if (brokenConnectors.length > 0) {
+        connectorNotice = `\n⚠️ **Connector Issues**:\n${brokenConnectors.join('\n')}\n`;
+      }
+
       await sendReply(
         event.conversationId,
         event,
@@ -1437,8 +1576,9 @@ export class MergeRequestWatcher {
         `- **Watched Conversations**: ${convCount}\n` +
         `- **Active MR Watchers**: ${watchedMrsCount}\n` +
         `- **Precompute Cache**: /mrs (${mrsAge}), /sprint (${sprintAge}), /meetings (${meetingsAge})\n` +
-        `- **Completed Message Cache**: ${completedCount}\n\n` +
-        '_Tip: To check an MR status, use `/status [link]` or quote an MR message._'
+        `- **Completed Message Cache**: ${completedCount}\n` +
+        connectorNotice +
+        '\n_Tip: To check an MR status, use `/status [link]` or quote an MR message._'
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       return;
@@ -2008,7 +2148,6 @@ export class MergeRequestWatcher {
     const uptimeStr = `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${seconds}s`;
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
     const heapUsed = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
-    const authStatus = getMessageAuthStatus();
 
     const convCount = this.watchedConversations.size;
     const watchedMrsCount = this.watched.size;
@@ -2017,17 +2156,37 @@ export class MergeRequestWatcher {
     const sprintAge = this.sprintCache.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
     const meetingsAge = this.meetingsCache.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
 
+    const conn = await this.getConnectorsStatus();
+
+    const teamsIcon = conn.teams.status === 'ok' ? '🟢' : '❌';
+    const glIcon = conn.gitlab.status === 'ok' ? '🟢' : (conn.gitlab.status === 'unconfigured' ? '⚪' : '❌');
+    const jiraIcon = conn.jira.status === 'ok' ? '🟢' : (conn.jira.status === 'unconfigured' ? '⚪' : '❌');
+    const ogIcon = conn.opsgenie.status === 'ok' ? '🟢' : (conn.opsgenie.status === 'unconfigured' ? '⚪' : '❌');
+
     const text =
       '🔧 **teams-live status (sudo)**:\n\n' +
       `- **Uptime**: ${uptimeStr} (PID ${process.pid})\n` +
       `- **Memory**: ${memRss} MB RSS (${heapUsed} MB Heap)\n` +
-      `- **Trouter**: Connected 🟢\n` +
-      `- **Auth Token Active**: ${authStatus.hasToken ? '✅ Yes' : '❌ No'}\n` +
-      `- **Auth Expires In**: ~${authStatus.minutesRemaining ?? 'unknown'}m\n` +
       `- **Watched Channels**: ${convCount}\n` +
       `- **Active MR Watchers**: ${watchedMrsCount}\n` +
       `- **Precompute Cache**: /mrs (${mrsAge}), /sprint (${sprintAge}), /meetings (${meetingsAge})\n` +
-      `- **Completed Messages**: ${completedCount}`;
+      `- **Completed Messages**: ${completedCount}\n\n` +
+      '🔌 **Connectors**:\n' +
+      `- **Microsoft Teams**: ${teamsIcon} ${conn.teams.status === 'ok' ? 'Connected' : 'Disconnected'}\n` +
+      `  - **User**: ${conn.teams.user}\n` +
+      `  - **Status**: ${conn.teams.details}\n` +
+      `- **GitLab**: ${glIcon} ${conn.gitlab.status === 'ok' ? 'Connected' : (conn.gitlab.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      `  - **Host**: \`${conn.gitlab.host}\`${conn.gitlab.group ? ` (group: \`${conn.gitlab.group}\`)` : ''}\n` +
+      (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
+      (conn.gitlab.error ? `  - **Error**: \`${conn.gitlab.error}\`\n` : '') +
+      `- **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      (conn.jira.configured ? `  - **URL**: \`${conn.jira.url}\` (project: \`${conn.jira.project}\`)\n` +
+                              `  - **User**: ${conn.jira.user}\n` : '') +
+      (conn.jira.error ? `  - **Error**: \`${conn.jira.error}\`\n` : '') +
+      `- **OpsGenie**: ${ogIcon} ${conn.opsgenie.status === 'ok' ? 'Connected' : (conn.opsgenie.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      (conn.opsgenie.configured ? `  - **Endpoint**: ${conn.opsgenie.endpoint}\n` +
+                                  `  - **Keys**: On-Call ${conn.opsgenie.onCall ? '✅' : '❌'} | Support ${conn.opsgenie.support ? '✅' : '❌'}\n` : '') +
+      (conn.opsgenie.error ? `  - **Error**: \`${conn.opsgenie.error}\`\n` : '');
 
     await sendReply(event.conversationId, event, text);
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});

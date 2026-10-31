@@ -155,6 +155,9 @@ in
         SupplementaryGroups = cfg.extraGroups;
         WorkingDirectory = cfg.dataDir;
         ExecStart = "${lib.getExe cfg.package} --config ${configFile}";
+        Type = "notify";
+        NotifyAccess = "all";
+        WatchdogSec = "120s";
         Restart = "always";
         RestartSec = "10s";
 

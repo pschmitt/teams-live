@@ -123,6 +123,11 @@ export class TrouterClient {
     this.ws = null;
     this.pingTimer = null;
     this.registrationTimer = null;
+    this.connected = false;
+  }
+
+  isConnected() {
+    return this.connected && this.ws !== null && this.ws.readyState === 1;
   }
 
   async connect(auth) {
@@ -152,8 +157,12 @@ export class TrouterClient {
 
     return new Promise((resolve, reject) => {
       ws.addEventListener('open', () => log('websocket open'));
-      ws.addEventListener('error', (e) => reject(new Error(`websocket error: ${e.message ?? e.type}`)));
+      ws.addEventListener('error', (e) => {
+        this.connected = false;
+        reject(new Error(`websocket error: ${e.message ?? e.type}`));
+      });
       ws.addEventListener('close', (e) => {
+        this.connected = false;
         clearInterval(this.pingTimer);
         clearInterval(this.registrationTimer);
         log(`websocket closed (${e.code})`);
@@ -189,6 +198,7 @@ export class TrouterClient {
             ]).catch((err) => log(`registration failed: ${err.message}`));
 
           await registerAll();
+          this.connected = true;
           this.pingTimer = setInterval(() => sendCommand({ name: 'ping' }), 30_000);
           this.registrationTimer = setInterval(registerAll, (REGISTRATION_TTL - 60) * 1000);
           return;
@@ -229,6 +239,7 @@ export class TrouterClient {
   }
 
   close() {
+    this.connected = false;
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
     if (this.ws) {

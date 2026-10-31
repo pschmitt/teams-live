@@ -6,6 +6,8 @@ import { JiraClient } from './jira.mjs';
 import { OpsGenieClient } from './opsgenie.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
+import { SystemdWatchdog } from './systemd.mjs';
+import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 
 const log = (...args) => console.error(new Date().toISOString(), '[main]', ...args);
 
@@ -78,6 +80,7 @@ async function main() {
   const jira = new JiraClient(config.jira);
   const opsgenie = new OpsGenieClient(config.opsgenie);
   const watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, authManager });
+  const systemd = new SystemdWatchdog();
 
   let trouter = null;
   let stopping = false;
@@ -86,6 +89,8 @@ async function main() {
     if (stopping) return;
     stopping = true;
     log(`Shutting down teams-live (signal: ${signal})...`);
+    systemd.notify(['--stopping', '--status=Shutting down...']);
+    systemd.stop();
     try {
       await watcher.sendShutdownAnnouncement(signal);
     } catch (err) {
@@ -133,11 +138,28 @@ async function main() {
     },
   });
 
+  // Start systemd watchdog
+  systemd.start(() => {
+    if (!trouter || !trouter.isConnected()) {
+      return { ok: false, status: 'Trouter disconnected 🔴' };
+    }
+    const authStatus = getMessageAuthStatus();
+    if (!authStatus.hasToken) {
+      return { ok: false, status: 'No messaging auth token 🔴' };
+    }
+    const mins = authStatus.minutesRemaining ?? 0;
+    return {
+      ok: true,
+      status: `Connected 🟢 (token: ${mins}m remaining)`,
+    };
+  });
+
   // Main reconnect loop
   while (!stopping) {
     try {
       currentAuth = await authManager.ensureValidAuth();
       watcher.setSelfMri(currentAuth.userMri);
+      systemd.ready('Connecting to Trouter...');
       await trouter.connect(currentAuth);
     } catch (err) {
       log(`Connection error: ${err.message}`);

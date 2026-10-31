@@ -1,9 +1,10 @@
 export class JiraClient {
-  constructor({ url = '', token = '', boardId = '', project = 'CKS' } = {}) {
+  constructor({ url = '', token = '', boardId = '', project = 'CKS', onAuthError = null } = {}) {
     this.baseUrl = (url || '').replace(/\/+$/, '');
     this.token = token || '';
     this.boardId = String(boardId || '').trim();
     this.project = String(project || 'CKS').trim();
+    this.onAuthError = onAuthError;
   }
 
   isConfigured() {
@@ -37,7 +38,11 @@ export class JiraClient {
     const res = await fetch(url, options);
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      throw new Error(`Jira HTTP ${res.status}: ${errText.slice(0, 150)}`);
+      const errStr = `Jira HTTP ${res.status}: ${errText.slice(0, 150)}`;
+      if (res.status === 401 || res.status === 403) {
+        this.onAuthError?.(errStr);
+      }
+      throw new Error(errStr);
     }
     return await res.json();
   }

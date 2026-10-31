@@ -576,7 +576,7 @@ export class MergeRequestWatcher {
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
     const msg =
-      '🚀 **teams-live started**\n\n' +
+      '🟢 **teams-live started**\n\n' +
       `- **Host**: \`${hostname}\`\n` +
       `- **PID**: \`${pid}\`\n` +
       `- **Runtime**: Node.js \`${version}\` (${platform})\n` +
@@ -614,6 +614,34 @@ export class MergeRequestWatcher {
 
     log(`Sending shutdown announcement (${signal}) to ${adminConv}...`);
     await sendDirectMessage(adminConv, msg);
+  }
+
+  async notifyAdminAuthExpired(serviceName, errorDetails) {
+    const now = Date.now();
+    if (!this.lastAuthAlertTime) this.lastAuthAlertTime = new Map();
+    const lastAlert = this.lastAuthAlertTime.get(serviceName) || 0;
+    if (now - lastAlert < 60 * 60 * 1000) return;
+    this.lastAuthAlertTime.set(serviceName, now);
+
+    const adminConv = this.getAdminConversationId();
+    if (!adminConv) return;
+
+    const hostname = os.hostname();
+    const timeStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+    const msg =
+      `⚠️ **Authentication Expired: ${serviceName}**\n\n` +
+      `- **Host**: \`${hostname}\`\n` +
+      `- **Service**: \`${serviceName}\`\n` +
+      `- **Error**: \`${errorDetails}\`\n` +
+      `- **Time**: ${timeStr}\n\n` +
+      `Please check or refresh the secret credentials in SOPS for **${serviceName}**.`;
+
+    log(`[alert] Notifying admin (${adminConv}) about ${serviceName} auth expiry: ${errorDetails}`);
+    try {
+      await sendDirectMessage(adminConv, msg);
+    } catch (err) {
+      log(`[alert] Failed to send auth expiry alert to ${adminConv}: ${err.message}`);
+    }
   }
 
   setSelfMri(mri) {

@@ -26,6 +26,7 @@ export class OpsGenieClient {
     support_schedule_id = '5a044893-0255-4246-8606-8e76949a861d',
     base_url = 'https://api.eu.opsgenie.com/v2',
     web_base_url = 'https://germanedgecloudgmbh.app.opsgenie.com',
+    onAuthError = null,
   } = {}) {
     this.onCallKey = on_call_key;
     this.supportKey = support_key;
@@ -33,6 +34,7 @@ export class OpsGenieClient {
     this.supportScheduleId = support_schedule_id;
     this.baseUrl = (base_url || 'https://api.eu.opsgenie.com/v2').replace(/\/+$/, '');
     this.webBaseUrl = (web_base_url || 'https://germanedgecloudgmbh.app.opsgenie.com').replace(/\/+$/, '');
+    this.onAuthError = onAuthError;
   }
 
   isConfigured() {
@@ -67,7 +69,11 @@ export class OpsGenieClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`OpsGenie HTTP ${res.status}: ${text || res.statusText}`);
+      const errStr = `OpsGenie HTTP ${res.status}: ${text || res.statusText}`;
+      if (res.status === 401 || res.status === 403) {
+        this.onAuthError?.(errStr);
+      }
+      throw new Error(errStr);
     }
 
     const data = await res.json();
@@ -101,7 +107,11 @@ export class OpsGenieClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`OpsGenie on-call HTTP ${res.status}: ${text || res.statusText}`);
+      const errStr = `OpsGenie on-call HTTP ${res.status}: ${text || res.statusText}`;
+      if (res.status === 401 || res.status === 403) {
+        this.onAuthError?.(errStr);
+      }
+      throw new Error(errStr);
     }
 
     const data = await res.json();

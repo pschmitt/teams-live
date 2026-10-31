@@ -24,6 +24,10 @@ export class AuthManager {
     }
   }
 
+  getStatus() {
+    return getMessageAuthStatus();
+  }
+
   loadCredentialsFile({ force = false } = {}) {
     if (!this.credentialsFile || !fs.existsSync(this.credentialsFile)) {
       return null;

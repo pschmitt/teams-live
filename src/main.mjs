@@ -7,6 +7,7 @@ import { OpsGenieClient } from './opsgenie.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
 import { SystemdWatchdog } from './systemd.mjs';
+import { HealthMonitor } from './health.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 
 const log = (...args) => console.error(new Date().toISOString(), '[main]', ...args);
@@ -76,14 +77,42 @@ async function main() {
   log(`GitLab host: ${config.gitlab.host} (token present: ${!!config.gitlab.token})`);
 
   const authManager = new AuthManager(config);
-  const gitlab = new GitLabClient(config.gitlab);
-  const jira = new JiraClient(config.jira);
-  const opsgenie = new OpsGenieClient(config.opsgenie);
-  const watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, authManager });
+
+  let watcher = null;
+  let health = null;
+
+  const handleAuthError = (service, errorMsg) => {
+    if (health) health.setServiceStatus(service.toLowerCase(), false, errorMsg);
+    if (watcher) watcher.notifyAdminAuthExpired(service, errorMsg);
+  };
+
+  const gitlab = new GitLabClient({
+    ...config.gitlab,
+    onAuthError: (err) => handleAuthError('GitLab', err),
+  });
+  const jira = new JiraClient({
+    ...config.jira,
+    onAuthError: (err) => handleAuthError('Jira', err),
+  });
+  const opsgenie = new OpsGenieClient({
+    ...config.opsgenie,
+    onAuthError: (err) => handleAuthError('OpsGenie', err),
+  });
+
+  watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, authManager });
   const systemd = new SystemdWatchdog();
 
   let trouter = null;
   let stopping = false;
+
+  health = new HealthMonitor({
+    gitlab,
+    jira,
+    opsgenie,
+    authManager,
+    getTrouter: () => trouter,
+  });
+  health.start(15_000);
 
   const cleanup = async (signal = 'SIGTERM') => {
     if (stopping) return;
@@ -91,6 +120,7 @@ async function main() {
     log(`Shutting down teams-live (signal: ${signal})...`);
     systemd.notify(['--stopping', '--status=Shutting down...']);
     systemd.stop();
+    if (health) health.stop();
     try {
       await watcher.sendShutdownAnnouncement(signal);
     } catch (err) {
@@ -140,17 +170,13 @@ async function main() {
 
   // Start systemd watchdog
   systemd.start(() => {
-    if (!trouter || !trouter.isConnected()) {
-      return { ok: false, status: 'Trouter disconnected 🔴' };
-    }
-    const authStatus = getMessageAuthStatus();
-    if (!authStatus.hasToken) {
-      return { ok: false, status: 'No messaging auth token 🔴' };
-    }
-    const mins = authStatus.minutesRemaining ?? 0;
+    const h = health.getHealth();
     return {
-      ok: true,
-      status: `Connected 🟢 (token: ${mins}m remaining)`,
+      ok: h.status !== 'unhealthy',
+      status:
+        h.status === 'healthy'
+          ? `Connected 🟢 (token: ${h.teams.minutes_remaining}m)`
+          : `Degraded (${h.errors.join(', ')})`,
     };
   });
 

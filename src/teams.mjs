@@ -215,6 +215,12 @@ export async function sendDirectMessage(conversationId, markdown) {
   const html = markdownToTeamsHtml(markdown) + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`;
   const options = {
     contentType: 'html',
+    properties: {
+      formatVariant: 'TEAMS',
+      cards: '[]',
+      links: '[]',
+      files: '[]',
+    },
   };
   const result = await retrySendWithRecovery(() => sendMessage(conversationId, html, options));
   if (!result.ok) {
@@ -257,6 +263,12 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
 
   const options = {
     contentType: 'html',
+    properties: {
+      formatVariant: 'TEAMS',
+      cards: '[]',
+      links: '[]',
+      files: '[]',
+    },
   };
 
   if (isChannel) {

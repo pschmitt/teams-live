@@ -637,6 +637,7 @@ export class MergeRequestWatcher {
                 duration: j.duration ?? null,
                 ciMessageServerId: j.ciMessageServerId ?? null,
                 lastReportedStatus: j.lastReportedStatus ?? null,
+                mr: j.mr ?? null,
               })),
               pipelines: (saved.pipelines ?? []).map((p) => ({
                 project: p.project,
@@ -645,6 +646,7 @@ export class MergeRequestWatcher {
                 duration: p.duration ?? null,
                 ciMessageServerId: p.ciMessageServerId ?? null,
                 lastReportedStatus: p.lastReportedStatus ?? null,
+                mr: p.mr ?? null,
               })),
               isHistory: false,
             });
@@ -698,6 +700,7 @@ export class MergeRequestWatcher {
             duration: j.duration,
             ciMessageServerId: j.ciMessageServerId,
             lastReportedStatus: j.lastReportedStatus,
+            mr: j.mr ?? null,
           })),
           pipelines: (v.pipelines || []).map((p) => ({
             project: p.project,
@@ -706,6 +709,7 @@ export class MergeRequestWatcher {
             duration: p.duration,
             ciMessageServerId: p.ciMessageServerId,
             lastReportedStatus: p.lastReportedStatus,
+            mr: p.mr ?? null,
           })),
         };
       }
@@ -1078,6 +1082,7 @@ export class MergeRequestWatcher {
           duration: savedJob?.duration ?? null,
           ciMessageServerId: savedJob?.ciMessageServerId ?? null,
           lastReportedStatus: savedJob?.lastReportedStatus ?? null,
+          mr: savedJob?.mr ?? null,
         });
       }
     }
@@ -1096,6 +1101,7 @@ export class MergeRequestWatcher {
           duration: savedPipe?.duration ?? null,
           ciMessageServerId: savedPipe?.ciMessageServerId ?? null,
           lastReportedStatus: savedPipe?.lastReportedStatus ?? null,
+          mr: savedPipe?.mr ?? null,
         });
       }
     }
@@ -1312,7 +1318,7 @@ export class MergeRequestWatcher {
     }
   }
 
-  formatJobStatusMessage(jobData, project) {
+  formatJobStatusMessage(jobData, project, mr = null) {
     const icon = getCiStatusEmoji(jobData.status);
     const statusText = jobData.status || 'unknown';
     const projectRef = project.split('/').pop() || project;
@@ -1329,6 +1335,11 @@ export class MergeRequestWatcher {
       lines.push(`**Failure reason**: \`${jobData.failure_reason}\``);
     }
 
+    if (mr) {
+      const mrTitle = mr.title ? ` (${mr.title})` : '';
+      lines.push(`[MR !${mr.iid}](${mr.web_url})${mrTitle}`);
+    }
+
     const pipe = jobData.pipeline;
     const pipeId = pipe?.id || jobData.pipeline_id;
     if (pipeId) {
@@ -1341,7 +1352,7 @@ export class MergeRequestWatcher {
     return lines.join('\n\n');
   }
 
-  formatPipelineStatusMessage(pipeData, project) {
+  formatPipelineStatusMessage(pipeData, project, mr = null) {
     const icon = getCiStatusEmoji(pipeData.status);
     const statusText = pipeData.status || 'unknown';
     const projectRef = project.split('/').pop() || project;
@@ -1357,11 +1368,19 @@ export class MergeRequestWatcher {
       lines.push(`**YAML errors**: ${pipeData.yaml_errors}`);
     }
 
+    if (mr) {
+      const mrTitle = mr.title ? ` (${mr.title})` : '';
+      lines.push(`[MR !${mr.iid}](${mr.web_url})${mrTitle}`);
+    }
+
     return lines.join('\n\n');
   }
 
   async handleJobStatusComment(entry, job, jobData) {
-    const msg = this.formatJobStatusMessage(jobData, job.project);
+    if (!job.mr) {
+      job.mr = await this.gitlab.getMrForJob(job.project, jobData).catch(() => null);
+    }
+    const msg = this.formatJobStatusMessage(jobData, job.project, job.mr);
 
     if (job.ciMessageServerId) {
       log(
@@ -1383,7 +1402,10 @@ export class MergeRequestWatcher {
   }
 
   async handlePipelineStatusComment(entry, pipe, pipeData) {
-    const msg = this.formatPipelineStatusMessage(pipeData, pipe.project);
+    if (!pipe.mr) {
+      pipe.mr = await this.gitlab.getMrForPipeline(pipe.project, pipeData).catch(() => null);
+    }
+    const msg = this.formatPipelineStatusMessage(pipeData, pipe.project, pipe.mr);
 
     if (pipe.ciMessageServerId) {
       log(
@@ -3224,10 +3246,14 @@ export class MergeRequestWatcher {
           const durationStr = pipeline.duration ? ` (${formatDuration(pipeline.duration)})` : '';
           const projectRef = project.split('/').pop() || project;
           const pipeUrl = pipeline.web_url || this.gitlab.pipelineLink(project, pipelineId);
+          const mr = await this.gitlab.getMrForPipeline(project, pipeline).catch(() => null);
           const lines = [
             `🏗️ **Pipeline [#${pipeline.id} (${projectRef})](${pipeUrl})**: ${statusIcon} **${pipeline.status}**${durationStr}${targetRef}`,
             `• **Ref**: \`${pipeline.ref}\``,
           ];
+          if (mr) {
+            lines.push(`• **Merge Request**: [!${mr.iid} (${mr.title || mr.project})](${mr.web_url})`);
+          }
           const failedJobs = jobs.filter((j) => j.status === 'failed');
           const runningJobs = jobs.filter((j) => j.status === 'running' || j.status === 'pending');
           if (failedJobs.length > 0) {

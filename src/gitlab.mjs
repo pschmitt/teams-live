@@ -270,8 +270,57 @@ export class GitLabClient {
     return await this.request(`projects/${encodeURIComponent(project)}/pipelines/${pipelineId}`);
   }
 
+  async getCommitMrs(project, sha) {
+    if (!sha) return [];
+    try {
+      const res = await this.request(`projects/${encodeURIComponent(project)}/repository/commits/${sha}/merge_requests`);
+      return Array.isArray(res) ? res : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getMrForPipeline(project, pipeline) {
+    if (!pipeline) return null;
+    if (pipeline.sha) {
+      const mrs = await this.getCommitMrs(project, pipeline.sha);
+      if (mrs && mrs.length > 0) return mrs[0];
+    }
+    if (pipeline.ref) {
+      try {
+        const mrs = await this.request(
+          `projects/${encodeURIComponent(project)}/merge_requests?source_branch=${encodeURIComponent(pipeline.ref)}&state=opened`
+        );
+        if (Array.isArray(mrs) && mrs.length > 0) return mrs[0];
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   async getJob(project, jobId) {
     return await this.request(`projects/${encodeURIComponent(project)}/jobs/${jobId}`);
+  }
+
+  async getMrForJob(project, jobData) {
+    if (!jobData) return null;
+    const sha = jobData.commit?.id || jobData.pipeline?.sha;
+    if (sha) {
+      const mrs = await this.getCommitMrs(project, sha);
+      if (mrs && mrs.length > 0) return mrs[0];
+    }
+    if (jobData.ref) {
+      try {
+        const mrs = await this.request(
+          `projects/${encodeURIComponent(project)}/merge_requests?source_branch=${encodeURIComponent(jobData.ref)}&state=opened`
+        );
+        if (Array.isArray(mrs) && mrs.length > 0) return mrs[0];
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   async getPipelineJobs(project, pipelineId) {

@@ -69,7 +69,7 @@ export function loadConfig(configPath) {
       on_success: notifyCi.on_success ?? fileConfig.gitlab?.notify_ci_on_success ?? true,
     },
     rebase: rawNotify.rebase ?? fileConfig.gitlab?.notify_rebase ?? true,
-    approval_lost: rawNotify.approval_lost ?? fileConfig.gitlab?.notify_approval_lost ?? true,
+    approval_lost: rawNotify.approval_lost ?? fileConfig.gitlab?.notify_approval_lost ?? false,
   };
 
   const gitlab = {

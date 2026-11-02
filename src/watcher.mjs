@@ -53,10 +53,8 @@ const HELP_TEXT =
   '- `/marco`: Diagnostic round-trip latency and echo probe.\n' +
   '- `/snake`: Plays a round of snake by editing one message.\n' +
   '- `/leaderboard`: Shows top users by bot interactions and command usage.\n' +
-  '- `/kick <nick> [reason]`: Ejects a user from the channel.\n' +
-  '- `/ban <nick>`: Bans a user from the channel.\n' +
   '- `/exec <cmd>`: Executes a command.\n' +
-  '- `/sudo [cmd]`: Administrative controls (restart, reauth, status) [admin only].\n' +
+  '- `/sudo [cmd]`: Administrative controls (restart, reauth, status, kick, ban) [admin only].\n' +
   '- `/about`: Bot info, GitHub repository link, and developer support.\n' +
   '- `/help` (or `/usage`): Lists supported slash commands.\n\n' +
   '_Target an MR by replying to its message or sending the command immediately after._';
@@ -2257,12 +2255,18 @@ export class MergeRequestWatcher {
       await this.executeReauthCommand(event);
     } else if (sub === 'status') {
       await this.executeAdminStatusCommand(event);
+    } else if (sub === 'kick') {
+      await this.executeKickCommand(event, args.slice(1));
+    } else if (sub === 'ban') {
+      await this.executeBanCommand(event, args.slice(1));
     } else {
       const text =
         '🔧 **teams-live sudo commands**:\n\n' +
         '- `/sudo restart`: Restarts the teams-live daemon.\n' +
         '- `/sudo reauth` (or `/sudo refresh`): Forces token refresh and shows status.\n' +
-        '- `/sudo status`: Shows service runtime metrics, memory, and token auth health.\n\n' +
+        '- `/sudo status`: Shows service runtime metrics, memory, and token auth health.\n' +
+        '- `/sudo kick <nick> [reason]`: Ejects a user from the channel.\n' +
+        '- `/sudo ban <nick>`: Bans a user from the channel.\n\n' +
         '_Alias: `/admin`_';
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -2971,9 +2975,11 @@ export class MergeRequestWatcher {
     } else if (command === '/leaderboard') {
       await this.executeLeaderboardCommand(event);
     } else if (command === '/kick') {
-      await this.executeKickCommand(event, args);
+      await sendReply(event.conversationId, event, '⚠️ `/kick` has moved to `/sudo kick <nick>` [admin only].');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     } else if (command === '/ban') {
-      await this.executeBanCommand(event, args);
+      await sendReply(event.conversationId, event, '⚠️ `/ban` has moved to `/sudo ban <nick>` [admin only].');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     } else if (command === '/exec') {
       await this.executeExecCommand(event, args);
     } else if (command === '/sudo' || command === '/admin') {

@@ -930,7 +930,7 @@ export class MergeRequestWatcher {
     }
 
     const isApproved = Boolean(mrDetails?.approved || mrDetails?.status === 'approved');
-    if (isApproved) {
+    if (isApproved || mrDetails?.needsRebase) {
       shouldNotify = true;
     }
 
@@ -949,12 +949,21 @@ export class MergeRequestWatcher {
       approvalLine = '⏳ **Not approved yet**';
     }
 
-    let msg = '';
-    if (pipeline) {
-      msg = `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}\n\n${approvalLine}`;
-    } else {
-      msg = `[${mrRef}](${mrUrl})\n\n${approvalLine}`;
+    const rebaseLine = mrDetails?.needsRebase
+      ? (mrDetails.hasConflicts ? '⚠️ **Rebase required** (merge conflicts)' : '⚠️ **Rebase required**')
+      : '';
+
+    const lines = [
+      pipeline
+        ? `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}`
+        : `[${mrRef}](${mrUrl})`,
+      approvalLine,
+    ];
+    if (rebaseLine) {
+      lines.push(rebaseLine);
     }
+
+    const msg = lines.join('\n\n');
 
     if (mr.ciMessageServerId) {
       log(`updating status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
@@ -1082,7 +1091,7 @@ export class MergeRequestWatcher {
           await this.sendHeadsup(entry, mr);
         }
 
-        // CI Pipeline & Approval status check (with in-place update)
+        // CI Pipeline, Approval status, & Rebase check (with in-place update)
         const pipe = mrState.pipeline;
         const pipelineChanged =
           pipe && (mr.lastReportedPipelineId !== pipe.id || mr.lastReportedPipelineStatus !== pipe.status);
@@ -1090,9 +1099,11 @@ export class MergeRequestWatcher {
         const approvalChanged = mr.lastReportedApprovalStatus !== isApproved;
         const approversKey = (mrState.approvedBy || []).filter(Boolean).slice().sort().join(', ');
         const approversChanged = mr.lastReportedApprovedBy !== approversKey;
+        const needsRebase = Boolean(mrState.needsRebase);
+        const rebaseChanged = mr.lastReportedNeedsRebase !== needsRebase;
 
-        if (pipelineChanged || approvalChanged || approversChanged) {
-          if (!entry.isHistory || mr.lastReportedPipelineStatus !== null || mr.lastReportedApprovalStatus !== null) {
+        if (pipelineChanged || approvalChanged || approversChanged || rebaseChanged) {
+          if (!entry.isHistory || mr.lastReportedPipelineStatus !== null || mr.lastReportedApprovalStatus !== null || mr.lastReportedNeedsRebase !== null) {
             await this.handleCiStatusComment(entry, mr, pipe, mrState);
           }
           if (pipe) {
@@ -1101,13 +1112,7 @@ export class MergeRequestWatcher {
           }
           mr.lastReportedApprovalStatus = isApproved;
           mr.lastReportedApprovedBy = approversKey;
-        }
-
-        // Rebase status check (with in-place update)
-        if (!entry.isHistory || mr.lastReportedNeedsRebase !== null) {
-          await this.handleRebaseComment(entry, mr, mrState);
-        } else if (mrState.details) {
-          mr.lastReportedNeedsRebase = mrState.details.needsRebase;
+          mr.lastReportedNeedsRebase = needsRebase;
         }
 
         // Merged status check (with in-place update)
@@ -1501,7 +1506,7 @@ export class MergeRequestWatcher {
           continue;
         }
 
-        if (!mrState.details?.needsRebase) {
+        if (!mrState.needsRebase) {
           await sendReply(
             event.conversationId,
             event,
@@ -1613,8 +1618,8 @@ export class MergeRequestWatcher {
         const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
         const pipe = mrState.pipeline;
         const pipeText = pipe ? `[#${pipe.id} (${pipe.status})](${pipe.web_url})` : 'none';
-        const rebaseText = mrState.details?.needsRebase
-          ? `⚠️ Needs rebase (${mrState.details.hasConflicts ? 'conflicts' : 'behind'})`
+        const rebaseText = mrState.needsRebase
+          ? `⚠️ Needs rebase (${mrState.hasConflicts ? 'conflicts' : 'behind'})`
           : '✅ Up to date';
         const approverNames = (mrState.approvedBy || []).filter(Boolean);
         const approvalText =

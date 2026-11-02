@@ -212,9 +212,10 @@ export class GitLabClient {
 
     const detailedMergeStatus = mr.detailed_merge_status || mr.merge_status;
     const hasConflicts = mr.has_conflicts === true || detailedMergeStatus === 'conflict';
+    const diverged = typeof mr.diverged_commits_count === 'number' && mr.diverged_commits_count > 0;
     const needsRebase =
       state === 'opened' &&
-      (detailedMergeStatus === 'need_rebase' || hasConflicts || mr.should_be_rebased === true);
+      (detailedMergeStatus === 'need_rebase' || hasConflicts || mr.should_be_rebased === true || diverged);
 
     let latestPipeline = null;
     try {

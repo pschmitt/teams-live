@@ -40,6 +40,8 @@ function isRetryableNetworkError(res) {
     msg.includes('network') ||
     msg.includes('econnreset') ||
     msg.includes('etimedout') ||
+    msg.includes('eai_again') ||
+    msg.includes('enotfound') ||
     msg.includes('timeout') ||
     msg.includes('socket hang up')
   );
@@ -55,10 +57,17 @@ async function retrySendWithRecovery(sendFn) {
     if (result.ok) return result;
   }
 
-  // 2. If transient network error / fetch failed, wait 1s and retry once
-  if (isRetryableNetworkError(result)) {
-    console.warn(new Date().toISOString(), `[teams] Transient network error (${result.error?.message}), retrying in 1s...`);
-    await new Promise((r) => setTimeout(r, 1000));
+  // 2. If transient network error / fetch failed, retry with backoff
+  const maxRetries = 3;
+  let attempt = 0;
+  while (!result.ok && isRetryableNetworkError(result) && attempt < maxRetries) {
+    attempt++;
+    const delayMs = attempt * 1500;
+    console.warn(
+      new Date().toISOString(),
+      `[teams] Transient network error (${result.error?.message || result.error}), retry ${attempt}/${maxRetries} in ${delayMs / 1000}s...`
+    );
+    await new Promise((r) => setTimeout(r, delayMs));
     result = await sendFn();
   }
 

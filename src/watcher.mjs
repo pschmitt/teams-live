@@ -1824,7 +1824,7 @@ export class MergeRequestWatcher {
       } else if (mr.has_conflicts || mr.detailed_merge_status === 'conflict') {
         rebaseBadge = ' 💥 _conflicts_';
       } else if (needsRebase) {
-        rebaseBadge = ' ⚠️ _needs rebase_';
+        rebaseBadge = ' ⚠️ _rebase!_';
       }
 
       return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (@${author})${rebaseBadge}`;

@@ -201,7 +201,7 @@ export class GitLabClient {
         approved = !!approvals.approved;
         if (Array.isArray(approvals.approved_by)) {
           approvedBy = approvals.approved_by
-            .map((a) => a.user?.name || a.user?.username)
+            .map((a) => a.user?.name || a.user?.username || a.name || a.username)
             .filter(Boolean);
         }
         status = approved ? 'approved' : 'pending';

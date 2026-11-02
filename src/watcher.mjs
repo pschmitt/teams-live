@@ -508,6 +508,7 @@ export class MergeRequestWatcher {
             lastReportedPipelineId: m.lastReportedPipelineId,
             lastReportedPipelineStatus: m.lastReportedPipelineStatus,
             lastReportedApprovalStatus: m.lastReportedApprovalStatus,
+            lastReportedApprovedBy: m.lastReportedApprovedBy,
             rebaseMessageServerId: m.rebaseMessageServerId,
             lastReportedNeedsRebase: m.lastReportedNeedsRebase,
           })),
@@ -783,8 +784,10 @@ export class MergeRequestWatcher {
       t.includes(CI_PREFIX) ||
       t.includes(REBASE_PREFIX) ||
       t.includes('Approved ') ||
+      t.includes('Approval status:') ||
       t.includes('Cannot approve') ||
       t.includes('already approved') ||
+      t.includes('Not approved yet') ||
       t.includes('already merged') ||
       t.includes('already closed') ||
       t.includes('Merged ') ||
@@ -851,6 +854,7 @@ export class MergeRequestWatcher {
           lastReportedPipelineId: savedMr?.lastReportedPipelineId ?? null,
           lastReportedPipelineStatus: savedMr?.lastReportedPipelineStatus ?? null,
           lastReportedApprovalStatus: savedMr?.lastReportedApprovalStatus ?? (initialStatus === 'approved'),
+          lastReportedApprovedBy: savedMr?.lastReportedApprovedBy ?? null,
           rebaseMessageServerId: savedMr?.rebaseMessageServerId ?? null,
           lastReportedNeedsRebase: savedMr?.lastReportedNeedsRebase ?? null,
         });
@@ -934,21 +938,21 @@ export class MergeRequestWatcher {
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
     const pipeText = pipeline ? `\n\n[Pipeline #${pipeline.id}](${pipeline.web_url})` : '';
-    const approvers = mrDetails?.approvedBy?.length > 0 ? ` (by ${mrDetails.approvedBy.join(', ')})` : '';
+    const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
+
+    let approvalLine = '';
+    if (isApproved) {
+      const byText = approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : '';
+      approvalLine = `Approval status: 👍 **Approved**${byText}`;
+    } else {
+      approvalLine = 'Approval status: ⏳ **Not approved yet**';
+    }
 
     let msg = '';
-    if (isApproved) {
-      if (pipeline) {
-        msg = `👍 **Approved**${approvers} • ${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}`;
-      } else {
-        msg = `👍 **Approved**${approvers} for [${mrRef}](${mrUrl})`;
-      }
+    if (pipeline) {
+      msg = `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}\n\n${approvalLine}`;
     } else {
-      if (pipeline) {
-        msg = `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}`;
-      } else {
-        return;
-      }
+      msg = `[${mrRef}](${mrUrl})\n\n${approvalLine}`;
     }
 
     if (mr.ciMessageServerId) {
@@ -1083,8 +1087,10 @@ export class MergeRequestWatcher {
           pipe && (mr.lastReportedPipelineId !== pipe.id || mr.lastReportedPipelineStatus !== pipe.status);
         const isApproved = Boolean(mrState.approved || mrState.status === 'approved');
         const approvalChanged = mr.lastReportedApprovalStatus !== isApproved;
+        const approversKey = (mrState.approvedBy || []).filter(Boolean).slice().sort().join(', ');
+        const approversChanged = mr.lastReportedApprovedBy !== approversKey;
 
-        if (pipelineChanged || approvalChanged) {
+        if (pipelineChanged || approvalChanged || approversChanged) {
           if (!entry.isHistory || mr.lastReportedPipelineStatus !== null || mr.lastReportedApprovalStatus !== null) {
             await this.handleCiStatusComment(entry, mr, pipe, mrState);
           }
@@ -1093,6 +1099,7 @@ export class MergeRequestWatcher {
             mr.lastReportedPipelineStatus = pipe.status;
           }
           mr.lastReportedApprovalStatus = isApproved;
+          mr.lastReportedApprovedBy = approversKey;
         }
 
         // Rebase status check (with in-place update)
@@ -1608,7 +1615,12 @@ export class MergeRequestWatcher {
         const rebaseText = mrState.details?.needsRebase
           ? `⚠️ Needs rebase (${mrState.details.hasConflicts ? 'conflicts' : 'behind'})`
           : '✅ Up to date';
-        const statusText = `Status: **${mrState.status}**\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}`;
+        const approverNames = (mrState.approvedBy || []).filter(Boolean);
+        const approvalText =
+          mrState.approved || mrState.status === 'approved'
+            ? `👍 **Approved**${approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : ''}`
+            : '⏳ **Not approved yet**';
+        const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}`;
 
         await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${statusText}`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});

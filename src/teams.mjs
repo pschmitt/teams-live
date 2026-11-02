@@ -1,12 +1,31 @@
-import { sendMessage, getThreadMessages, getMessage, editMessage } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
+import {
+  sendMessage,
+  getThreadMessages,
+  getMessage,
+  editMessage,
+  parseContentWithMentionsAndLinks,
+  buildMentionsProperty,
+} from 'msteams-mcp/dist/api/chatsvc-messaging.js';
 import { addReaction, removeReaction } from 'msteams-mcp/dist/api/chatsvc-reactions.js';
 import { getCalendarView as mcpGetCalendarView } from 'msteams-mcp/dist/api/calendar-api.js';
 import { requireSkypeSpacesAuth } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { httpRequest } from 'msteams-mcp/dist/utils/http.js';
 import { markdownToTeamsHtml } from 'msteams-mcp/dist/utils/parsers-markdown.js';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
+import { searchPeople } from 'msteams-mcp/dist/api/substrate-api.js';
 
-export { sendMessage, getThreadMessages, getMessage, editMessage, addReaction, removeReaction, markdownToTeamsHtml };
+export {
+  sendMessage,
+  getThreadMessages,
+  getMessage,
+  editMessage,
+  addReaction,
+  removeReaction,
+  markdownToTeamsHtml,
+  parseContentWithMentionsAndLinks,
+  buildMentionsProperty,
+  searchPeople,
+};
 
 async function attemptTokenRefreshOnAuthError(res) {
   if (!res || res.ok) return false;
@@ -196,6 +215,14 @@ export function escapeHtml(text) {
     .replace(/'/g, '&#39;');
 }
 
+export function renderReplyContent(replyMarkdown) {
+  const { html, mentions } = parseContentWithMentionsAndLinks(replyMarkdown);
+  return {
+    html: html + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`,
+    mentions: mentions || [],
+  };
+}
+
 /**
  * Builds a Teams blockquote quoting an existing message.
  * This is how Teams client renders threaded replies in chats and meetings.
@@ -208,18 +235,23 @@ export function buildQuotedReplyHtml({ messageId, from, fromMri, previewText, re
     `<p itemprop="preview">${escapeHtml(previewText || '')}</p>` +
     '</blockquote>';
 
-  return quote + markdownToTeamsHtml(replyMarkdown) + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`;
+  const { html, mentions } = renderReplyContent(replyMarkdown);
+  return {
+    html: quote + html,
+    mentions,
+  };
 }
 
 /**
  * Sends a direct (non-reply) message to a conversation.
  */
 export async function sendDirectMessage(conversationId, markdown) {
-  const html = markdownToTeamsHtml(markdown) + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`;
+  const { html, mentions } = renderReplyContent(markdown);
   const options = {
     contentType: 'html',
     properties: {
       formatVariant: 'TEAMS',
+      mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
       cards: '[]',
       links: '[]',
       files: '[]',
@@ -256,7 +288,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
   const previewText = (originalMessage.content || originalMessage.text || '').slice(0, 150);
 
-  const html = buildQuotedReplyHtml({
+  const { html, mentions } = buildQuotedReplyHtml({
     messageId,
     from,
     fromMri,
@@ -268,6 +300,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
     contentType: 'html',
     properties: {
       formatVariant: 'TEAMS',
+      mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
       cards: '[]',
       links: '[]',
       files: '[]',
@@ -298,7 +331,7 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
   const previewText = (originalMessage.content || originalMessage.text || '').slice(0, 150);
 
-  const html = buildQuotedReplyHtml({
+  const { html, mentions } = buildQuotedReplyHtml({
     messageId,
     from,
     fromMri,
@@ -306,7 +339,13 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
     replyMarkdown,
   });
 
-  const result = await retrySendWithRecovery(() => editMessage(conversationId, String(serverMessageId), html, 'html'));
+  const options = {
+    properties: {
+      mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
+    },
+  };
+
+  const result = await retrySendWithRecovery(() => editMessage(conversationId, String(serverMessageId), html, 'html', options));
   if (!result.ok) {
     console.error(new Date().toISOString(), `[teams] updateReply failed for ${serverMessageId} in ${conversationId}:`, result.error?.message || result.error);
   }

@@ -11,16 +11,16 @@ index a434bd5..cd7a6e1 100644
 +   */
 +  properties?: Record<string, unknown>;
  }
- 
+
  /** Result of getting a 1:1 conversation. */
 @@ -185,7 +189,7 @@ export async function sendMessage(
    }
    const { auth, region, baseUrl } = authResult.value;
- 
+
 -  const { replyToMessageId, contentType = 'markdown', subject, scheduleAt } = options;
 +  const { replyToMessageId, contentType = 'markdown', subject, scheduleAt, properties: extraProperties } = options;
    const displayName = getUserDisplayName() || 'User';
- 
+
    const clientMessageId = generateClientMessageId();
 @@ -234,22 +238,24 @@ export async function sendMessage(
    const body: Record<string, unknown> = {
@@ -31,7 +31,7 @@ index a434bd5..cd7a6e1 100644
      imdisplayname: displayName,
      clientmessageid: clientMessageId,
    };
- 
+
    // Message properties: mentions and/or a channel thread subject.
 -  const properties: Record<string, unknown> = {};
 -  if (resolved.mentions.length > 0) {
@@ -52,10 +52,20 @@ index a434bd5..cd7a6e1 100644
 -    body.properties = properties;
 -  }
 +  body.properties = properties;
- 
+
    const url = CHATSVC_API.messages(region, conversationId, replyToMessageId, baseUrl);
    const requestInit = {
-@@ -633,16 +639,17 @@ export async function editMessage(
+@@ -614,7 +620,8 @@ export async function editMessage(
+   conversationId: string,
+   messageId: string,
+   newContent: string,
+-  contentType: ContentType = 'markdown'
++  contentType: ContentType = 'markdown',
++  options: { properties?: Record<string, unknown> } = {}
+ ): Promise<Result<EditMessageResult>> {
+   const authResult = requireMessageAuthWithConfig();
+   if (!authResult.ok) {
+@@ -633,16 +640,18 @@ export async function editMessage(
      conversationid: conversationId,
      content: resolved.content,
      messagetype: resolved.messagetype,
@@ -68,9 +78,10 @@ index a434bd5..cd7a6e1 100644
 +      cards: '[]',
 +      links: '[]',
 +      files: '[]',
++      ...(options.properties || {}),
 +    },
    };
- 
+
 -  if (resolved.mentions.length > 0) {
 -    body.properties = {
 -      mentions: buildMentionsProperty(resolved.mentions),
@@ -78,5 +89,5 @@ index a434bd5..cd7a6e1 100644
 -  }
 -
    const url = CHATSVC_API.editMessage(region, conversationId, messageId, baseUrl);
- 
+
    const response = await httpRequest<unknown>(

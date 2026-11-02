@@ -17,8 +17,10 @@ import {
   getThreadMessages,
   getMessage,
   getCalendarView,
+  searchPeople,
   escapeHtml,
 } from './teams.mjs';
+import { UserDirectory } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import { formatOnDuty } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -39,7 +41,7 @@ const HELP_TEXT =
   '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.\n' +
   '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.\n' +
   '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.\n' +
-  '- `/mrs [all|bots]`: Lists open merge requests (human MRs + top 5 bot MRs; all shows all, bots shows only bots).\n' +
+  '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).\n' +
   '- `/alerts` (or `/opsgenie`) [oncall|support]: Open alerts in the CKS OpsGenie queues.\n' +
   '- `/oncall` (or `/whoisoncall`): Lists currently active on-call engineers (Platform & Support).\n' +
   '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).\n' +
@@ -276,20 +278,49 @@ function sortMrs(list) {
   });
 }
 
-function getMrsMode(args = []) {
-  const sub = (args[0] || '').toLowerCase().replace(/^-+/, '');
-  if (sub === 'all' || sub === 'a') return 'all';
-  if (
-    sub === 'renovate' ||
-    sub === 'renovates' ||
-    sub === 'bots' ||
-    sub === 'bot' ||
-    sub === 'r' ||
-    sub === 'b'
-  ) {
-    return 'bots';
+export function parseMrsArgs(args = [], event = null, userDirectory = null) {
+  const first = (args[0] || '').toLowerCase().replace(/^-+/, '');
+  if (first === 'all' || first === 'a') {
+    return { mode: 'all', userFilter: null, userFilterLabel: null };
   }
-  return 'default';
+  if (
+    first === 'renovate' ||
+    first === 'renovates' ||
+    first === 'bots' ||
+    first === 'bot' ||
+    first === 'r' ||
+    first === 'b'
+  ) {
+    return { mode: 'bots', userFilter: null, userFilterLabel: null };
+  }
+  if (first === 'me' || first === 'mine') {
+    const sender =
+      (userDirectory && (userDirectory.findUser(event?.fromMri) || userDirectory.findUser(event?.from))) ||
+      (event ? { displayName: event.from || 'Me', mri: event.fromMri || '', gitlabUsernames: [] } : null);
+    const label = sender && userDirectory ? userDirectory.formatMention(sender) : (event?.from || 'You');
+    return {
+      mode: 'user',
+      userFilter: sender,
+      userFilterLabel: label,
+    };
+  }
+  if (args.length > 0) {
+    const query = args.join(' ').replace(/^@+/, '').trim();
+    if (query) {
+      const resolved = userDirectory ? userDirectory.findUser(query) : null;
+      const label = resolved && userDirectory ? userDirectory.formatMention(resolved) : `@${query}`;
+      return {
+        mode: 'user',
+        userFilter: resolved || query,
+        userFilterLabel: label,
+      };
+    }
+  }
+  return { mode: 'default', userFilter: null, userFilterLabel: null };
+}
+
+function getMrsMode(args = []) {
+  return parseMrsArgs(args).mode;
 }
 
 const ALERT_PRIORITY_ORDER = { P1: 1, P2: 2, P3: 3, P4: 4, P5: 5 };
@@ -519,6 +550,7 @@ export class MergeRequestWatcher {
     this.savedEntries = new Map();
     this.userInteractions = new Map();
     this.bannedUsers = new Map();
+    this.userDirectory = new UserDirectory({ searchFn: searchPeople });
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
     this.loadState();
@@ -574,10 +606,12 @@ export class MergeRequestWatcher {
         }
         if (data.userInteractions && typeof data.userInteractions === 'object') {
           this.userInteractions = new Map(Object.entries(data.userInteractions));
+          this.userDirectory.loadInteractions(this.userInteractions);
         }
         if (data.bannedUsers && typeof data.bannedUsers === 'object') {
           this.bannedUsers = new Map(Object.entries(data.bannedUsers));
         }
+        this.userDirectory.loadConfig(this.config);
         log(
           `Loaded state from ${this.stateFile}: ${this.completedMessages.size} completed messages, ${this.savedEntries.size} saved active entries, ${this.userInteractions.size} tracked users, ${this.bannedUsers.size} banned users`
         );
@@ -660,6 +694,7 @@ export class MergeRequestWatcher {
     if (event.from && userStats.name !== event.from) {
       userStats.name = event.from;
     }
+    this.userDirectory.registerInteraction(event.from, event.fromMri);
     userStats.count = (userStats.count || 0) + 1;
     userStats.commands = userStats.commands || {};
     userStats.commands[command] = (userStats.commands[command] || 0) + 1;
@@ -1533,7 +1568,7 @@ export class MergeRequestWatcher {
       if (approved.length > 0) {
         replyText =
           `✅ **Approved ${approved.length} human merge request${approved.length > 1 ? 's' : ''}** in \`${group}\`:\n\n` +
-          approved.map((a) => `- [${a.mrRef}](${a.mrUrl}): ${a.title} (@${a.author}) _(${a.pipelineNote})_`).join('\n');
+          approved.map((a) => `- [${a.mrRef}](${a.mrUrl}): ${a.title} (${this.userDirectory.formatMention(a.author)}) _(${a.pipelineNote})_`).join('\n');
         if (skipped.length > 0) {
           replyText +=
             `\n\n_Skipped ${skipped.length} other human MR${skipped.length > 1 ? 's' : ''}: ` +
@@ -1808,10 +1843,13 @@ export class MergeRequestWatcher {
     return await this.mrsCache.loading;
   }
 
-  formatMrsText(mrs, mode = 'default') {
+  formatMrsText(mrs, opts = {}) {
     if (!mrs || mrs.length === 0) {
       return '📋 No open merge requests found.';
     }
+
+    const { mode = 'default', userFilter = null, userFilterLabel = null } =
+      typeof opts === 'string' ? { mode: opts } : (opts || {});
 
     const groupPrefix = this.config.gitlab?.group
       ? new RegExp(`^${this.config.gitlab.group}/?`)
@@ -1820,7 +1858,7 @@ export class MergeRequestWatcher {
     const formatMrLine = (mr) => {
       const fullRef = mr.references?.full || mr.references?.relative || `!${mr.iid}`;
       const displayRef = groupPrefix ? fullRef.replace(groupPrefix, '') : fullRef;
-      const author = mr.author?.username || mr.author?.name || 'unknown';
+      const mention = this.userDirectory.formatMention(mr.author);
       const statusEmoji = getMrStatusEmoji(mr);
 
       const needsRebase =
@@ -1838,8 +1876,17 @@ export class MergeRequestWatcher {
         rebaseBadge = ' ⚠️ _rebase!_';
       }
 
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (@${author})${rebaseBadge}`;
+      return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (${mention})${rebaseBadge}`;
     };
+
+    if (mode === 'user' && userFilter) {
+      const filtered = sortMrs(mrs.filter((mr) => this.userDirectory.matchesUser(mr.author, userFilter)));
+      const label = userFilterLabel || (typeof userFilter === 'object' ? userFilter.displayName : userFilter);
+      if (filtered.length === 0) {
+        return `📋 No open merge requests found for **${label}**.`;
+      }
+      return `📋 **Open Merge Requests by ${label}** (${filtered.length} open):\n\n${filtered.map(formatMrLine).join('\n')}`;
+    }
 
     const humanMrs = sortMrs(mrs.filter((mr) => !isBotMr(mr)));
     const botMrs = sortMrs(mrs.filter(isBotMr));
@@ -1873,9 +1920,16 @@ export class MergeRequestWatcher {
     return `📋 **Open Merge Requests** (${mrs.length} total: ${humanMrs.length} human, ${botMrs.length} bot):\n\n${sections.join('\n\n')}`;
   }
 
-  async getOrFetchMrsText({ force = false, mode = 'default' } = {}) {
+  async getOrFetchMrsText({ force = false, ...parsed } = {}) {
     const data = await this.getOrFetchMrsData({ force });
-    return this.formatMrsText(data, mode);
+    if (Array.isArray(data)) {
+      for (const mr of data) {
+        if (mr.author && !isBotMr(mr)) {
+          this.userDirectory.resolveUser(mr.author).catch(() => {});
+        }
+      }
+    }
+    return this.formatMrsText(data, parsed);
   }
 
   async executeCachedCommand(event, { name, getOrFetch, getCached, errorLabel }) {
@@ -1920,11 +1974,11 @@ export class MergeRequestWatcher {
   }
 
   async executeMrsCommand(event, args = []) {
-    const mode = getMrsMode(args);
+    const parsed = parseMrsArgs(args, event, this.userDirectory);
     await this.executeCachedCommand(event, {
       name: 'mrs',
-      getCached: () => (this.mrsCache.data ? this.formatMrsText(this.mrsCache.data, mode) : null),
-      getOrFetch: (opts) => this.getOrFetchMrsText({ ...opts, mode }),
+      getCached: () => (this.mrsCache.data ? this.formatMrsText(this.mrsCache.data, parsed) : null),
+      getOrFetch: (opts) => this.getOrFetchMrsText({ ...opts, ...parsed }),
       errorLabel: 'Group MRs lookup',
     });
   }
@@ -2016,32 +2070,30 @@ export class MergeRequestWatcher {
           return text;
         }
 
+        const formatTaskLine = (t) => {
+          const keyRef = t.url ? `[${t.key}](${t.url})` : `**${t.key}**`;
+          const mention = this.userDirectory.formatMention(t.assignee);
+          return `- ${keyRef}: ${t.summary} (${mention})`;
+        };
+
+        const allTasks = [...inProgress, ...inReview, ...todo];
+        for (const t of allTasks) {
+          if (t.assignee && t.assignee.toLowerCase() !== 'unassigned') {
+            this.userDirectory.resolveUser(t.assignee).catch(() => {});
+          }
+        }
+
         const sections = [];
         if (inProgress.length > 0) {
-          const lines = [`**In Progress** (${inProgress.length}):`];
-          for (const t of inProgress) {
-            const keyRef = t.url ? `[${t.key}](${t.url})` : `**${t.key}**`;
-            lines.push(`- ${keyRef}: ${t.summary} (@${t.assignee})`);
-          }
-          sections.push(lines.join('\n'));
+          sections.push(`**In Progress** (${inProgress.length}):\n${inProgress.map(formatTaskLine).join('\n')}`);
         }
 
         if (inReview.length > 0) {
-          const lines = [`**In Review** (${inReview.length}):`];
-          for (const t of inReview) {
-            const keyRef = t.url ? `[${t.key}](${t.url})` : `**${t.key}**`;
-            lines.push(`- ${keyRef}: ${t.summary} (@${t.assignee})`);
-          }
-          sections.push(lines.join('\n'));
+          sections.push(`**In Review** (${inReview.length}):\n${inReview.map(formatTaskLine).join('\n')}`);
         }
 
         if (todo.length > 0) {
-          const lines = [`**To Do** (${todo.length}):`];
-          for (const t of todo) {
-            const keyRef = t.url ? `[${t.key}](${t.url})` : `**${t.key}**`;
-            lines.push(`- ${keyRef}: ${t.summary} (@${t.assignee})`);
-          }
-          sections.push(lines.join('\n'));
+          sections.push(`**To Do** (${todo.length}):\n${todo.map(formatTaskLine).join('\n')}`);
         }
 
         const text = `🏃 **Current Sprint Tasks** (${total} active):\n\n${sections.join('\n\n')}`;

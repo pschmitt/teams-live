@@ -29,6 +29,7 @@ const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ..
 
 const HEADSUP_PREFIX = 'headsup: ';
 const CI_PREFIX = 'CI pipeline ';
+const CI_JOB_PREFIX = 'CI job ';
 // Teams rejects more than 3 edits per 5 seconds, so stay just below that rate.
 const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
@@ -376,6 +377,35 @@ function formatDuration(seconds) {
   return `${m}m ${s}s`;
 }
 
+function getCiStatusEmoji(status) {
+  switch (status) {
+    case 'success':
+    case 'passed':
+      return '✅';
+    case 'failed':
+      return '❌';
+    case 'running':
+      return '⏳';
+    case 'pending':
+    case 'waiting_for_resource':
+    case 'preparing':
+    case 'created':
+      return '⏱️';
+    case 'canceled':
+      return '⚠️';
+    case 'skipped':
+      return '⏭️';
+    case 'manual':
+      return '⚙️';
+    default:
+      return '🔹';
+  }
+}
+
+function isTerminalCiStatus(status) {
+  return ['success', 'passed', 'failed', 'canceled', 'skipped'].includes(status);
+}
+
 function parsePollArgs(args) {
   const fullText = args.join(' ').trim();
   if (!fullText) return null;
@@ -600,6 +630,22 @@ export class MergeRequestWatcher {
                 rebaseMessageServerId: m.rebaseMessageServerId ?? null,
                 lastReportedNeedsRebase: m.lastReportedNeedsRebase ?? null,
               })),
+              jobs: (saved.jobs ?? []).map((j) => ({
+                project: j.project,
+                jobId: j.jobId,
+                status: j.status ?? null,
+                duration: j.duration ?? null,
+                ciMessageServerId: j.ciMessageServerId ?? null,
+                lastReportedStatus: j.lastReportedStatus ?? null,
+              })),
+              pipelines: (saved.pipelines ?? []).map((p) => ({
+                project: p.project,
+                pipelineId: p.pipelineId,
+                status: p.status ?? null,
+                duration: p.duration ?? null,
+                ciMessageServerId: p.ciMessageServerId ?? null,
+                lastReportedStatus: p.lastReportedStatus ?? null,
+              })),
               isHistory: false,
             });
           }
@@ -633,7 +679,7 @@ export class MergeRequestWatcher {
           content: v.content,
           status: v.status,
           createdAt: v.createdAt,
-          mrs: v.mrs.map((m) => ({
+          mrs: (v.mrs || []).map((m) => ({
             project: m.project,
             iid: m.iid,
             status: m.status,
@@ -644,6 +690,22 @@ export class MergeRequestWatcher {
             lastReportedApprovedBy: m.lastReportedApprovedBy,
             rebaseMessageServerId: m.rebaseMessageServerId,
             lastReportedNeedsRebase: m.lastReportedNeedsRebase,
+          })),
+          jobs: (v.jobs || []).map((j) => ({
+            project: j.project,
+            jobId: j.jobId,
+            status: j.status,
+            duration: j.duration,
+            ciMessageServerId: j.ciMessageServerId,
+            lastReportedStatus: j.lastReportedStatus,
+          })),
+          pipelines: (v.pipelines || []).map((p) => ({
+            project: p.project,
+            pipelineId: p.pipelineId,
+            status: p.status,
+            duration: p.duration,
+            ciMessageServerId: p.ciMessageServerId,
+            lastReportedStatus: p.lastReportedStatus,
           })),
         };
       }
@@ -922,6 +984,7 @@ export class MergeRequestWatcher {
     if (
       t.startsWith(HEADSUP_PREFIX) ||
       t.includes(CI_PREFIX) ||
+      t.includes(CI_JOB_PREFIX) ||
       t.includes(REBASE_PREFIX) ||
       t.includes('Approved ') ||
       t.includes('Approval status:') ||
@@ -975,7 +1038,9 @@ export class MergeRequestWatcher {
 
   watch(conversationId, messageId, text, { from = '', fromMri = '', initialStatus = null, isHistory = false } = {}) {
     const mrLinks = this.gitlab.findMrLinks(text);
-    if (mrLinks.length === 0) return;
+    const jobLinks = this.gitlab.findJobLinks(text);
+    const pipelineLinks = this.gitlab.findPipelineLinks(text);
+    if (mrLinks.length === 0 && jobLinks.length === 0 && pipelineLinks.length === 0) return;
 
     const key = `${conversationId}/${messageId}`;
     const saved = this.savedEntries.get(key);
@@ -1001,6 +1066,40 @@ export class MergeRequestWatcher {
       }
     }
 
+    const jobsMap = new Map();
+    for (const j of jobLinks) {
+      const jKey = `${j.project}#job-${j.jobId}`;
+      if (!jobsMap.has(jKey)) {
+        const savedJob = saved?.jobs?.find((sj) => sj.project === j.project && String(sj.jobId) === String(j.jobId));
+        jobsMap.set(jKey, {
+          project: j.project,
+          jobId: j.jobId,
+          status: savedJob?.status ?? null,
+          duration: savedJob?.duration ?? null,
+          ciMessageServerId: savedJob?.ciMessageServerId ?? null,
+          lastReportedStatus: savedJob?.lastReportedStatus ?? null,
+        });
+      }
+    }
+
+    const pipelinesMap = new Map();
+    for (const p of pipelineLinks) {
+      const pKey = `${p.project}#pipeline-${p.pipelineId}`;
+      if (!pipelinesMap.has(pKey)) {
+        const savedPipe = saved?.pipelines?.find(
+          (sp) => sp.project === p.project && String(sp.pipelineId) === String(p.pipelineId)
+        );
+        pipelinesMap.set(pKey, {
+          project: p.project,
+          pipelineId: p.pipelineId,
+          status: savedPipe?.status ?? null,
+          duration: savedPipe?.duration ?? null,
+          ciMessageServerId: savedPipe?.ciMessageServerId ?? null,
+          lastReportedStatus: savedPipe?.lastReportedStatus ?? null,
+        });
+      }
+    }
+
     this.watched.set(key, {
       conversationId,
       messageId,
@@ -1008,12 +1107,18 @@ export class MergeRequestWatcher {
       fromMri,
       content: text,
       mrs: [...mrsMap.values()],
+      jobs: [...jobsMap.values()],
+      pipelines: [...pipelinesMap.values()],
       status: saved?.status ?? initialStatus,
       isHistory,
       createdAt: saved?.createdAt ?? Date.now(),
     });
 
-    log(`watching MRs in ${conversationId}/${messageId}: ${[...mrsMap.keys()].join(', ')}`);
+    const watchedDesc = [];
+    if (mrsMap.size > 0) watchedDesc.push(`MRs: ${[...mrsMap.keys()].join(', ')}`);
+    if (jobsMap.size > 0) watchedDesc.push(`Jobs: ${[...jobsMap.keys()].join(', ')}`);
+    if (pipelinesMap.size > 0) watchedDesc.push(`Pipelines: ${[...pipelinesMap.keys()].join(', ')}`);
+    log(`watching in ${conversationId}/${messageId}: ${watchedDesc.join('; ')}`);
     this.checkWatchedKey(key).catch((err) => log(`initial check failed for ${key}: ${err.message}`));
   }
 
@@ -1207,6 +1312,98 @@ export class MergeRequestWatcher {
     }
   }
 
+  formatJobStatusMessage(jobData, project) {
+    const icon = getCiStatusEmoji(jobData.status);
+    const statusText = jobData.status || 'unknown';
+    const projectRef = project.split('/').pop() || project;
+    const jobUrl = jobData.web_url || this.gitlab.jobLink(project, jobData.id);
+    const durationText = jobData.duration ? ` (${formatDuration(jobData.duration)})` : '';
+    const refText = jobData.ref ? ` on \`${jobData.ref}\`` : '';
+    const stageText = jobData.stage ? ` (${jobData.stage})` : '';
+
+    const lines = [
+      `${icon} CI job **${jobData.name || jobData.id}**${stageText} **${statusText}**${refText} for [Job #${jobData.id} (${projectRef})](${jobUrl})${durationText}`,
+    ];
+
+    if (jobData.status === 'failed' && jobData.failure_reason) {
+      lines.push(`**Failure reason**: \`${jobData.failure_reason}\``);
+    }
+
+    const pipe = jobData.pipeline;
+    const pipeId = pipe?.id || jobData.pipeline_id;
+    if (pipeId) {
+      const pipeUrl = pipe?.web_url || this.gitlab.pipelineLink(project, pipeId);
+      const pipeIcon = pipe?.status ? getCiStatusEmoji(pipe.status) : '';
+      const pipeStatusText = pipe?.status ? ` (${pipeIcon} ${pipe.status})` : '';
+      lines.push(`[Pipeline #${pipeId}](${pipeUrl})${pipeStatusText}`);
+    }
+
+    return lines.join('\n\n');
+  }
+
+  formatPipelineStatusMessage(pipeData, project) {
+    const icon = getCiStatusEmoji(pipeData.status);
+    const statusText = pipeData.status || 'unknown';
+    const projectRef = project.split('/').pop() || project;
+    const pipeUrl = pipeData.web_url || this.gitlab.pipelineLink(project, pipeData.id);
+    const durationText = pipeData.duration ? ` (${formatDuration(pipeData.duration)})` : '';
+    const refText = pipeData.ref ? ` on \`${pipeData.ref}\`` : '';
+
+    const lines = [
+      `${icon} CI pipeline **${statusText}**${refText} for [Pipeline #${pipeData.id} (${projectRef})](${pipeUrl})${durationText}`,
+    ];
+
+    if (pipeData.yaml_errors) {
+      lines.push(`**YAML errors**: ${pipeData.yaml_errors}`);
+    }
+
+    return lines.join('\n\n');
+  }
+
+  async handleJobStatusComment(entry, job, jobData) {
+    const msg = this.formatJobStatusMessage(jobData, job.project);
+
+    if (job.ciMessageServerId) {
+      log(
+        `updating job status comment (status: ${jobData.status}) for ${job.project}#job-${job.jobId} (msg ${job.ciMessageServerId})`
+      );
+      const updateResult = await updateReply(entry.conversationId, job.ciMessageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating job status comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting new job status comment (status: ${jobData.status}) for ${job.project}#job-${job.jobId}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      job.ciMessageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`job status reply failed: ${result.error?.message}`);
+    }
+  }
+
+  async handlePipelineStatusComment(entry, pipe, pipeData) {
+    const msg = this.formatPipelineStatusMessage(pipeData, pipe.project);
+
+    if (pipe.ciMessageServerId) {
+      log(
+        `updating pipeline status comment (status: ${pipeData.status}) for ${pipe.project}#pipeline-${pipe.pipelineId} (msg ${pipe.ciMessageServerId})`
+      );
+      const updateResult = await updateReply(entry.conversationId, pipe.ciMessageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating pipeline status comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting new pipeline status comment (status: ${pipeData.status}) for ${pipe.project}#pipeline-${pipe.pipelineId}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      pipe.ciMessageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`pipeline status reply failed: ${result.error?.message}`);
+    }
+  }
+
   async checkWatchedKey(key) {
     const entry = this.watched.get(key);
     if (!entry) return;
@@ -1221,7 +1418,7 @@ export class MergeRequestWatcher {
 
     try {
       const statuses = [];
-      for (const mr of entry.mrs) {
+      for (const mr of (entry.mrs || [])) {
         const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
         statuses.push(mrState.status);
 
@@ -1264,31 +1461,98 @@ export class MergeRequestWatcher {
         mr.status = mrState.status;
       }
 
+      // Check watched jobs
+      for (const job of (entry.jobs || [])) {
+        try {
+          const jobData = await this.gitlab.getJob(job.project, job.jobId);
+          if (!jobData) continue;
+          const currentStatus = jobData.status;
+
+          const statusChanged = job.lastReportedStatus !== currentStatus;
+          const durationChanged = (job.duration || 0) !== (jobData.duration || 0);
+
+          if (statusChanged || (currentStatus === 'running' && durationChanged) || !job.ciMessageServerId) {
+            if (!entry.isHistory || job.lastReportedStatus !== null || !isTerminalCiStatus(currentStatus)) {
+              await this.handleJobStatusComment(entry, job, jobData);
+            }
+            job.lastReportedStatus = currentStatus;
+            job.duration = jobData.duration;
+          }
+
+          job.status = currentStatus;
+        } catch (jobErr) {
+          log(`Error checking job ${job.project}#job-${job.jobId} for ${key}: ${jobErr.message}`);
+        }
+      }
+
+      // Check watched pipelines
+      for (const pipe of (entry.pipelines || [])) {
+        try {
+          const pipeData = await this.gitlab.getPipeline(pipe.project, pipe.pipelineId);
+          if (!pipeData) continue;
+          const currentStatus = pipeData.status;
+
+          const statusChanged = pipe.lastReportedStatus !== currentStatus;
+          const durationChanged = (pipe.duration || 0) !== (pipeData.duration || 0);
+
+          if (statusChanged || (currentStatus === 'running' && durationChanged) || !pipe.ciMessageServerId) {
+            if (!entry.isHistory || pipe.lastReportedStatus !== null || !isTerminalCiStatus(currentStatus)) {
+              await this.handlePipelineStatusComment(entry, pipe, pipeData);
+            }
+            pipe.lastReportedStatus = currentStatus;
+            pipe.duration = pipeData.duration;
+          }
+
+          pipe.status = currentStatus;
+        } catch (pipeErr) {
+          log(`Error checking pipeline ${pipe.project}#pipeline-${pipe.pipelineId} for ${key}: ${pipeErr.message}`);
+        }
+      }
+
       entry.isHistory = false;
 
       // Overall status:
       let overallStatus = null;
-      const anyCiFailed = entry.mrs.some(
+      const anyCiFailed = (entry.mrs || []).some(
         (m) => m.lastReportedPipelineStatus === 'failed' && m.status !== 'merged' && m.status !== 'closed'
       );
+      const anyJobFailed = (entry.jobs || []).some((j) => j.status === 'failed');
+      const anyPipeFailed = (entry.pipelines || []).some((p) => p.status === 'failed');
 
-      if (statuses.every((s) => s === 'merged')) {
-        overallStatus = 'merged';
-      } else if (anyCiFailed) {
-        overallStatus = 'failed';
-      } else if (statuses.includes('approved')) {
-        overallStatus = 'approved';
-      } else if (statuses.includes('pending')) {
-        overallStatus = 'pending';
+      if ((entry.mrs || []).length > 0) {
+        if (statuses.length > 0 && statuses.every((s) => s === 'merged')) {
+          overallStatus = 'merged';
+        } else if (anyCiFailed || anyJobFailed || anyPipeFailed) {
+          overallStatus = 'failed';
+        } else if (statuses.includes('approved')) {
+          overallStatus = 'approved';
+        } else if (statuses.includes('pending')) {
+          overallStatus = 'pending';
+        }
+      } else {
+        if (anyJobFailed || anyPipeFailed) {
+          overallStatus = 'failed';
+        } else {
+          const hasJobsOrPipes = (entry.jobs || []).length > 0 || (entry.pipelines || []).length > 0;
+          const allJobsSuccess = (entry.jobs || []).every((j) => j.status === 'success');
+          const allPipesSuccess = (entry.pipelines || []).every((p) => p.status === 'success');
+          if (hasJobsOrPipes && allJobsSuccess && allPipesSuccess) {
+            overallStatus = 'merged';
+          }
+        }
       }
 
       if (overallStatus !== entry.status) {
         await this.setReactionStatus(entry, overallStatus);
-        log(`${key} status updated -> ${overallStatus ?? 'closed'}`);
+        log(`${key} status updated -> ${overallStatus ?? 'cleared'}`);
       }
 
-      if (statuses.every((s) => s === 'merged' || s === 'closed')) {
-        log(`All MRs merged/closed for ${key}, unwatching`);
+      const mrsDone = (entry.mrs || []).length === 0 || statuses.every((s) => s === 'merged' || s === 'closed');
+      const jobsDone = (entry.jobs || []).length === 0 || (entry.jobs || []).every((j) => isTerminalCiStatus(j.status));
+      const pipesDone = (entry.pipelines || []).length === 0 || (entry.pipelines || []).every((p) => isTerminalCiStatus(p.status));
+
+      if (mrsDone && jobsDone && pipesDone) {
+        log(`All watched items (MRs, jobs, pipelines) completed for ${key}, unwatching`);
         this.completedMessages.add(String(entry.messageId));
         this.watched.delete(key);
         this.saveState();
@@ -1296,7 +1560,7 @@ export class MergeRequestWatcher {
         this.saveState();
       }
     } catch (err) {
-      log(`Error checking MRs for ${key}: ${err.message}`);
+      log(`Error checking watched items for ${key}: ${err.message}`);
     }
   }
 
@@ -2930,12 +3194,75 @@ export class MergeRequestWatcher {
   }
 
   async executeCiCommand(event, args) {
+    const directSearch = [args.join(' '), event.content, event.rawHtml, ...(event.links ?? []).map((l) => (typeof l === 'string' ? l : l?.url))].filter(Boolean).join(' ');
+    const pipeLinks = this.gitlab.findPipelineLinks(directSearch, { allowQuotes: true });
+    const jobLinks = this.gitlab.findJobLinks(directSearch, { allowQuotes: true });
+
+    if (pipeLinks.length > 0 || jobLinks.length > 0) {
+      let project;
+      let pipelineId;
+      let targetRef = '';
+      if (pipeLinks.length > 0) {
+        project = pipeLinks[0].project;
+        pipelineId = pipeLinks[0].pipelineId;
+      } else {
+        project = jobLinks[0].project;
+        try {
+          const jobData = await this.gitlab.getJob(project, jobLinks[0].jobId);
+          pipelineId = jobData?.pipeline?.id || jobData?.pipeline_id;
+          targetRef = ` (from Job #${jobLinks[0].jobId})`;
+        } catch (err) {
+          log(`Failed to fetch job ${jobLinks[0].jobId}: ${err.message}`);
+        }
+      }
+
+      if (pipelineId) {
+        try {
+          const pipeline = await this.gitlab.getPipeline(project, pipelineId);
+          const jobs = await this.gitlab.getPipelineJobs(project, pipelineId).catch(() => []);
+          const statusIcon = getCiStatusEmoji(pipeline.status);
+          const durationStr = pipeline.duration ? ` (${formatDuration(pipeline.duration)})` : '';
+          const projectRef = project.split('/').pop() || project;
+          const pipeUrl = pipeline.web_url || this.gitlab.pipelineLink(project, pipelineId);
+          const lines = [
+            `🏗️ **Pipeline [#${pipeline.id} (${projectRef})](${pipeUrl})**: ${statusIcon} **${pipeline.status}**${durationStr}${targetRef}`,
+            `• **Ref**: \`${pipeline.ref}\``,
+          ];
+          const failedJobs = jobs.filter((j) => j.status === 'failed');
+          const runningJobs = jobs.filter((j) => j.status === 'running' || j.status === 'pending');
+          if (failedJobs.length > 0) {
+            lines.push(`\n**Failed Jobs** (${failedJobs.length}):`);
+            for (const job of failedJobs.slice(0, 10)) {
+              const jobDur = job.duration ? ` — ${formatDuration(job.duration)}` : '';
+              lines.push(`- ❌ [${job.name}](${job.web_url}) (\`stage: ${job.stage}\`${jobDur})`);
+            }
+            if (failedJobs.length > 10) lines.push(`- _...and ${failedJobs.length - 10} more_`);
+          } else if (runningJobs.length > 0) {
+            lines.push(`\n**Active Jobs** (${runningJobs.length}):`);
+            for (const job of runningJobs.slice(0, 8)) {
+              lines.push(`- ⏳ [${job.name}](${job.web_url}) (\`stage: ${job.stage}\`)`);
+            }
+          } else if (pipeline.status === 'success' || pipeline.status === 'passed') {
+            lines.push(`\n✅ All ${jobs.length} jobs completed successfully.`);
+          }
+          await sendReply(event.conversationId, event, lines.join('\n'));
+          this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+          return;
+        } catch (err) {
+          log(`Failed to fetch pipeline ${pipelineId}: ${err.message}`);
+          await sendReply(event.conversationId, event, `❌ Failed to fetch pipeline #${pipelineId}: ${err.message}`);
+          this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+          return;
+        }
+      }
+    }
+
     const mrs = await this.findTargetMrsForCommand(event, args);
     if (!mrs || mrs.length === 0) {
       await sendReply(
         event.conversationId,
         event,
-        '❌ No merge request found. Please provide an MR link, shorthand (e.g. `workload-clusters!596`), or reply to an MR message.'
+        '❌ No merge request, pipeline, or job found. Please provide a link, shorthand, or reply to a message.'
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;

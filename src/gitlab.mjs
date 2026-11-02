@@ -8,7 +8,10 @@ export class GitLabClient {
     this.currentUser = null;
     this.baseUrl = `https://${this.host}/api/v4`;
     const escapedHost = this.host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    this.escapedHost = escapedHost;
     this.mrUrlRegex = new RegExp(`https?:\\/\\/${escapedHost}\\/([\\w.\\/-]+?)\\/-\\/merge_requests\\/(\\d+)`, 'g');
+    this.jobUrlRegex = new RegExp(`https?:\\/\\/${escapedHost}\\/([\\w.\\/-]+?)\\/-\\/jobs\\/(\\d+)`, 'g');
+    this.pipelineUrlRegex = new RegExp(`https?:\\/\\/${escapedHost}\\/([\\w.\\/-]+?)\\/-\\/pipelines\\/(\\d+)`, 'g');
   }
 
   async getCurrentUser() {
@@ -121,8 +124,72 @@ export class GitLabClient {
     return results;
   }
 
+  findJobLinks(text, { allowQuotes = false } = {}) {
+    const results = [];
+    if (!text) return results;
+
+    const textToSearch = allowQuotes
+      ? text
+      : text
+          .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+          .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+    const seen = new Set();
+    const regex = new RegExp(`https?:\\/\\/${this.escapedHost}\\/([\\w.\\/-]+?)\\/-\\/jobs\\/(\\d+)`, 'g');
+    for (const match of textToSearch.matchAll(regex)) {
+      const project = match[1];
+      const jobId = match[2];
+      const key = `${project}#job-${jobId}`.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({
+          project,
+          jobId,
+          url: match[0],
+        });
+      }
+    }
+    return results;
+  }
+
+  findPipelineLinks(text, { allowQuotes = false } = {}) {
+    const results = [];
+    if (!text) return results;
+
+    const textToSearch = allowQuotes
+      ? text
+      : text
+          .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+          .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+    const seen = new Set();
+    const regex = new RegExp(`https?:\\/\\/${this.escapedHost}\\/([\\w.\\/-]+?)\\/-\\/pipelines\\/(\\d+)`, 'g');
+    for (const match of textToSearch.matchAll(regex)) {
+      const project = match[1];
+      const pipelineId = match[2];
+      const key = `${project}#pipeline-${pipelineId}`.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({
+          project,
+          pipelineId,
+          url: match[0],
+        });
+      }
+    }
+    return results;
+  }
+
   mrLink(project, iid) {
     return `https://${this.host}/${project}/-/merge_requests/${iid}`;
+  }
+
+  jobLink(project, jobId) {
+    return `https://${this.host}/${project}/-/jobs/${jobId}`;
+  }
+
+  pipelineLink(project, pipelineId) {
+    return `https://${this.host}/${project}/-/pipelines/${pipelineId}`;
   }
 
   async getMr(project, iid) {
@@ -197,6 +264,14 @@ export class GitLabClient {
       return pipelines[0];
     }
     return null;
+  }
+
+  async getPipeline(project, pipelineId) {
+    return await this.request(`projects/${encodeURIComponent(project)}/pipelines/${pipelineId}`);
+  }
+
+  async getJob(project, jobId) {
+    return await this.request(`projects/${encodeURIComponent(project)}/jobs/${jobId}`);
   }
 
   async getPipelineJobs(project, pipelineId) {

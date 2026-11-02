@@ -481,6 +481,38 @@ export class MergeRequestWatcher {
         }
         if (data.entries && typeof data.entries === 'object') {
           this.savedEntries = new Map(Object.entries(data.entries));
+          for (const [key, saved] of Object.entries(data.entries)) {
+            if (this.completedMessages.has(key)) continue;
+            const createdAt = saved.createdAt || 0;
+            if (Date.now() - createdAt > this.maxWatchDurationMs) continue;
+            const slashIndex = key.lastIndexOf('/');
+            if (slashIndex === -1) continue;
+            const conversationId = saved.conversationId || key.slice(0, slashIndex);
+            const messageId = saved.messageId || key.slice(slashIndex + 1);
+            if (this.completedMessages.has(String(messageId))) continue;
+            this.watched.set(key, {
+              conversationId,
+              messageId,
+              from: saved.from ?? null,
+              fromMri: saved.fromMri ?? null,
+              content: saved.content ?? '',
+              createdAt,
+              status: saved.status ?? null,
+              mrs: (saved.mrs ?? []).map((m) => ({
+                project: m.project,
+                iid: m.iid,
+                status: m.status ?? null,
+                ciMessageServerId: m.ciMessageServerId ?? null,
+                lastReportedPipelineId: m.lastReportedPipelineId ?? null,
+                lastReportedPipelineStatus: m.lastReportedPipelineStatus ?? null,
+                lastReportedApprovalStatus: m.lastReportedApprovalStatus ?? false,
+                lastReportedApprovedBy: m.lastReportedApprovedBy ?? null,
+                rebaseMessageServerId: m.rebaseMessageServerId ?? null,
+                lastReportedNeedsRebase: m.lastReportedNeedsRebase ?? null,
+              })),
+              isHistory: false,
+            });
+          }
         }
         if (data.userInteractions && typeof data.userInteractions === 'object') {
           this.userInteractions = new Map(Object.entries(data.userInteractions));
@@ -499,6 +531,11 @@ export class MergeRequestWatcher {
       const entriesObj = {};
       for (const [k, v] of this.watched.entries()) {
         entriesObj[k] = {
+          conversationId: v.conversationId,
+          messageId: v.messageId,
+          from: v.from,
+          fromMri: v.fromMri,
+          content: v.content,
           status: v.status,
           createdAt: v.createdAt,
           mrs: v.mrs.map((m) => ({
@@ -3227,6 +3264,7 @@ export class MergeRequestWatcher {
 
   startPolling() {
     if (this.pollTimer) clearInterval(this.pollTimer);
+    this.checkAllWatched().catch((err) => log(`Initial polling check failed: ${err.message}`));
     this.pollTimer = setInterval(() => {
       this.checkAllWatched().catch((err) => log(`Polling check failed: ${err.message}`));
     }, this.pollIntervalMs);

@@ -126,7 +126,9 @@ export class GitLabClient {
   }
 
   async getMr(project, iid) {
-    return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}`);
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}?include_diverged_commits_count=true&include_rebase_in_progress=true`
+    );
   }
 
   async approveMr(project, iid, { sha = null } = {}) {
@@ -148,7 +150,7 @@ export class GitLabClient {
     return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`);
   }
 
-  async getGroupMrs(group = null) {
+  async getGroupMrs(group = null, { enrich = true } = {}) {
     const targetGroup = group || this.group;
     if (!targetGroup) {
       throw new Error('No GitLab group configured');
@@ -156,9 +158,33 @@ export class GitLabClient {
     const endpoint = `groups/${encodeURIComponent(targetGroup)}/merge_requests?state=opened&wip=no&per_page=50&order_by=updated_at&sort=desc`;
     const mrs = await this.request(endpoint);
     if (!Array.isArray(mrs)) return [];
-    return mrs.filter(
+    const filtered = mrs.filter(
       (m) => !m.draft && !m.work_in_progress && !m.title.startsWith('Draft:') && !m.title.startsWith('WIP:')
     );
+
+    if (!enrich || filtered.length === 0) {
+      return filtered;
+    }
+
+    const enriched = await Promise.all(
+      filtered.map(async (mr) => {
+        try {
+          const details = await this.getMr(mr.project_id, mr.iid);
+          return {
+            ...mr,
+            head_pipeline: details.head_pipeline || mr.head_pipeline || null,
+            diverged_commits_count: details.diverged_commits_count ?? mr.diverged_commits_count ?? null,
+            rebase_in_progress: details.rebase_in_progress ?? mr.rebase_in_progress ?? false,
+            has_conflicts: details.has_conflicts ?? mr.has_conflicts ?? false,
+            detailed_merge_status: details.detailed_merge_status || mr.detailed_merge_status,
+          };
+        } catch {
+          return mr;
+        }
+      })
+    );
+
+    return enriched;
   }
 
   async getPipelines(project, iid) {

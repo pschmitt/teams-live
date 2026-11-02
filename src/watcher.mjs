@@ -135,8 +135,51 @@ function toMockingCase(str) {
     .join('');
 }
 
-function getMrStatusEmoji(detailedStatus) {
-  switch (detailedStatus) {
+function getMrStatusEmoji(mr) {
+  if (typeof mr === 'string') {
+    switch (mr) {
+      case 'mergeable':
+        return '✅';
+      case 'not_approved':
+        return '👀';
+      case 'need_rebase':
+        return '⚠️';
+      case 'ci_still_running':
+        return '⏳';
+      case 'ci_must_pass':
+        return '❌';
+      case 'conflict':
+        return '💥';
+      case 'checking':
+        return '🔄';
+      case 'draft_status':
+        return '📝';
+      default:
+        return '🔹';
+    }
+  }
+
+  if (mr.draft || mr.work_in_progress) return '📝';
+  if (mr.has_conflicts || mr.detailed_merge_status === 'conflict') return '💥';
+
+  const pipelineStatus = mr.head_pipeline?.status || mr.pipeline_status || mr.pipeline?.status;
+  if (pipelineStatus === 'failed' || mr.detailed_merge_status === 'ci_must_pass') return '❌';
+  if (
+    pipelineStatus === 'running' ||
+    pipelineStatus === 'pending' ||
+    pipelineStatus === 'waiting_for_resource' ||
+    pipelineStatus === 'preparing' ||
+    mr.detailed_merge_status === 'ci_still_running'
+  ) {
+    return '⏳';
+  }
+
+  if (mr.detailed_merge_status === 'mergeable') return '✅';
+  if (mr.detailed_merge_status === 'need_rebase') return '⚠️';
+  if (mr.detailed_merge_status === 'not_approved') return '👀';
+  if (mr.detailed_merge_status === 'checking') return '🔄';
+
+  switch (mr.detailed_merge_status) {
     case 'mergeable':
       return '✅';
     case 'not_approved':
@@ -154,6 +197,9 @@ function getMrStatusEmoji(detailedStatus) {
     case 'draft_status':
       return '📝';
     default:
+      if (pipelineStatus === 'success') {
+        return mr.merge_status === 'can_be_merged' ? '✅' : '👀';
+      }
       return '🔹';
   }
 }
@@ -194,6 +240,16 @@ function deduplicateMrs(mrs) {
 
 function isReadyToMerge(mr) {
   if (mr.draft || mr.work_in_progress) return false;
+  if (mr.has_conflicts || mr.detailed_merge_status === 'conflict') return false;
+  if (
+    mr.detailed_merge_status === 'need_rebase' ||
+    (typeof mr.diverged_commits_count === 'number' && mr.diverged_commits_count > 0) ||
+    mr.should_be_rebased === true
+  ) {
+    return false;
+  }
+  const pipeStatus = mr.head_pipeline?.status || mr.pipeline_status || mr.pipeline?.status;
+  if (pipeStatus === 'failed' || pipeStatus === 'running' || pipeStatus === 'pending') return false;
   if (mr.detailed_merge_status === 'mergeable') return true;
   if (
     mr.merge_status === 'can_be_merged' &&
@@ -1754,8 +1810,24 @@ export class MergeRequestWatcher {
       const fullRef = mr.references?.full || mr.references?.relative || `!${mr.iid}`;
       const displayRef = groupPrefix ? fullRef.replace(groupPrefix, '') : fullRef;
       const author = mr.author?.username || mr.author?.name || 'unknown';
-      const statusEmoji = getMrStatusEmoji(mr.detailed_merge_status);
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (@${author})`;
+      const statusEmoji = getMrStatusEmoji(mr);
+
+      const needsRebase =
+        !mr.rebase_in_progress &&
+        (mr.detailed_merge_status === 'need_rebase' ||
+          (typeof mr.diverged_commits_count === 'number' && mr.diverged_commits_count > 0) ||
+          mr.should_be_rebased === true);
+
+      let rebaseBadge = '';
+      if (mr.rebase_in_progress) {
+        rebaseBadge = ' 🔄 _rebase in progress_';
+      } else if (mr.has_conflicts || mr.detailed_merge_status === 'conflict') {
+        rebaseBadge = ' 💥 _conflicts_';
+      } else if (needsRebase) {
+        rebaseBadge = ' ⚠️ _needs rebase_';
+      }
+
+      return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (@${author})${rebaseBadge}`;
     };
 
     const humanMrs = sortMrs(mrs.filter((mr) => !isBotMr(mr)));

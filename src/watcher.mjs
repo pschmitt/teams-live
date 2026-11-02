@@ -5,6 +5,7 @@ import {
   STATUS_REACTIONS,
   STATUS_BY_REACTION,
   COMMAND_REACTIONS,
+  BAN_REACTION,
   BOT_WATERMARK,
   botSentMessageIds,
   recordBotMessageId,
@@ -54,7 +55,7 @@ const HELP_TEXT =
   '- `/snake`: Plays a round of snake by editing one message.\n' +
   '- `/leaderboard`: Shows top users by bot interactions and command usage.\n' +
   '- `/exec <cmd>`: Executes a command.\n' +
-  '- `/sudo [cmd]`: Administrative controls (restart, reauth, status, kick, ban) [admin only].\n' +
+  '- `/sudo [cmd]`: Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].\n' +
   '- `/about`: Bot info, GitHub repository link, and developer support.\n' +
   '- `/help` (or `/usage`): Lists supported slash commands.\n\n' +
   '_Target an MR by replying to its message or sending the command immediately after._';
@@ -97,6 +98,8 @@ const KNOWN_COMMANDS = [
   '/leaderboard',
   '/kick',
   '/ban',
+  '/unban',
+  '/bans',
   '/exec',
   '/sudo',
   '/admin',
@@ -515,6 +518,7 @@ export class MergeRequestWatcher {
     this.completedMessages = new Set();
     this.savedEntries = new Map();
     this.userInteractions = new Map();
+    this.bannedUsers = new Map();
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
     this.loadState();
@@ -571,8 +575,11 @@ export class MergeRequestWatcher {
         if (data.userInteractions && typeof data.userInteractions === 'object') {
           this.userInteractions = new Map(Object.entries(data.userInteractions));
         }
+        if (data.bannedUsers && typeof data.bannedUsers === 'object') {
+          this.bannedUsers = new Map(Object.entries(data.bannedUsers));
+        }
         log(
-          `Loaded state from ${this.stateFile}: ${this.completedMessages.size} completed messages, ${this.savedEntries.size} saved active entries, ${this.userInteractions.size} tracked users`
+          `Loaded state from ${this.stateFile}: ${this.completedMessages.size} completed messages, ${this.savedEntries.size} saved active entries, ${this.userInteractions.size} tracked users, ${this.bannedUsers.size} banned users`
         );
       }
     } catch (err) {
@@ -616,11 +623,17 @@ export class MergeRequestWatcher {
         interactionsObj[k] = v;
       }
 
+      const bannedObj = {};
+      for (const [k, v] of this.bannedUsers.entries()) {
+        bannedObj[k] = v;
+      }
+
       const data = {
         completedMessages: cappedCompleted,
         botMessageIds: cappedBot,
         entries: entriesObj,
         userInteractions: interactionsObj,
+        bannedUsers: bannedObj,
       };
       const tmpPath = `${this.stateFile}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
@@ -2259,6 +2272,10 @@ export class MergeRequestWatcher {
       await this.executeKickCommand(event, args.slice(1));
     } else if (sub === 'ban') {
       await this.executeBanCommand(event, args.slice(1));
+    } else if (sub === 'unban') {
+      await this.executeUnbanCommand(event, args.slice(1));
+    } else if (sub === 'bans') {
+      await this.executeBansCommand(event);
     } else {
       const text =
         '🔧 **teams-live sudo commands**:\n\n' +
@@ -2266,7 +2283,9 @@ export class MergeRequestWatcher {
         '- `/sudo reauth` (or `/sudo refresh`): Forces token refresh and shows status.\n' +
         '- `/sudo status`: Shows service runtime metrics, memory, and token auth health.\n' +
         '- `/sudo kick <nick> [reason]`: Ejects a user from the channel.\n' +
-        '- `/sudo ban <nick>`: Bans a user from the channel.\n\n' +
+        '- `/sudo ban <nick>`: Bans a user (bot ignores messages and only reacts with ⛔).\n' +
+        '- `/sudo unban <nick>`: Unbans a user.\n' +
+        '- `/sudo bans` (or `/sudo ban list`): Lists banned users.\n\n' +
         '_Alias: `/admin`_';
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -2374,24 +2393,205 @@ export class MergeRequestWatcher {
     }
   }
 
-  async executeBanCommand(event, args) {
-    const target = args.join(' ').trim() || event.from || 'User';
-    log(`Executing /ban for ${target} in ${event.conversationId}...`);
+  isSelfOrAdmin(target, event) {
+    if (!target) return true;
+    const normalized = String(target).toLowerCase().trim().replace(/^@/, '');
+    if (['me', 'myself', 'self', 'philipp', 'philipp schmitt', 'pschmitt'].includes(normalized)) {
+      return true;
+    }
+    const senderFrom = String(event?.from || event?.sender?.displayName || '').toLowerCase().trim();
+    if (senderFrom && (normalized === senderFrom || senderFrom.includes(normalized))) {
+      return true;
+    }
+    const senderMri = String(event?.fromMri || event?.sender?.mri || '').toLowerCase().trim();
+    if (senderMri && (normalized === senderMri || senderMri.includes(normalized) || normalized.includes(senderMri))) {
+      return true;
+    }
+    if (this.selfMri) {
+      const selfMriNorm = this.selfMri.toLowerCase().trim();
+      if (normalized === selfMriNorm || selfMriNorm.includes(normalized) || normalized.includes(selfMriNorm)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  isUserBanned(from, fromMri) {
+    if (!this.bannedUsers || this.bannedUsers.size === 0) return false;
+    const rawFrom = String(from || '').trim().toLowerCase();
+    const rawMri = String(fromMri || '').trim().toLowerCase();
+    if (!rawFrom && !rawMri) return false;
+
+    for (const [key, ban] of this.bannedUsers.entries()) {
+      const banTarget = String(ban.target || key).toLowerCase().trim().replace(/^@/, '');
+      const banName = String(ban.name || '').toLowerCase().trim().replace(/^@/, '');
+      const banMri = String(ban.mri || '').toLowerCase().trim();
+
+      if (rawMri && banMri && rawMri === banMri) return true;
+      if (rawMri && (rawMri === banTarget || rawMri.endsWith(banTarget))) return true;
+      if (rawFrom && (rawFrom === banTarget || rawFrom === banName)) return true;
+      if (banTarget && rawFrom) {
+        const words = rawFrom.split(/\s+/);
+        if (words.includes(banTarget) || (banName && words.includes(banName))) return true;
+      }
+    }
+    return false;
+  }
+
+  async executeBanCommand(event, args = []) {
+    const target = args.join(' ').trim();
+    if (!target || target.toLowerCase() === 'list') {
+      return await this.executeBansCommand(event);
+    }
+
+    if (this.isSelfOrAdmin(target, event)) {
+      await sendReply(event.conversationId, event, '❌ You cannot ban yourself.');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const cleanTarget = target.replace(/^@/, '');
+    const cleanLower = cleanTarget.toLowerCase();
+
+    // Check if already banned
+    for (const [key, ban] of this.bannedUsers.entries()) {
+      const banTarget = String(ban.target || key).toLowerCase().replace(/^@/, '');
+      const banName = String(ban.name || '').toLowerCase().replace(/^@/, '');
+      const banMri = String(ban.mri || '').toLowerCase();
+      if (cleanLower === banTarget || cleanLower === banName || (banMri && cleanLower === banMri)) {
+        await sendReply(event.conversationId, event, `⚠️ **${escapeHtml(ban.name || ban.target)}** is already banned.`);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+        return;
+      }
+    }
+
+    // Try to resolve target to a known user from interactions
+    let resolvedName = cleanTarget;
+    let resolvedMri = null;
+
+    if (this.userInteractions) {
+      for (const user of this.userInteractions.values()) {
+        const userName = String(user.name || '').toLowerCase();
+        const userMri = String(user.mri || '').toLowerCase();
+        if (userName === cleanLower || userMri === cleanLower || userName.includes(cleanLower)) {
+          if (this.isSelfOrAdmin(user.name, event) || (user.mri && this.isSelfOrAdmin(user.mri, event))) {
+            await sendReply(event.conversationId, event, '❌ You cannot ban yourself.');
+            this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+            return;
+          }
+          resolvedName = user.name || cleanTarget;
+          resolvedMri = user.mri || null;
+          break;
+        }
+      }
+    }
+
+    const banKey = (resolvedMri || resolvedName).toLowerCase().replace(/^@/, '');
+    const banRecord = {
+      target: cleanTarget,
+      name: resolvedName,
+      mri: resolvedMri || undefined,
+      bannedAt: Date.now(),
+      bannedBy: event.from || 'Admin',
+    };
+
+    this.bannedUsers.set(banKey, banRecord);
+    this.saveState();
+
+    log(`Banned user ${resolvedName} (${resolvedMri || 'no-mri'}) by ${event.from} in ${event.conversationId}`);
     await sendReply(
       event.conversationId,
       event,
-      `🔨 *${target} was banned from the conversation.*`
+      `🔨 **${escapeHtml(resolvedName)}** was banned from the conversation. All future messages will be rejected with ⛔.`
     );
-    this.setCommandReaction(event.conversationId, event.messageId, 'like').catch(() => {});
+    this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+  }
+
+  async executeUnbanCommand(event, args = []) {
+    const target = args.join(' ').trim();
+    if (!target) {
+      await sendReply(event.conversationId, event, '❌ Usage: `/sudo unban <nick>`');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const cleanLower = target.replace(/^@/, '').toLowerCase();
+    let foundKey = null;
+    let foundBan = null;
+
+    for (const [key, ban] of this.bannedUsers.entries()) {
+      const banTarget = String(ban.target || key).toLowerCase().replace(/^@/, '');
+      const banName = String(ban.name || '').toLowerCase().replace(/^@/, '');
+      const banMri = String(ban.mri || '').toLowerCase();
+      if (
+        cleanLower === banTarget ||
+        cleanLower === banName ||
+        (banMri && cleanLower === banMri) ||
+        banName.includes(cleanLower) ||
+        banTarget.includes(cleanLower)
+      ) {
+        foundKey = key;
+        foundBan = ban;
+        break;
+      }
+    }
+
+    if (!foundKey) {
+      await sendReply(event.conversationId, event, `❌ User **${escapeHtml(target)}** is not in the ban list.`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    this.bannedUsers.delete(foundKey);
+    this.saveState();
+
+    log(`Unbanned user ${foundBan.name || foundBan.target} by ${event.from} in ${event.conversationId}`);
+    await sendReply(
+      event.conversationId,
+      event,
+      `✅ **${escapeHtml(foundBan.name || foundBan.target)}** was unbanned.`
+    );
+    this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+  }
+
+  async executeBansCommand(event) {
+    log(`Listing banned users in ${event.conversationId}...`);
+    if (!this.bannedUsers || this.bannedUsers.size === 0) {
+      await sendReply(
+        event.conversationId,
+        event,
+        '📋 **Banned users**:\n\n_No users are currently banned._'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      return;
+    }
+
+    const lines = [`📋 **Banned users** (${this.bannedUsers.size}):\n`];
+    for (const ban of this.bannedUsers.values()) {
+      const dateStr = ban.bannedAt ? new Date(ban.bannedAt).toLocaleDateString('sv-SE') : '';
+      const mriStr = ban.mri ? ` (\`${ban.mri}\`)` : '';
+      const byStr = ban.bannedBy ? ` by ${escapeHtml(ban.bannedBy)}` : '';
+      const datePart = dateStr ? ` on ${dateStr}` : '';
+      lines.push(`- ⛔ **${escapeHtml(ban.name || ban.target)}**${mriStr}${byStr}${datePart}`);
+    }
+
+    lines.push('\n_Use `/sudo unban <nick>` to remove a ban._');
+    await sendReply(event.conversationId, event, lines.join('\n'));
+    this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
   async executeKickCommand(event, args = []) {
     const target = args.join(' ').trim() || event.from || 'User';
+    if (this.isSelfOrAdmin(target, event)) {
+      await sendReply(event.conversationId, event, '❌ You cannot kick yourself.');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
     log(`Executing /kick for ${target} in ${event.conversationId}...`);
     await sendReply(
       event.conversationId,
       event,
-      `👢 *${target} was kicked from the conversation.*`
+      `👢 *${escapeHtml(target)} was kicked from the conversation.*`
     );
     this.setCommandReaction(event.conversationId, event.messageId, 'like').catch(() => {});
   }
@@ -2980,6 +3180,12 @@ export class MergeRequestWatcher {
     } else if (command === '/ban') {
       await sendReply(event.conversationId, event, '⚠️ `/ban` has moved to `/sudo ban <nick>` [admin only].');
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    } else if (command === '/unban') {
+      await sendReply(event.conversationId, event, '⚠️ `/unban` has moved to `/sudo unban <nick>` [admin only].');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    } else if (command === '/bans') {
+      await sendReply(event.conversationId, event, '⚠️ `/bans` has moved to `/sudo bans` [admin only].');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     } else if (command === '/exec') {
       await this.executeExecCommand(event, args);
     } else if (command === '/sudo' || command === '/admin') {
@@ -3191,6 +3397,17 @@ export class MergeRequestWatcher {
       return;
     }
 
+    // If sender is banned, ignore all processing and respond only with ⛔ reaction
+    if (this.isUserBanned(event.from, event.fromMri)) {
+      log(`Ignoring message from banned user ${event.from || event.fromMri} in ${event.conversationId} and reacting with ⛔`);
+      if (event.messageId) {
+        addReaction(event.conversationId, event.messageId, BAN_REACTION).catch((err) => {
+          log(`Failed to add ban reaction ⛔ to message ${event.messageId}: ${err.message}`);
+        });
+      }
+      return;
+    }
+
     // Check for slash commands first (even from self)
     if (this.isSlashCommand(event.content)) {
       try {
@@ -3249,6 +3466,15 @@ export class MergeRequestWatcher {
 
         const senderMri = msg.sender?.mri?.split('/contacts/').pop();
         if (this.isOwnMessage(senderMri, msg.content, msg.id, msg.clientMessageId, msg.content)) continue;
+
+        // If sender is banned, do not process and ensure ⛔ reaction is present
+        if (this.isUserBanned(msg.sender?.displayName, senderMri)) {
+          const hasBanReaction = (msg.reactions ?? []).some((r) => r.user?.mri === self && r.key === BAN_REACTION);
+          if (!hasBanReaction && msg.id) {
+            addReaction(conversationId, msg.id, BAN_REACTION).catch(() => {});
+          }
+          continue;
+        }
 
         // Check if message is an unhandled slash command from recent history
         if (this.isSlashCommand(msg.content)) {

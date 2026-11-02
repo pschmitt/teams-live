@@ -178,7 +178,10 @@ export const COMMAND_REACTIONS = {
   failure: '274c_crossmark', // ❌
   warning: '26a0_warning', // ⚠️
   running: '23f3_hourglass', // ⏳
+  ban: '26d4_noentry', // ⛔
 };
+
+export const BAN_REACTION = '26d4_noentry'; // ⛔
 
 export const STATUS_BY_REACTION = new Map(
   Object.entries(STATUS_REACTIONS).map(([status, key]) => [key, status])

@@ -1440,8 +1440,54 @@ export class MergeRequestWatcher {
 
     try {
       const statuses = [];
+      const updatedMrs = [];
+      const seenProjects = new Set();
+
       for (const mr of (entry.mrs || [])) {
-        const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+        let mrState = null;
+        try {
+          mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+        } catch (err) {
+          if (err.message && err.message.includes('404')) {
+            try {
+              const resolved = await this.gitlab.resolveProjectPath(mr.project);
+              if (resolved && resolved !== mr.project) {
+                log(`Resolved project ${mr.project} -> ${resolved} for MR !${mr.iid}`);
+                mr.project = resolved;
+                const key = `${mr.project}!${mr.iid}`.toLowerCase();
+                if (seenProjects.has(key)) {
+                  continue;
+                }
+                mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+              }
+            } catch (resolveErr) {
+              log(`Failed resolving 404 project ${mr.project} for MR !${mr.iid}: ${resolveErr.message}`);
+            }
+          }
+
+          if (!mrState) {
+            log(`Error checking MR ${mr.project}!${mr.iid} for ${key}: ${err.message}`);
+            const basename = mr.project.split('/').pop().toLowerCase();
+            const hasBetter = (entry.mrs || []).some(
+              (other) => other !== mr && other.project.split('/').pop().toLowerCase() === basename && String(other.iid) === String(mr.iid)
+            );
+            if (hasBetter) {
+              continue;
+            }
+            mr.status = 'closed';
+            statuses.push('closed');
+            updatedMrs.push(mr);
+            continue;
+          }
+        }
+
+        const projectKey = `${mr.project}!${mr.iid}`.toLowerCase();
+        if (seenProjects.has(projectKey)) {
+          continue;
+        }
+        seenProjects.add(projectKey);
+        updatedMrs.push(mr);
+
         statuses.push(mrState.status);
 
         // Heads-up: was approved, but now pending
@@ -1481,6 +1527,11 @@ export class MergeRequestWatcher {
         }
 
         mr.status = mrState.status;
+      }
+
+      if (updatedMrs.length !== (entry.mrs || []).length) {
+        entry.mrs = updatedMrs;
+        this.saveState();
       }
 
       // Check watched jobs

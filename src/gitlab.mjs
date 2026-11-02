@@ -86,6 +86,7 @@ export class GitLabClient {
           .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
 
     const seen = new Set();
+    const seenBasenames = new Map();
 
     // 1. Full URLs (e.g. https://git.wiit.one/kubernetes/workload-clusters/-/merge_requests/596)
     for (const match of textToSearch.matchAll(this.mrUrlRegex)) {
@@ -94,6 +95,9 @@ export class GitLabClient {
       const key = `${project}!${iid}`.toLowerCase();
       if (!seen.has(key)) {
         seen.add(key);
+        const basename = project.split('/').pop().toLowerCase();
+        if (!seenBasenames.has(basename)) seenBasenames.set(basename, new Set());
+        seenBasenames.get(basename).add(String(iid));
         results.push({
           project,
           iid,
@@ -107,12 +111,21 @@ export class GitLabClient {
     for (const match of textToSearch.matchAll(shorthandRegex)) {
       let project = match[1];
       const iid = match[2];
+      const basename = project.split('/').pop().toLowerCase();
+
+      // If a full URL for this repository basename and iid was already found, skip this shorthand duplicate
+      if (seenBasenames.get(basename)?.has(String(iid))) {
+        continue;
+      }
+
       if (!project.includes('/') && this.group) {
         project = `${this.group}/${project}`;
       }
       const key = `${project}!${iid}`.toLowerCase();
       if (!seen.has(key)) {
         seen.add(key);
+        if (!seenBasenames.has(basename)) seenBasenames.set(basename, new Set());
+        seenBasenames.get(basename).add(String(iid));
         results.push({
           project,
           iid,
@@ -190,6 +203,43 @@ export class GitLabClient {
 
   pipelineLink(project, pipelineId) {
     return `https://${this.host}/${project}/-/pipelines/${pipelineId}`;
+  }
+
+  async resolveProjectPath(projectOrName) {
+    if (!projectOrName) return projectOrName;
+    const parts = projectOrName.split('/');
+    if (parts.length > 2) {
+      return projectOrName;
+    }
+    const basename = parts.pop();
+    const lower = basename.toLowerCase();
+
+    if (!this.projectPathCache) this.projectPathCache = new Map();
+    if (this.projectPathCache.has(lower)) {
+      return this.projectPathCache.get(lower);
+    }
+
+    if (!this.group) return projectOrName;
+
+    try {
+      const res = await this.request(
+        `groups/${encodeURIComponent(this.group)}/projects?include_subgroups=true&search=${encodeURIComponent(basename)}`
+      );
+      if (Array.isArray(res)) {
+        const exact = res.find(
+          (p) => p.path?.toLowerCase() === lower || p.name?.toLowerCase() === lower
+        );
+        if (exact) {
+          const resolved = exact.path_with_namespace;
+          this.projectPathCache.set(lower, resolved);
+          return resolved;
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    return projectOrName.includes('/') ? projectOrName : `${this.group}/${projectOrName}`;
   }
 
   async getMr(project, iid) {

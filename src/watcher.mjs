@@ -47,7 +47,7 @@ const HELP_TEXT =
   '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.\n' +
   '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.\n' +
   '- `/flip`: Flips a coin (Heads or Tails).\n' +
-  '- `/roll [expr]`: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).\n' +
+  '- `/roll` (or `/dice`) [expr]: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).\n' +
   '- `/weather [location]`: Shows current weather for location (default: Berlin).\n' +
   '- `/random`: Outputs a random fact.\n' +
   '- `/marco`: Diagnostic round-trip latency and echo probe.\n' +
@@ -91,6 +91,7 @@ const KNOWN_COMMANDS = [
   '/poll',
   '/flip',
   '/roll',
+  '/dice',
   '/weather',
   '/random',
   '/marco',
@@ -943,9 +944,9 @@ export class MergeRequestWatcher {
     let approvalLine = '';
     if (isApproved) {
       const byText = approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : '';
-      approvalLine = `Approval status: 👍 **Approved**${byText}`;
+      approvalLine = `👍 **Approved**${byText}`;
     } else {
-      approvalLine = 'Approval status: ⏳ **Not approved yet**';
+      approvalLine = '⏳ **Not approved yet**';
     }
 
     let msg = '';
@@ -2731,7 +2732,11 @@ export class MergeRequestWatcher {
         if (match[1]) count = Math.min(Math.max(parseInt(match[1], 10), 1), 20);
         sides = Math.min(Math.max(parseInt(match[2], 10), 2), 1000);
       } else {
-        await sendReply(event.conversationId, event, '🎲 Usage: `/roll` (1d6), `/roll d20`, `/roll 2d6`, or `/roll 100`');
+        await sendReply(
+          event.conversationId,
+          event,
+          '🎲 Usage: `/roll` (or `/dice`), `/roll d20`, `/roll 2d6`, or `/roll 100`'
+        );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
         return;
       }
@@ -2839,7 +2844,7 @@ export class MergeRequestWatcher {
       await this.executePollCommand(event, args);
     } else if (command === '/flip') {
       await this.executeFlipCommand(event);
-    } else if (command === '/roll') {
+    } else if (command === '/roll' || command === '/dice') {
       await this.executeRollCommand(event, args);
     } else if (command === '/weather') {
       await this.executeWeatherCommand(event, args);

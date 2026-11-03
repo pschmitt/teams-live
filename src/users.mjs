@@ -138,7 +138,10 @@ export class UserDirectory {
 
   addUser(userData) {
     if (!userData || !userData.displayName) return null;
-    const mri = userData.mri || (userData.id ? `8:orgid:${userData.id}` : null);
+    const mri =
+      userData.mri ||
+      (userData.id ? `8:orgid:${userData.id}` : null) ||
+      (userData.displayName ? `user:${normalizeName(userData.displayName)}` : null);
     if (!mri) return null;
 
     let user = this.users.get(mri);
@@ -215,8 +218,8 @@ export class UserDirectory {
     for (const [key, val] of entries) {
       const name = val?.name || (key.startsWith('8:orgid:') ? null : key);
       const mri = val?.mri || (key.startsWith('8:orgid:') ? key : null);
-      if (name && mri) {
-        this.addUser({ displayName: name, mri });
+      if (name) {
+        this.addUser({ displayName: name, mri: mri || undefined });
       }
     }
   }
@@ -249,8 +252,8 @@ export class UserDirectory {
   }
 
   registerInteraction(name, mri) {
-    if (name && mri) {
-      return this.addUser({ displayName: name, mri });
+    if (name) {
+      return this.addUser({ displayName: name, mri: mri || undefined });
     }
     return null;
   }

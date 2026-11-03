@@ -1040,7 +1040,7 @@ export class MergeRequestWatcher {
     return false;
   }
 
-  watch(conversationId, messageId, text, { from = '', fromMri = '', initialStatus = null, isHistory = false } = {}) {
+  watch(conversationId, messageId, text, { from = '', fromMri = '', content = null, initialStatus = null, isHistory = false } = {}) {
     const mrLinks = this.gitlab.findMrLinks(text);
     const jobLinks = this.gitlab.findJobLinks(text);
     const pipelineLinks = this.gitlab.findPipelineLinks(text);
@@ -1058,6 +1058,7 @@ export class MergeRequestWatcher {
         mrsMap.set(mrKey, {
           project: mr.project,
           iid: mr.iid,
+          title: savedMr?.title ?? mr.title ?? null,
           status: savedMr?.status ?? initialMrStatus,
           ciMessageServerId: savedMr?.ciMessageServerId ?? null,
           lastReportedPipelineId: savedMr?.lastReportedPipelineId ?? null,
@@ -1111,7 +1112,7 @@ export class MergeRequestWatcher {
       messageId,
       from,
       fromMri,
-      content: text,
+      content: content || text,
       mrs: [...mrsMap.values()],
       jobs: [...jobsMap.values()],
       pipelines: [...pipelinesMap.values()],
@@ -1146,7 +1147,8 @@ export class MergeRequestWatcher {
   async sendHeadsup(entry, mr) {
     if (!this.config.gitlab.notify?.approval_lost) return;
     const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
-    const msg = `${HEADSUP_PREFIX}${mrUrl} needs a new approval`;
+    const titleText = mr.title ? `: ${mr.title}` : '';
+    const msg = `${HEADSUP_PREFIX}${mrUrl}${titleText} needs a new approval`;
     log(`posting heads-up for ${mr.project}!${mr.iid} to ${entry.conversationId}`);
     const result = await sendReply(entry.conversationId, entry, msg);
     if (!result.ok) {
@@ -1188,6 +1190,8 @@ export class MergeRequestWatcher {
 
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
+    const title = mrDetails?.title || mr.title;
+    const titleText = title ? `: ${title}` : '';
     const pipeText = pipeline ? `\n\n[Pipeline #${pipeline.id}](${pipeline.web_url})` : '';
     const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
 
@@ -1205,8 +1209,8 @@ export class MergeRequestWatcher {
 
     const lines = [
       pipeline
-        ? `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${pipeText}`
-        : `[${mrRef}](${mrUrl})`,
+        ? `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})${titleText}${pipeText}`
+        : `[${mrRef}](${mrUrl})${titleText}`,
       approvalLine,
     ];
     if (rebaseLine) {
@@ -1237,12 +1241,14 @@ export class MergeRequestWatcher {
 
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
+    const title = mrDetails?.title || mr.title;
+    const titleText = title ? `: ${title}` : '';
 
     if (mrDetails.needsRebase) {
       if (mr.lastReportedNeedsRebase === true) return; // already reported
 
       const reason = mrDetails.hasConflicts ? 'merge conflicts' : 'behind target branch';
-      const msg = `⚠️ **Rebase required** for [${mrRef}](${mrUrl})\n\nBranch has ${reason} (status: \`${mrDetails.detailedMergeStatus}\`).`;
+      const msg = `⚠️ **Rebase required** for [${mrRef}](${mrUrl})${titleText}\n\nBranch has ${reason} (status: \`${mrDetails.detailedMergeStatus}\`).`;
 
       if (mr.rebaseMessageServerId) {
         log(`updating rebase comment for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
@@ -1266,7 +1272,7 @@ export class MergeRequestWatcher {
       this.saveState();
     } else if (mr.lastReportedNeedsRebase === true) {
       // Was previously reported needing rebase, now up to date! Update the comment in-place.
-      const msg = `✅ **Rebased** [${mrRef}](${mrUrl}) is now up to date and conflict-free.`;
+      const msg = `✅ **Rebased** [${mrRef}](${mrUrl})${titleText} is now up to date and conflict-free.`;
       if (mr.rebaseMessageServerId) {
         log(`updating rebase comment to resolved for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
         const updateResult = await updateReply(entry.conversationId, mr.rebaseMessageServerId, entry, msg);
@@ -1284,6 +1290,8 @@ export class MergeRequestWatcher {
 
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
+    const title = mrDetails?.title || mr.title;
+    const titleText = title ? `: ${title}` : '';
     const targetBranch = mrDetails?.target_branch ? ` into \`${mrDetails.target_branch}\`` : '';
 
     let pipeText = '';
@@ -1294,7 +1302,7 @@ export class MergeRequestWatcher {
       pipeText = `\n\nPipeline #${mr.lastReportedPipelineId}`;
     }
 
-    const msg = `🎉 **Merged** [${mrRef}](${mrUrl})${targetBranch}${pipeText}`;
+    const msg = `🎉 **Merged** [${mrRef}](${mrUrl})${titleText}${targetBranch}${pipeText}`;
 
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to merged for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
@@ -1487,6 +1495,10 @@ export class MergeRequestWatcher {
         }
         seenProjects.add(projectKey);
         updatedMrs.push(mr);
+
+        if (mrState.title && mr.title !== mrState.title) {
+          mr.title = mrState.title;
+        }
 
         statuses.push(mrState.status);
 
@@ -2092,6 +2104,8 @@ export class MergeRequestWatcher {
       const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
       try {
         const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+        const title = mrState.title || mr.title;
+        const titleText = title ? `: ${title}` : '';
         const pipe = mrState.pipeline;
         const pipeText = pipe ? `[#${pipe.id} (${pipe.status})](${pipe.web_url})` : 'none';
         const rebaseText = mrState.needsRebase
@@ -2104,10 +2118,11 @@ export class MergeRequestWatcher {
             : '⏳ **Not approved yet**';
         const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}`;
 
-        await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${statusText}`);
+        await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})${titleText}\n\n${statusText}`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       } catch (err) {
-        await sendReply(event.conversationId, event, `❌ Status check failed for [${mrRef}](${mrUrl}): ${err.message}`);
+        const titleText = mr.title ? `: ${mr.title}` : '';
+        await sendReply(event.conversationId, event, `❌ Status check failed for [${mrRef}](${mrUrl})${titleText}: ${err.message}`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       }
     }
@@ -2827,13 +2842,94 @@ export class MergeRequestWatcher {
     return false;
   }
 
+  async resolveTargetUser(query) {
+    if (!query) return null;
+    const clean = String(query).trim().replace(/^@+/, '');
+    if (!clean) return null;
+
+    if (this.userDirectory) {
+      try {
+        const user = await this.userDirectory.resolveUser(clean);
+        if (user) {
+          return {
+            name: user.displayName || clean,
+            mri: user.mri && !user.mri.startsWith('user:') ? user.mri : null,
+          };
+        }
+      } catch (err) {
+        log(`Error resolving user "${clean}" in userDirectory: ${err.message}`);
+      }
+    }
+
+    if (this.userInteractions) {
+      const cleanLower = clean.toLowerCase();
+      for (const u of this.userInteractions.values()) {
+        const userName = String(u.name || '').toLowerCase();
+        const userMri = String(u.mri || '').toLowerCase();
+        if (userName === cleanLower || userMri === cleanLower || (userName && userName.includes(cleanLower))) {
+          return {
+            name: u.name || clean,
+            mri: u.mri || null,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  async resolveTargetWithReason(args = []) {
+    const full = args.join(' ').trim();
+    if (!full) return { target: '', resolved: null, reason: '' };
+
+    // 1. Try full string first (e.g. "@Philipp Schmitt" or "Philipp Schmitt" or "frank")
+    const resolved = await this.resolveTargetUser(full);
+    if (resolved) {
+      return { target: full, resolved, reason: '' };
+    }
+
+    // 2. If multi-word and not resolved, try prefixes from longest to shortest for reason suffix
+    if (args.length > 1) {
+      for (let i = args.length - 1; i >= 1; i--) {
+        const candidate = args.slice(0, i).join(' ').trim();
+        const found = await this.resolveTargetUser(candidate);
+        if (found) {
+          return {
+            target: candidate,
+            resolved: found,
+            reason: args.slice(i).join(' ').trim(),
+          };
+        }
+      }
+    }
+
+    return { target: full, resolved: null, reason: '' };
+  }
+
   async executeBanCommand(event, args = []) {
-    const target = args.join(' ').trim();
-    if (!target || target.toLowerCase() === 'list') {
+    const rawTarget = args.join(' ').trim();
+    if (!rawTarget || rawTarget.toLowerCase() === 'list') {
       return await this.executeBansCommand(event);
     }
 
-    if (this.isSelfOrAdmin(target, event)) {
+    if (this.isSelfOrAdmin(rawTarget, event)) {
+      await sendReply(event.conversationId, event, '❌ You cannot ban yourself.');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const { target, resolved, reason } = await this.resolveTargetWithReason(args);
+    if (!resolved) {
+      await sendReply(event.conversationId, event, `❌ Could not find user **${escapeHtml(rawTarget)}**.`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    if (
+      this.isSelfOrAdmin(target, event) ||
+      this.isSelfOrAdmin(resolved.name, event) ||
+      (resolved.mri && this.isSelfOrAdmin(resolved.mri, event))
+    ) {
       await sendReply(event.conversationId, event, '❌ You cannot ban yourself.');
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
@@ -2841,57 +2937,45 @@ export class MergeRequestWatcher {
 
     const cleanTarget = target.replace(/^@/, '');
     const cleanLower = cleanTarget.toLowerCase();
+    const resolvedNameLower = (resolved.name || '').toLowerCase();
+    const resolvedMriLower = (resolved.mri || '').toLowerCase();
 
     // Check if already banned
     for (const [key, ban] of this.bannedUsers.entries()) {
       const banTarget = String(ban.target || key).toLowerCase().replace(/^@/, '');
       const banName = String(ban.name || '').toLowerCase().replace(/^@/, '');
       const banMri = String(ban.mri || '').toLowerCase();
-      if (cleanLower === banTarget || cleanLower === banName || (banMri && cleanLower === banMri)) {
+      if (
+        cleanLower === banTarget ||
+        cleanLower === banName ||
+        (banMri && cleanLower === banMri) ||
+        (resolvedNameLower && (resolvedNameLower === banName || resolvedNameLower === banTarget)) ||
+        (resolvedMriLower && banMri && resolvedMriLower === banMri)
+      ) {
         await sendReply(event.conversationId, event, `⚠️ **${escapeHtml(ban.name || ban.target)}** is already banned.`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
         return;
       }
     }
 
-    // Try to resolve target to a known user from interactions
-    let resolvedName = cleanTarget;
-    let resolvedMri = null;
-
-    if (this.userInteractions) {
-      for (const user of this.userInteractions.values()) {
-        const userName = String(user.name || '').toLowerCase();
-        const userMri = String(user.mri || '').toLowerCase();
-        if (userName === cleanLower || userMri === cleanLower || userName.includes(cleanLower)) {
-          if (this.isSelfOrAdmin(user.name, event) || (user.mri && this.isSelfOrAdmin(user.mri, event))) {
-            await sendReply(event.conversationId, event, '❌ You cannot ban yourself.');
-            this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
-            return;
-          }
-          resolvedName = user.name || cleanTarget;
-          resolvedMri = user.mri || null;
-          break;
-        }
-      }
-    }
-
-    const banKey = (resolvedMri || resolvedName).toLowerCase().replace(/^@/, '');
+    const banKey = (resolved.mri || resolved.name || cleanTarget).toLowerCase().replace(/^@/, '');
     const banRecord = {
       target: cleanTarget,
-      name: resolvedName,
-      mri: resolvedMri || undefined,
+      name: resolved.name,
+      mri: resolved.mri || undefined,
       bannedAt: Date.now(),
       bannedBy: event.from || 'Admin',
+      reason: reason || undefined,
     };
 
     this.bannedUsers.set(banKey, banRecord);
     this.saveState();
 
-    log(`Banned user ${resolvedName} (${resolvedMri || 'no-mri'}) by ${event.from} in ${event.conversationId}`);
+    log(`Banned user ${resolved.name} (${resolved.mri || 'no-mri'}) by ${event.from} in ${event.conversationId}`);
     await sendReply(
       event.conversationId,
       event,
-      `🔨 **${escapeHtml(resolvedName)}** was banned from the conversation. All future messages will be rejected with ⛔.`
+      `🔨 **${escapeHtml(resolved.name)}** was banned from the conversation. All future messages will be rejected with ⛔.`
     );
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
@@ -2970,17 +3054,43 @@ export class MergeRequestWatcher {
   }
 
   async executeKickCommand(event, args = []) {
-    const target = args.join(' ').trim() || event.from || 'User';
-    if (this.isSelfOrAdmin(target, event)) {
+    const rawTarget = args.join(' ').trim();
+    if (!rawTarget) {
+      await sendReply(event.conversationId, event, '❌ Usage: `/sudo kick <nick>`');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    if (this.isSelfOrAdmin(rawTarget, event)) {
       await sendReply(event.conversationId, event, '❌ You cannot kick yourself.');
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       return;
     }
-    log(`Executing /kick for ${target} in ${event.conversationId}...`);
+
+    const { target, resolved, reason } = await this.resolveTargetWithReason(args);
+    if (!resolved) {
+      await sendReply(event.conversationId, event, `❌ Could not find user **${escapeHtml(rawTarget)}**.`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    if (
+      this.isSelfOrAdmin(target, event) ||
+      this.isSelfOrAdmin(resolved.name, event) ||
+      (resolved.mri && this.isSelfOrAdmin(resolved.mri, event))
+    ) {
+      await sendReply(event.conversationId, event, '❌ You cannot kick yourself.');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const targetName = resolved.name || target.replace(/^@/, '');
+    log(`Executing /kick for ${targetName} (${resolved.mri || 'no-mri'}) in ${event.conversationId}...`);
+    const reasonSuffix = reason ? ` (${escapeHtml(reason)})` : '';
     await sendReply(
       event.conversationId,
       event,
-      `👢 *${escapeHtml(target)} was kicked from the conversation.*`
+      `👢 *${escapeHtml(targetName)} was kicked from the conversation.*${reasonSuffix}`
     );
     this.setCommandReaction(event.conversationId, event.messageId, 'like').catch(() => {});
   }
@@ -3881,6 +3991,7 @@ export class MergeRequestWatcher {
     this.watch(event.conversationId, event.messageId, fullText, {
       from: event.from,
       fromMri: event.fromMri,
+      content: event.content || '',
     });
   }
 
@@ -3977,6 +4088,7 @@ export class MergeRequestWatcher {
         this.watch(conversationId, msg.id, text, {
           from: msg.sender?.displayName || '',
           fromMri: senderMri || '',
+          content: msg.content || '',
           initialStatus: currentStatus,
           isHistory: true,
         });

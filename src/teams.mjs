@@ -223,16 +223,38 @@ export function renderReplyContent(replyMarkdown) {
   };
 }
 
+export function cleanPreviewText(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+    .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<\/li>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 150);
+}
+
 /**
  * Builds a Teams blockquote quoting an existing message.
  * This is how Teams client renders threaded replies in chats and meetings.
  */
 export function buildQuotedReplyHtml({ messageId, from, fromMri, previewText, replyMarkdown }) {
+  const cleanPreview = cleanPreviewText(previewText);
+  const cleanMri = fromMri ? String(fromMri).split('/contacts/').pop() : '';
   const quote =
     `<blockquote itemscope="" itemtype="http://schema.skype.com/Reply" itemid="${escapeHtml(messageId)}">` +
-    `<strong itemprop="mri" itemid="${escapeHtml(fromMri || '')}">${escapeHtml(from || '')}</strong>` +
+    `<strong itemprop="mri" itemid="${escapeHtml(cleanMri)}">${escapeHtml(from || '')}</strong>` +
     `<span itemprop="time" itemid="${escapeHtml(messageId)}"></span>` +
-    `<p itemprop="preview">${escapeHtml(previewText || '')}</p>` +
+    `<p itemprop="preview">${escapeHtml(cleanPreview)}</p>` +
     '</blockquote>';
 
   const { html, mentions } = renderReplyContent(replyMarkdown);
@@ -286,7 +308,7 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
   const messageId = originalMessage.messageId || originalMessage.id;
   const from = originalMessage.from || originalMessage.sender?.displayName || '';
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
-  const previewText = (originalMessage.content || originalMessage.text || '').slice(0, 150);
+  const previewText = originalMessage.previewText || originalMessage.content || originalMessage.text || '';
 
   const { html, mentions } = buildQuotedReplyHtml({
     messageId,
@@ -296,18 +318,37 @@ export async function sendReply(conversationId, originalMessage, replyMarkdown, 
     replyMarkdown,
   });
 
-  const options = {
-    contentType: 'html',
-    properties: {
-      formatVariant: 'TEAMS',
-      mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
-      cards: '[]',
-      links: '[]',
-      files: '[]',
-    },
+  const cleanMri = fromMri ? String(fromMri).split('/contacts/').pop() : '';
+
+  const properties = {
+    formatVariant: 'TEAMS',
+    mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
+    cards: '[]',
+    links: '[]',
+    files: '[]',
   };
 
-  if (isChannel) {
+  if (messageId) {
+    properties.hasValidMsgReferences = true;
+    properties.qtdMsgs = JSON.stringify([
+      {
+        messageId: Number(messageId) || messageId,
+        sender: cleanMri,
+        time: Number(messageId) || Date.now(),
+        message: null,
+        validationResult: 'Valid',
+        sharedRefId: null,
+        replyChainId: null,
+      },
+    ]);
+  }
+
+  const options = {
+    contentType: 'html',
+    properties,
+  };
+
+  if (isChannel && messageId) {
     options.replyToMessageId = messageId;
   }
 
@@ -329,7 +370,7 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
   const messageId = originalMessage.messageId || originalMessage.id;
   const from = originalMessage.from || originalMessage.sender?.displayName || '';
   const fromMri = originalMessage.fromMri || originalMessage.sender?.mri || '';
-  const previewText = (originalMessage.content || originalMessage.text || '').slice(0, 150);
+  const previewText = originalMessage.previewText || originalMessage.content || originalMessage.text || '';
 
   const { html, mentions } = buildQuotedReplyHtml({
     messageId,
@@ -339,10 +380,29 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
     replyMarkdown,
   });
 
+  const cleanMri = fromMri ? String(fromMri).split('/contacts/').pop() : '';
+
+  const properties = {
+    mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
+  };
+
+  if (messageId) {
+    properties.hasValidMsgReferences = true;
+    properties.qtdMsgs = JSON.stringify([
+      {
+        messageId: Number(messageId) || messageId,
+        sender: cleanMri,
+        time: Number(messageId) || Date.now(),
+        message: null,
+        validationResult: 'Valid',
+        sharedRefId: null,
+        replyChainId: null,
+      },
+    ]);
+  }
+
   const options = {
-    properties: {
-      mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
-    },
+    properties,
   };
 
   const result = await retrySendWithRecovery(() => editMessage(conversationId, String(serverMessageId), html, 'html', options));

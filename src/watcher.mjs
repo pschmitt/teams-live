@@ -1147,7 +1147,7 @@ export class MergeRequestWatcher {
   async sendHeadsup(entry, mr) {
     if (!this.config.gitlab.notify?.approval_lost) return;
     const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
-    const titleText = mr.title ? `: ${mr.title}` : '';
+    const titleText = mr.title ? `: **${mr.title}**` : '';
     const msg = `${HEADSUP_PREFIX}${mrUrl}${titleText} needs a new approval`;
     log(`posting heads-up for ${mr.project}!${mr.iid} to ${entry.conversationId}`);
     const result = await sendReply(entry.conversationId, entry, msg);
@@ -1191,7 +1191,7 @@ export class MergeRequestWatcher {
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
     const title = mrDetails?.title || mr.title;
-    const titleText = title ? `: ${title}` : '';
+    const titleText = title ? `: **${title}**` : '';
     const pipeText = pipeline ? `\n\n[Pipeline #${pipeline.id}](${pipeline.web_url})` : '';
     const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
 
@@ -1242,7 +1242,7 @@ export class MergeRequestWatcher {
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
     const title = mrDetails?.title || mr.title;
-    const titleText = title ? `: ${title}` : '';
+    const titleText = title ? `: **${title}**` : '';
 
     if (mrDetails.needsRebase) {
       if (mr.lastReportedNeedsRebase === true) return; // already reported
@@ -1288,11 +1288,21 @@ export class MergeRequestWatcher {
     const notifyMerged = this.config.gitlab.notify?.merged ?? true;
     if (!notifyMerged) return;
 
+    let title = mrDetails?.title || mr.title;
+    if (!title) {
+      try {
+        const mrData = await this.gitlab.getMr(mr.project, mr.iid);
+        title = mrData?.title || null;
+        if (title) mr.title = title;
+      } catch {
+        // ignore
+      }
+    }
+
     const mrRef = `!${mr.iid} (${mr.project})`;
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
-    const title = mrDetails?.title || mr.title;
-    const titleText = title ? `: ${title}` : '';
     const targetBranch = mrDetails?.target_branch ? ` into \`${mrDetails.target_branch}\`` : '';
+    const titleText = title ? `: **${title}**` : '';
 
     let pipeText = '';
     const pipe = mrDetails?.pipeline;
@@ -1302,7 +1312,7 @@ export class MergeRequestWatcher {
       pipeText = `\n\nPipeline #${mr.lastReportedPipelineId}`;
     }
 
-    const msg = `🎉 **Merged** [${mrRef}](${mrUrl})${titleText}${targetBranch}${pipeText}`;
+    const msg = `🎉 **Merged** [${mrRef}](${mrUrl})${targetBranch}${titleText}${pipeText}`;
 
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to merged for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
@@ -1344,7 +1354,7 @@ export class MergeRequestWatcher {
     }
 
     if (mr) {
-      const mrTitle = mr.title ? ` (${mr.title})` : '';
+      const mrTitle = mr.title ? `: **${mr.title}**` : '';
       lines.push(`[MR !${mr.iid}](${mr.web_url})${mrTitle}`);
     }
 
@@ -1377,7 +1387,7 @@ export class MergeRequestWatcher {
     }
 
     if (mr) {
-      const mrTitle = mr.title ? ` (${mr.title})` : '';
+      const mrTitle = mr.title ? `: **${mr.title}**` : '';
       lines.push(`[MR !${mr.iid}](${mr.web_url})${mrTitle}`);
     }
 
@@ -1518,7 +1528,7 @@ export class MergeRequestWatcher {
         const needsRebase = Boolean(mrState.needsRebase);
         const rebaseChanged = mr.lastReportedNeedsRebase !== needsRebase;
 
-        if (pipelineChanged || approvalChanged || approversChanged || rebaseChanged) {
+        if (mrState.status !== 'merged' && (pipelineChanged || approvalChanged || approversChanged || rebaseChanged)) {
           if (!entry.isHistory || mr.lastReportedPipelineStatus !== null || mr.lastReportedApprovalStatus !== null || mr.lastReportedNeedsRebase !== null) {
             await this.handleCiStatusComment(entry, mr, pipe, mrState);
           }
@@ -1748,6 +1758,8 @@ export class MergeRequestWatcher {
 
     try {
       const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+      const title = mrState?.title || mr.title;
+      const titleText = title ? `: **${title}**` : '';
 
       // Precondition 1: Rebase check
       if (mrState.needsRebase || mrState.hasConflicts) {
@@ -1755,7 +1767,7 @@ export class MergeRequestWatcher {
         await sendReply(
           event.conversationId,
           event,
-          `⚠️ Cannot approve [${mrRef}](${mrUrl}): branch has ${reason} (\`${mrState.detailedMergeStatus || 'need_rebase'}\`).`
+          `⚠️ Cannot approve [${mrRef}](${mrUrl})${titleText}: branch has ${reason} (\`${mrState.detailedMergeStatus || 'need_rebase'}\`).`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
         return;
@@ -1768,7 +1780,7 @@ export class MergeRequestWatcher {
           await sendReply(
             event.conversationId,
             event,
-            `⏳ Cannot approve [${mrRef}](${mrUrl}): CI pipeline [#${pipe.id}](${pipe.web_url}) is still ${pipe.status}.`
+            `⏳ Cannot approve [${mrRef}](${mrUrl})${titleText}: CI pipeline [#${pipe.id}](${pipe.web_url}) is still ${pipe.status}.`
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.running).catch(() => {});
           return;
@@ -1778,7 +1790,7 @@ export class MergeRequestWatcher {
           await sendReply(
             event.conversationId,
             event,
-            `❌ Cannot approve [${mrRef}](${mrUrl}): CI pipeline [#${pipe.id}](${pipe.web_url}) is ${pipe.status}.`
+            `❌ Cannot approve [${mrRef}](${mrUrl})${titleText}: CI pipeline [#${pipe.id}](${pipe.web_url}) is ${pipe.status}.`
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
           return;
@@ -1790,7 +1802,7 @@ export class MergeRequestWatcher {
         await sendReply(
           event.conversationId,
           event,
-          `ℹ️ [${mrRef}](${mrUrl}) is already approved.`
+          `ℹ️ [${mrRef}](${mrUrl})${titleText} is already approved.`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
         return;
@@ -1801,7 +1813,7 @@ export class MergeRequestWatcher {
         await sendReply(
           event.conversationId,
           event,
-          `ℹ️ [${mrRef}](${mrUrl}) is already ${mrState.status}.`
+          `ℹ️ [${mrRef}](${mrUrl})${titleText} is already ${mrState.status}.`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
         return;
@@ -1816,7 +1828,7 @@ export class MergeRequestWatcher {
       await sendReply(
         event.conversationId,
         event,
-        `✅ Approved [${mrRef}](${mrUrl})${pipelineNote}`
+        `✅ Approved [${mrRef}](${mrUrl})${titleText}${pipelineNote}`
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
 
@@ -1824,10 +1836,11 @@ export class MergeRequestWatcher {
       this.checkAllWatched().catch((err) => log(`Post-approval check failed: ${err.message}`));
     } catch (err) {
       log(`Error approving ${mr.project}!${mr.iid}: ${err.message}`);
+      const titleText = mr.title ? `: **${mr.title}**` : '';
       await sendReply(
         event.conversationId,
         event,
-        `❌ Approval failed for [${mrRef}](${mrUrl}): ${err.message}`
+        `❌ Approval failed for [${mrRef}](${mrUrl})${titleText}: ${err.message}`
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     }
@@ -1973,12 +1986,14 @@ export class MergeRequestWatcher {
 
       try {
         const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+        const title = mrState?.title || mr.title;
+        const titleText = title ? `: **${title}**` : '';
 
         if (mrState.status === 'merged' || mrState.status === 'closed') {
           await sendReply(
             event.conversationId,
             event,
-            `ℹ️ [${mrRef}](${mrUrl}) is already ${mrState.status}.`
+            `ℹ️ [${mrRef}](${mrUrl})${titleText} is already ${mrState.status}.`
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
           continue;
@@ -1988,7 +2003,7 @@ export class MergeRequestWatcher {
           await sendReply(
             event.conversationId,
             event,
-            `❌ Cannot automatically rebase [${mrRef}](${mrUrl}): branch has merge conflicts that must be resolved manually.`
+            `❌ Cannot automatically rebase [${mrRef}](${mrUrl})${titleText}: branch has merge conflicts that must be resolved manually.`
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
           continue;
@@ -1998,7 +2013,7 @@ export class MergeRequestWatcher {
           await sendReply(
             event.conversationId,
             event,
-            `ℹ️ [${mrRef}](${mrUrl}) is already up to date with target branch.`
+            `ℹ️ [${mrRef}](${mrUrl})${titleText} is already up to date with target branch.`
           );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
           continue;
@@ -2011,17 +2026,18 @@ export class MergeRequestWatcher {
         await sendReply(
           event.conversationId,
           event,
-          `⏳ Rebase initiated for [${mrRef}](${mrUrl}). The watcher will update once complete.`
+          `⏳ Rebase initiated for [${mrRef}](${mrUrl})${titleText}. The watcher will update once complete.`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.running).catch(() => {});
 
         this.checkAllWatched().catch((err) => log(`Post-rebase check failed: ${err.message}`));
       } catch (err) {
         log(`Error rebasing ${mr.project}!${mr.iid}: ${err.message}`);
+        const titleText = mr.title ? `: **${mr.title}**` : '';
         await sendReply(
           event.conversationId,
           event,
-          `❌ Rebase failed for [${mrRef}](${mrUrl}): ${err.message}`
+          `❌ Rebase failed for [${mrRef}](${mrUrl})${titleText}: ${err.message}`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
       }
@@ -3343,11 +3359,16 @@ export class MergeRequestWatcher {
     const project = mrRef.project;
     const iid = mrRef.iid;
     const mrUrl = mrRef.url || this.gitlab.mrLink(project, iid);
+    let titleText = '';
+    try {
+      const mrState = await this.gitlab.getMrStatus(project, iid);
+      if (mrState?.title) titleText = `: **${mrState.title}**`;
+    } catch {}
 
     try {
       const pipeline = await this.gitlab.getLatestPipeline(project, iid);
       if (!pipeline) {
-        await sendReply(event.conversationId, event, `❌ No pipeline found for [${project}!${iid}](${mrUrl}).`);
+        await sendReply(event.conversationId, event, `❌ No pipeline found for [${project}!${iid}](${mrUrl})${titleText}.`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
         return;
       }
@@ -3356,7 +3377,7 @@ export class MergeRequestWatcher {
         await sendReply(
           event.conversationId,
           event,
-          `ℹ️ Latest pipeline [#${pipeline.id}](${pipeline.web_url}) for [${project}!${iid}](${mrUrl}) is in state **${pipeline.status}** (nothing to retry).`
+          `ℹ️ Latest pipeline [#${pipeline.id}](${pipeline.web_url}) for [${project}!${iid}](${mrUrl})${titleText} is in state **${pipeline.status}** (nothing to retry).`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
         return;
@@ -3366,7 +3387,7 @@ export class MergeRequestWatcher {
       await sendReply(
         event.conversationId,
         event,
-        `🔁 **Retried failed jobs** on pipeline [#${pipeline.id}](${pipeline.web_url}) for [${project}!${iid}](${mrUrl}) (status: **${pipeline.status}** ➔ **running**).`
+        `🔁 **Retried failed jobs** on pipeline [#${pipeline.id}](${pipeline.web_url}) for [${project}!${iid}](${mrUrl})${titleText} (status: **${pipeline.status}** ➔ **running**).`
       );
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {
@@ -3459,11 +3480,16 @@ export class MergeRequestWatcher {
     const project = mrRef.project;
     const iid = mrRef.iid;
     const mrUrl = mrRef.url || this.gitlab.mrLink(project, iid);
+    let titleText = '';
+    try {
+      const mrState = await this.gitlab.getMrStatus(project, iid);
+      if (mrState?.title) titleText = `: **${mrState.title}**`;
+    } catch {}
 
     try {
       const pipeline = await this.gitlab.getLatestPipeline(project, iid);
       if (!pipeline) {
-        await sendReply(event.conversationId, event, `❌ No pipeline found for [${project}!${iid}](${mrUrl}).`);
+        await sendReply(event.conversationId, event, `❌ No pipeline found for [${project}!${iid}](${mrUrl})${titleText}.`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
         return;
       }
@@ -3484,7 +3510,7 @@ export class MergeRequestWatcher {
       const durationStr = pipeline.duration ? ` (${formatDuration(pipeline.duration)})` : '';
       const lines = [
         `🏗️ **Pipeline [#${pipeline.id}](${pipeline.web_url})**: ${statusIcon} **${pipeline.status}**${durationStr}`,
-        `• **Target**: [${project}!${iid}](${mrUrl}) (ref: \`${pipeline.ref}\`)`,
+        `• **Target**: [${project}!${iid}](${mrUrl})${titleText} (ref: \`${pipeline.ref}\`)`,
       ];
 
       const failedJobs = jobs.filter((j) => j.status === 'failed');

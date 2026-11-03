@@ -13,6 +13,75 @@ export class JiraClient {
     return Boolean(this.baseUrl && this.token);
   }
 
+  /**
+   * Finds Jira issue links in text (browse URLs, RapidBoard/selectedIssue URLs, project issue URLs).
+   */
+  findIssueLinks(text, { allowQuotes = false } = {}) {
+    const results = [];
+    if (!text) return results;
+
+    const textToSearch = allowQuotes
+      ? text
+      : text
+          .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+          .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+    const seen = new Set();
+    const urlMatches = textToSearch.matchAll(/https?:\/\/[^\s"'<>]+/gi);
+
+    for (const match of urlMatches) {
+      let rawUrl = match[0];
+      rawUrl = rawUrl.replace(/[.,;:!?)>]+$/, '');
+      try {
+        const parsed = new URL(rawUrl);
+        let key = null;
+
+        // 1. /browse/KEY-123
+        const browseMatch = parsed.pathname.match(/\/browse\/([a-zA-Z][a-zA-Z0-9]+-\d+)/i);
+        if (browseMatch) {
+          key = browseMatch[1].toUpperCase();
+        }
+
+        // 2. Query param selectedIssue=KEY-123 (e.g. RapidBoard)
+        if (!key && parsed.searchParams.has('selectedIssue')) {
+          const sel = parsed.searchParams.get('selectedIssue');
+          const selMatch = sel ? sel.match(/^([a-zA-Z][a-zA-Z0-9]+-\d+)$/i) : null;
+          if (selMatch) {
+            key = selMatch[1].toUpperCase();
+          }
+        }
+
+        // 3. /projects/PROJ/issues/KEY-123
+        if (!key) {
+          const projMatch = parsed.pathname.match(/\/projects\/[^\/\s"'<>]+\/issues\/([a-zA-Z][a-zA-Z0-9]+-\d+)/i);
+          if (projMatch) {
+            key = projMatch[1].toUpperCase();
+          }
+        }
+
+        // 4. /issue/KEY-123
+        if (!key) {
+          const issueMatch = parsed.pathname.match(/\/issue\/([a-zA-Z][a-zA-Z0-9]+-\d+)/i);
+          if (issueMatch) {
+            key = issueMatch[1].toUpperCase();
+          }
+        }
+
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          results.push({
+            key,
+            url: this.baseUrl ? `${this.baseUrl}/browse/${key}` : rawUrl,
+          });
+        }
+      } catch {
+        // Not a valid URL
+      }
+    }
+
+    return results;
+  }
+
   async getCurrentUser() {
     if (this.currentUser) return this.currentUser;
     if (!this.isConfigured()) return null;

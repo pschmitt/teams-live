@@ -22,6 +22,7 @@ export class OpsGenieClient {
   constructor({
     on_call_key = null,
     support_key = null,
+    edge_key = null,
     on_call_schedule_id = '8aa71a67-9ddd-4571-af97-06d1ddb3c7cb',
     support_schedule_id = '5a044893-0255-4246-8606-8e76949a861d',
     base_url = 'https://api.eu.opsgenie.com/v2',
@@ -31,6 +32,7 @@ export class OpsGenieClient {
   } = {}) {
     this.onCallKey = on_call_key;
     this.supportKey = support_key;
+    this.edgeKey = edge_key;
     this.onCallScheduleId = on_call_schedule_id;
     this.supportScheduleId = support_schedule_id;
     this.baseUrl = (base_url || 'https://api.eu.opsgenie.com/v2').replace(/\/+$/, '');
@@ -40,12 +42,115 @@ export class OpsGenieClient {
   }
 
   isConfigured() {
-    return Boolean(this.onCallKey || this.supportKey);
+    return Boolean(this.onCallKey || this.supportKey || this.edgeKey);
   }
 
   alertUrl(alert) {
     const id = alert.id || alert.tinyId;
     return `${this.webBaseUrl}/alert/detail/${id}/details`;
+  }
+
+  /**
+   * Finds OpsGenie alert links in text.
+   */
+  findAlertLinks(text, { allowQuotes = false } = {}) {
+    const results = [];
+    if (!text) return results;
+
+    const textToSearch = allowQuotes
+      ? text
+      : text
+          .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+          .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+    const seen = new Set();
+    const urlMatches = textToSearch.matchAll(/https?:\/\/[^\s"'<>]+/gi);
+
+    for (const match of urlMatches) {
+      let rawUrl = match[0];
+      rawUrl = rawUrl.replace(/[.,;:!?)>]+$/, '');
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.hostname.toLowerCase().includes('opsgenie.com')) {
+          const m = parsed.pathname.match(/\/alert\/detail\/([a-zA-Z0-9\-]+)/i);
+          if (m) {
+            const id = m[1];
+            if (!seen.has(id)) {
+              seen.add(id);
+              results.push({
+                id,
+                url: `${this.webBaseUrl}/alert/detail/${id}/details`,
+              });
+            }
+          }
+        }
+      } catch {
+        // Not a valid URL
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Fetches single OpsGenie alert details by ID or tinyId.
+   */
+  async getAlert(identifier) {
+    if (!identifier) throw new Error('Alert identifier is required');
+    const keys = [this.onCallKey, this.supportKey, this.edgeKey].filter(Boolean);
+    if (keys.length === 0) throw new Error('OpsGenie is not configured (missing API keys)');
+
+    let lastError = null;
+    for (const key of keys) {
+      try {
+        const url = `${this.baseUrl}/alerts/${encodeURIComponent(identifier)}?identifierType=id`;
+        const res = await fetch(url, {
+          headers: {
+            Authorization: `GenieKey ${key}`,
+            Accept: 'application/json',
+            'User-Agent': 'teams-live/1.0',
+          },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.ok) {
+          this.onSuccess?.('OpsGenie');
+          const data = await res.json();
+          const alert = data.data;
+          return {
+            ...alert,
+            url: this.alertUrl(alert),
+          };
+        }
+        if (res.status === 401 || res.status === 403) {
+          lastError = new Error(`OpsGenie HTTP ${res.status}`);
+          continue;
+        }
+        if (res.status === 404) {
+          const urlTiny = `${this.baseUrl}/alerts/${encodeURIComponent(identifier)}?identifierType=tinyId`;
+          const resTiny = await fetch(urlTiny, {
+            headers: {
+              Authorization: `GenieKey ${key}`,
+              Accept: 'application/json',
+              'User-Agent': 'teams-live/1.0',
+            },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (resTiny.ok) {
+            this.onSuccess?.('OpsGenie');
+            const dataTiny = await resTiny.json();
+            const alert = dataTiny.data;
+            return {
+              ...alert,
+              url: this.alertUrl(alert),
+            };
+          }
+        }
+        lastError = new Error(`OpsGenie HTTP ${res.status}`);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError || new Error(`Alert ${identifier} not found`);
   }
 
   async fetchQueueAlerts(key, queueName) {

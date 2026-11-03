@@ -22,7 +22,7 @@ import {
 } from './teams.mjs';
 import { UserDirectory } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
-import { formatOnDuty } from './opsgenie.mjs';
+import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 
 const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
@@ -711,6 +711,22 @@ export class MergeRequestWatcher {
             lastReportedStatus: p.lastReportedStatus,
             mr: p.mr ?? null,
           })),
+          jiraIssues: (v.jiraIssues || []).map((j) => ({
+            key: j.key,
+            url: j.url,
+            summary: j.summary,
+            status: j.status,
+            statusCategory: j.statusCategory,
+            messageServerId: j.messageServerId,
+          })),
+          opsgenieAlerts: (v.opsgenieAlerts || []).map((a) => ({
+            id: a.id,
+            url: a.url,
+            message: a.message,
+            status: a.status,
+            acknowledged: a.acknowledged,
+            messageServerId: a.messageServerId,
+          })),
         };
       }
       const completedArray = Array.from(this.completedMessages);
@@ -1032,6 +1048,9 @@ export class MergeRequestWatcher {
       t.includes('Status check failed') ||
       t.includes('Weather lookup failed') ||
       t.includes('🌤️') ||
+      t.includes('🎫 [') ||
+      t.includes('🚨 [Alert') ||
+      t.includes('Failed to fetch Jira issue') ||
       t.includes('itemtype="http://schema.skype.com/Reply"')
     ) {
       return true;
@@ -1044,7 +1063,17 @@ export class MergeRequestWatcher {
     const mrLinks = this.gitlab.findMrLinks(text);
     const jobLinks = this.gitlab.findJobLinks(text);
     const pipelineLinks = this.gitlab.findPipelineLinks(text);
-    if (mrLinks.length === 0 && jobLinks.length === 0 && pipelineLinks.length === 0) return;
+    const jiraLinks = this.jira?.findIssueLinks ? this.jira.findIssueLinks(text) : [];
+    const opsgenieLinks = this.opsgenie?.findAlertLinks ? this.opsgenie.findAlertLinks(text) : [];
+    if (
+      mrLinks.length === 0 &&
+      jobLinks.length === 0 &&
+      pipelineLinks.length === 0 &&
+      jiraLinks.length === 0 &&
+      opsgenieLinks.length === 0
+    ) {
+      return;
+    }
 
     const key = `${conversationId}/${messageId}`;
     const saved = this.savedEntries.get(key);
@@ -1107,6 +1136,38 @@ export class MergeRequestWatcher {
       }
     }
 
+    const jiraMap = new Map();
+    for (const j of jiraLinks) {
+      const jKey = j.key;
+      if (!jiraMap.has(jKey)) {
+        const savedJira = saved?.jiraIssues?.find((sj) => sj.key === j.key);
+        jiraMap.set(jKey, {
+          key: j.key,
+          url: j.url,
+          summary: savedJira?.summary ?? null,
+          status: savedJira?.status ?? null,
+          statusCategory: savedJira?.statusCategory ?? null,
+          messageServerId: savedJira?.messageServerId ?? null,
+        });
+      }
+    }
+
+    const opsgenieMap = new Map();
+    for (const a of opsgenieLinks) {
+      const aKey = a.id;
+      if (!opsgenieMap.has(aKey)) {
+        const savedAlert = saved?.opsgenieAlerts?.find((sa) => sa.id === a.id);
+        opsgenieMap.set(aKey, {
+          id: a.id,
+          url: a.url,
+          message: savedAlert?.message ?? null,
+          status: savedAlert?.status ?? null,
+          acknowledged: savedAlert?.acknowledged ?? null,
+          messageServerId: savedAlert?.messageServerId ?? null,
+        });
+      }
+    }
+
     this.watched.set(key, {
       conversationId,
       messageId,
@@ -1116,6 +1177,8 @@ export class MergeRequestWatcher {
       mrs: [...mrsMap.values()],
       jobs: [...jobsMap.values()],
       pipelines: [...pipelinesMap.values()],
+      jiraIssues: [...jiraMap.values()],
+      opsgenieAlerts: [...opsgenieMap.values()],
       status: saved?.status ?? initialStatus,
       isHistory,
       createdAt: saved?.createdAt ?? Date.now(),
@@ -1125,6 +1188,8 @@ export class MergeRequestWatcher {
     if (mrsMap.size > 0) watchedDesc.push(`MRs: ${[...mrsMap.keys()].join(', ')}`);
     if (jobsMap.size > 0) watchedDesc.push(`Jobs: ${[...jobsMap.keys()].join(', ')}`);
     if (pipelinesMap.size > 0) watchedDesc.push(`Pipelines: ${[...pipelinesMap.keys()].join(', ')}`);
+    if (jiraMap.size > 0) watchedDesc.push(`Jira: ${[...jiraMap.keys()].join(', ')}`);
+    if (opsgenieMap.size > 0) watchedDesc.push(`OpsGenie: ${[...opsgenieMap.keys()].join(', ')}`);
     log(`watching in ${conversationId}/${messageId}: ${watchedDesc.join('; ')}`);
     this.checkWatchedKey(key).catch((err) => log(`initial check failed for ${key}: ${err.message}`));
   }
@@ -1463,6 +1528,121 @@ export class MergeRequestWatcher {
     }
   }
 
+  formatJiraIssueMessage(issue) {
+    const typeIcons = {
+      bug: '🐛',
+      story: '📖',
+      task: '📋',
+      subtask: '📄',
+      spike: '⚡',
+      epic: '🏔️',
+      improvement: '💡',
+    };
+    const tLower = (issue.issueType || '').toLowerCase();
+    const typeIcon = typeIcons[tLower] || '📋';
+
+    const sCategory = (issue.statusCategory || '').toLowerCase();
+    const sName = (issue.status || '').toLowerCase();
+    let statusIcon = '⚪';
+    if (sCategory === 'done' || sName === 'done' || sName === 'closed' || sName === 'resolved') {
+      statusIcon = '🟢';
+    } else if (sName.includes('review')) {
+      statusIcon = '🟣';
+    } else if (sCategory === 'indeterminate' || sName.includes('progress') || sName.includes('active')) {
+      statusIcon = '🟡';
+    }
+
+    const pLower = (issue.priority || '').toLowerCase();
+    let priorityIcon = '🟡';
+    if (pLower.includes('high') || pLower.includes('blocker') || pLower.includes('critical')) {
+      priorityIcon = '🔴';
+    } else if (pLower.includes('low') || pLower.includes('trivial')) {
+      priorityIcon = '🟢';
+    }
+
+    const lines = [
+      `💬 **${escapeHtml(issue.summary)}**`,
+      `🎫 [${issue.key}](${issue.url}) • ${typeIcon} ${issue.issueType || 'Task'}`,
+      `${statusIcon} **${issue.status}** • Priority: ${priorityIcon} ${issue.priority || 'None'}`,
+      `👤 Assignee: ${issue.assignee || 'Unassigned'}`,
+    ];
+
+    return lines.join('\n\n');
+  }
+
+  formatOpsGenieAlertMessage(alert) {
+    const pIcons = {
+      P1: '🚨',
+      P2: '🔥',
+      P3: '⚠️',
+      P4: 'ℹ️',
+      P5: '🔹',
+    };
+    const pIcon = pIcons[alert.priority] || '⚠️';
+
+    const isClosed = alert.status === 'closed';
+    const sIcon = isClosed ? '⚪' : '🟢';
+    const ackText = alert.acknowledged ? 'acknowledged' : 'unacknowledged';
+
+    let ownerText = 'Unassigned';
+    if (alert.owner) {
+      ownerText = humanizeRecipient(alert.owner);
+    } else if (Array.isArray(alert.responders) && alert.responders.length > 0) {
+      ownerText = alert.responders.map((r) => r.name || r.username || r.id).filter(Boolean).join(', ') || 'Unassigned';
+    }
+
+    const label = alert.tinyId ? `Alert #${alert.tinyId}` : `Alert ${alert.id.slice(0, 8)}`;
+
+    const lines = [
+      `💬 **${escapeHtml(alert.message)}**`,
+      `🚨 [${label}](${alert.url})`,
+      `${pIcon} **${alert.priority || 'P3'}** • ${sIcon} **${alert.status || 'open'}** (${ackText})`,
+      `👤 Owner: ${ownerText}`,
+    ];
+
+    return lines.join('\n\n');
+  }
+
+  async handleJiraIssueComment(entry, issue, issueData) {
+    const msg = this.formatJiraIssueMessage(issueData);
+
+    if (issue.messageServerId) {
+      log(`updating Jira issue comment for ${issue.key} (msg ${issue.messageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, issue.messageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating Jira issue comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting Jira issue comment for ${issue.key}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      issue.messageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`Jira issue reply failed: ${result.error?.message}`);
+    }
+  }
+
+  async handleOpsGenieAlertComment(entry, alert, alertData) {
+    const msg = this.formatOpsGenieAlertMessage(alertData);
+
+    if (alert.messageServerId) {
+      log(`updating OpsGenie alert comment for ${alert.id} (msg ${alert.messageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, alert.messageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating OpsGenie alert comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting OpsGenie alert comment for ${alert.id}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      alert.messageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`OpsGenie alert reply failed: ${result.error?.message}`);
+    }
+  }
+
   async checkWatchedKey(key) {
     const entry = this.watched.get(key);
     if (!entry) return;
@@ -1627,6 +1807,50 @@ export class MergeRequestWatcher {
         }
       }
 
+      // Check watched Jira issues
+      for (const issue of (entry.jiraIssues || [])) {
+        try {
+          if (!this.jira?.isConfigured()) continue;
+          const issueData = await this.jira.getIssue(issue.key);
+          if (!issueData) continue;
+
+          const statusChanged = issue.status !== issueData.status;
+          const summaryChanged = issue.summary !== issueData.summary;
+          const needsInitialComment = !entry.isHistory && !issue.messageServerId;
+
+          if (statusChanged || summaryChanged || needsInitialComment) {
+            await this.handleJiraIssueComment(entry, issue, issueData);
+            issue.status = issueData.status;
+            issue.statusCategory = issueData.statusCategory;
+            issue.summary = issueData.summary;
+          }
+        } catch (jiraErr) {
+          log(`Error checking Jira issue ${issue.key} for ${key}: ${jiraErr.message}`);
+        }
+      }
+
+      // Check watched OpsGenie alerts
+      for (const alert of (entry.opsgenieAlerts || [])) {
+        try {
+          if (!this.opsgenie?.isConfigured()) continue;
+          const alertData = await this.opsgenie.getAlert(alert.id);
+          if (!alertData) continue;
+
+          const statusChanged = alert.status !== alertData.status;
+          const ackChanged = alert.acknowledged !== alertData.acknowledged;
+          const needsInitialComment = !entry.isHistory && !alert.messageServerId;
+
+          if (statusChanged || ackChanged || needsInitialComment) {
+            await this.handleOpsGenieAlertComment(entry, alert, alertData);
+            alert.status = alertData.status;
+            alert.acknowledged = alertData.acknowledged;
+            alert.message = alertData.message;
+          }
+        } catch (ogErr) {
+          log(`Error checking OpsGenie alert ${alert.id} for ${key}: ${ogErr.message}`);
+        }
+      }
+
       entry.isHistory = false;
 
       // Overall status:
@@ -1668,9 +1892,19 @@ export class MergeRequestWatcher {
       const mrsDone = (entry.mrs || []).length === 0 || statuses.every((s) => s === 'merged' || s === 'closed');
       const jobsDone = (entry.jobs || []).length === 0 || (entry.jobs || []).every((j) => isTerminalCiStatus(j.status));
       const pipesDone = (entry.pipelines || []).length === 0 || (entry.pipelines || []).every((p) => isTerminalCiStatus(p.status));
+      const jiraDone =
+        (entry.jiraIssues || []).length === 0 ||
+        (entry.jiraIssues || []).every(
+          (j) =>
+            j.messageServerId &&
+            (j.statusCategory === 'done' || ['done', 'closed', 'resolved'].includes((j.status || '').toLowerCase()))
+        );
+      const opsgenieDone =
+        (entry.opsgenieAlerts || []).length === 0 ||
+        (entry.opsgenieAlerts || []).every((a) => a.messageServerId && a.status === 'closed');
 
-      if (mrsDone && jobsDone && pipesDone) {
-        log(`All watched items (MRs, jobs, pipelines) completed for ${key}, unwatching`);
+      if (mrsDone && jobsDone && pipesDone && jiraDone && opsgenieDone) {
+        log(`All watched items (MRs, jobs, pipelines, Jira, OpsGenie) completed for ${key}, unwatching`);
         this.completedMessages.add(String(entry.messageId));
         this.watched.delete(key);
         this.saveState();
@@ -3319,44 +3553,7 @@ export class MergeRequestWatcher {
 
     try {
       const issue = await this.jira.getIssue(key);
-      const typeIcons = {
-        bug: '🐛',
-        story: '📖',
-        task: '📋',
-        subtask: '📄',
-        spike: '⚡',
-        epic: '🏔️',
-        improvement: '💡',
-      };
-      const tLower = (issue.issueType || '').toLowerCase();
-      const typeIcon = typeIcons[tLower] || '📋';
-
-      const sCategory = (issue.statusCategory || '').toLowerCase();
-      const sName = (issue.status || '').toLowerCase();
-      let statusIcon = '⚪';
-      if (sCategory === 'done' || sName === 'done' || sName === 'closed' || sName === 'resolved') {
-        statusIcon = '🟢';
-      } else if (sName.includes('review')) {
-        statusIcon = '🟣';
-      } else if (sCategory === 'indeterminate' || sName.includes('progress') || sName.includes('active')) {
-        statusIcon = '🟡';
-      }
-
-      const pLower = (issue.priority || '').toLowerCase();
-      let priorityIcon = '🟡';
-      if (pLower.includes('high') || pLower.includes('blocker') || pLower.includes('critical')) {
-        priorityIcon = '🔴';
-      } else if (pLower.includes('low') || pLower.includes('trivial')) {
-        priorityIcon = '🟢';
-      }
-
-      const text =
-        `🎫 **[${issue.key}](${issue.url}): ${escapeHtml(issue.summary)}**\n\n` +
-        `- **Type**: ${typeIcon} ${issue.issueType}\n` +
-        `- **Status**: ${statusIcon} ${issue.status}\n` +
-        `- **Priority**: ${priorityIcon} ${issue.priority}\n` +
-        `- **Assignee**: 👤 ${issue.assignee}`;
-
+      const text = this.formatJiraIssueMessage(issue);
       await sendReply(event.conversationId, event, text);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
     } catch (err) {

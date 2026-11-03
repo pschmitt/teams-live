@@ -132,6 +132,7 @@ export function loadConfig(configPath) {
   const opsgenie = {
     on_call_key: getString(fileConfig.opsgenie?.on_call_key) || process.env.OPSGENIE_ON_CALL_KEY || '',
     support_key: getString(fileConfig.opsgenie?.support_key) || process.env.OPSGENIE_SUPPORT_KEY || '',
+    edge_key: getString(fileConfig.opsgenie?.edge_key) || process.env.OPSGENIE_EDGE_KEY || '',
     on_call_schedule_id:
       getString(fileConfig.opsgenie?.on_call_schedule_id) ||
       process.env.OPSGENIE_ON_CALL_SCHEDULE_ID ||

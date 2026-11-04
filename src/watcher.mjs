@@ -1925,6 +1925,42 @@ export class MergeRequestWatcher {
     }
   }
 
+  isMrWatched(conversationId, project, iid, messageId = null) {
+    const norm = (id) => {
+      try {
+        return decodeURIComponent(String(id || ''));
+      } catch {
+        return String(id || '');
+      }
+    };
+    const targetConv = norm(conversationId);
+    const projLower = (project || '').toLowerCase();
+    const projBase = projLower.split('/').pop();
+
+    const matchesMr = (m) => {
+      if (String(m.iid) !== String(iid)) return false;
+      const mProj = (m.project || '').toLowerCase();
+      return mProj === projLower || mProj.split('/').pop() === projBase;
+    };
+
+    if (messageId) {
+      const key = `${conversationId}/${messageId}`;
+      const entry = this.watched.get(key);
+      if (entry && (entry.mrs || []).some(matchesMr)) {
+        return true;
+      }
+    }
+
+    for (const entry of this.watched.values()) {
+      if (norm(entry.conversationId) === targetConv) {
+        if ((entry.mrs || []).some(matchesMr)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   isSlashCommand(text) {
     if (!text) return false;
     const trimmed = text.trim();
@@ -1961,17 +1997,28 @@ export class MergeRequestWatcher {
     // 1. Direct MR links in the command arguments (e.g. "/approve https://..."):
     const directText = args.join(' ');
     const directLinks = deduplicateMrs(this.gitlab.findMrLinks(directText));
-    if (directLinks.length > 0) return directLinks;
+    if (directLinks.length > 0) {
+      directLinks.source = 'args';
+      directLinks.isDirectReply = false;
+      return directLinks;
+    }
 
     // 2. Direct MR links in the command message itself (or HTML quote block):
     const htmlLinks = deduplicateMrs(this.gitlab.findMrLinks(event.rawHtml || '', { allowQuotes: true }));
-    if (htmlLinks.length > 0) return htmlLinks;
+    if (htmlLinks.length > 0) {
+      htmlLinks.source = 'quote';
+      const quoteMatch = (event.rawHtml || '').match(/itemid=["']?(\d+)["']?/i);
+      htmlLinks.sourceMessageId = quoteMatch ? quoteMatch[1] : null;
+      htmlLinks.isDirectReply = args.length === 0 && htmlLinks.length === 1;
+      return htmlLinks;
+    }
 
     // 3. Fallback: Search conversation history for the most recent message from another user with an MR link
     try {
       const thread = await getThreadMessages(event.conversationId, { limit: 15 });
       if (thread.ok && Array.isArray(thread.value?.messages)) {
         const msgs = [...thread.value.messages].sort((a, b) => Number(b.id || 0) - Number(a.id || 0));
+        let interveningHumanMessages = 0;
         for (const msg of msgs) {
           if (String(msg.id) === String(event.messageId)) continue;
           if (botSentMessageIds.has(String(msg.id))) continue;
@@ -1983,8 +2030,13 @@ export class MergeRequestWatcher {
           const links = deduplicateMrs(this.gitlab.findMrLinks(msgText, { allowQuotes: true }));
           if (links.length > 0) {
             log(`Found target MR in preceding message ${msg.id}: ${links.map((l) => `${l.project}!${l.iid}`).join(', ')}`);
+            links.source = 'preceding';
+            links.sourceMessageId = String(msg.id);
+            links.interveningHumanMessages = interveningHumanMessages;
+            links.isDirectReply = args.length === 0 && links.length === 1 && interveningHumanMessages === 0;
             return links;
           }
+          interveningHumanMessages++;
         }
       }
     } catch (err) {
@@ -2084,12 +2136,21 @@ export class MergeRequestWatcher {
       await this.gitlab.approveMr(mr.project, mr.iid);
       log(`Approved ${mr.project}!${mr.iid} successfully`);
 
-      const pipelineNote = pipe ? '' : ' _(no CI pipeline)_';
-      await sendReply(
-        event.conversationId,
-        event,
-        `✅ Approved [${mrRef}](${mrUrl})${titleLine}${pipelineNote}`
+      const isSimpleDirectReply = Boolean(
+        allMrs.isDirectReply &&
+        this.isMrWatched(event.conversationId, mr.project, mr.iid, allMrs.sourceMessageId)
       );
+
+      if (!isSimpleDirectReply) {
+        const pipelineNote = pipe ? '' : ' _(no CI pipeline)_';
+        await sendReply(
+          event.conversationId,
+          event,
+          `✅ Approved [${mrRef}](${mrUrl})${titleLine}${pipelineNote}`
+        );
+      } else {
+        log(`Skipping 'Approved' reply for ${mr.project}!${mr.iid} in ${event.conversationId} because it is a direct response to a watched MR message`);
+      }
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
 
       // Trigger immediate status check of watched entries so reactions update

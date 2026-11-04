@@ -1388,10 +1388,13 @@ export class MergeRequestWatcher {
     lines.push(`🎉 **Merged** [${mrRef}](${mrUrl})${targetBranch}`);
 
     const pipe = mrDetails?.pipeline;
+    const pipeStatus = pipe?.status || mr.lastReportedPipelineStatus;
+    const pipeIcon = pipeStatus ? getCiStatusEmoji(pipeStatus) : '🏗️';
     if (pipe) {
-      lines.push(`🏗️ [Pipeline #${pipe.id}](${pipe.web_url})`);
+      lines.push(`${pipeIcon} [Pipeline #${pipe.id}](${pipe.web_url})`);
     } else if (mr.lastReportedPipelineId) {
-      lines.push(`🏗️ Pipeline #${mr.lastReportedPipelineId}`);
+      const pipeUrl = this.gitlab.pipelineLink(mr.project, mr.lastReportedPipelineId);
+      lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
     const msg = lines.join('\n\n');
@@ -1441,9 +1444,9 @@ export class MergeRequestWatcher {
     const pipeId = pipe?.id || jobData.pipeline_id;
     if (pipeId) {
       const pipeUrl = pipe?.web_url || this.gitlab.pipelineLink(project, pipeId);
-      const pipeIcon = pipe?.status ? getCiStatusEmoji(pipe.status) : '';
-      const pipeStatusText = pipe?.status ? ` (${pipeIcon} ${pipe.status})` : '';
-      lines.push(`🏗️ [Pipeline #${pipeId}](${pipeUrl})${pipeStatusText}`);
+      const pipeIcon = pipe?.status ? getCiStatusEmoji(pipe.status) : '🏗️';
+      const pipeStatusText = pipe?.status ? ` (${pipe.status})` : '';
+      lines.push(`${pipeIcon} [Pipeline #${pipeId}](${pipeUrl})${pipeStatusText}`);
     }
 
     if (mr) {
@@ -2380,7 +2383,8 @@ export class MergeRequestWatcher {
         const title = mrState.title || mr.title;
         const titleLine = title ? `💬 **${title}**\n\n` : '';
         const pipe = mrState.pipeline;
-        const pipeText = pipe ? `🏗️ [#${pipe.id} (${pipe.status})](${pipe.web_url})` : 'none';
+        const pipeIcon = pipe?.status ? getCiStatusEmoji(pipe.status) : '🏗️';
+        const pipeText = pipe ? `${pipeIcon} [#${pipe.id} (${pipe.status})](${pipe.web_url})` : 'none';
         const rebaseText = mrState.needsRebase
           ? `⚠️ Needs rebase (${mrState.hasConflicts ? 'conflicts' : 'behind'})`
           : '✅ Up to date';

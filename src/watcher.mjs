@@ -28,7 +28,7 @@ import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
 
 const HEADSUP_PREFIX = 'headsup: ';
-const CI_PREFIX = 'CI pipeline ';
+const CI_PREFIX = 'CI pipeline';
 const CI_JOB_PREFIX = 'CI job ';
 // Teams rejects more than 3 edits per 5 seconds, so stay just below that rate.
 const SNAKE_FRAMES = 40;
@@ -1048,6 +1048,7 @@ export class MergeRequestWatcher {
       t.includes('Status check failed') ||
       t.includes('Weather lookup failed') ||
       t.includes('🌤️') ||
+      t.includes('🦊 [') ||
       t.includes('🎫 [') ||
       t.includes('🚨 [Alert') ||
       t.includes('Failed to fetch Jira issue') ||
@@ -1251,7 +1252,6 @@ export class MergeRequestWatcher {
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
     const title = mrDetails?.title || mr.title;
     const titleLine = title ? `💬 **${title}**` : '';
-    const pipeText = pipeline ? `🏗️ [Pipeline #${pipeline.id}](${pipeline.web_url})` : '';
     const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
 
     let approvalLine = '';
@@ -1267,16 +1267,17 @@ export class MergeRequestWatcher {
       : '';
 
     const lines = [];
+    lines.push(`🦊 [${mrRef}](${mrUrl})`);
     if (titleLine) {
       lines.push(titleLine);
     }
-    lines.push(
-      pipeline
-        ? `${icon} ${CI_PREFIX}**${statusText}** for [${mrRef}](${mrUrl})`
-        : `[${mrRef}](${mrUrl})`
-    );
-    if (pipeText) {
-      lines.push(pipeText);
+    if (pipeline) {
+      const pipeUrl = pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null);
+      lines.push(
+        pipeUrl
+          ? `${icon} [${CI_PREFIX}](${pipeUrl}) **${statusText}**`
+          : `${icon} ${CI_PREFIX} **${statusText}**`
+      );
     }
     lines.push(approvalLine);
     if (rebaseLine) {

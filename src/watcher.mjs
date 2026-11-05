@@ -35,34 +35,107 @@ const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
 
-const HELP_TEXT =
-  '🤖 **teams-live slash commands**:\n\n' +
-  '- `/approve [link|all]`: Approves target MR (or `/approve all` for all eligible human MRs with green/no pipeline).\n' +
-  '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).\n' +
-  '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).\n' +
-  '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.\n' +
-  '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.\n' +
-  '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.\n' +
-  '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).\n' +
-  '- `/alerts` (or `/opsgenie`) [oncall|support]: Open alerts in the CKS OpsGenie queues.\n' +
-  '- `/oncall` (or `/whoisoncall`): Lists currently active on-call engineers (Platform & Support).\n' +
-  '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).\n' +
-  '- `/issue` (or `/ticket`) [KEY]: Fetches details and status for a Jira issue.\n' +
-  '- `/standup` (or `/today`): Summarizes your assigned Jira tasks and open GitLab MRs.\n' +
-  '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.\n' +
-  '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.\n' +
-  '- `/flip`: Flips a coin (Heads or Tails).\n' +
-  '- `/roll` (or `/dice`) [expr]: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).\n' +
-  '- `/weather [location]`: Shows current weather for location (default: Berlin).\n' +
-  '- `/random`: Outputs a random fact.\n' +
-  '- `/marco`: Diagnostic round-trip latency and echo probe.\n' +
-  '- `/snake`: Plays a round of snake by editing one message.\n' +
-  '- `/leaderboard`: Shows top users by bot interactions and command usage.\n' +
-  '- `/exec <cmd>`: Executes a command.\n' +
-  '- `/sudo [cmd]`: Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].\n' +
-  '- `/about`: Bot info, GitHub repository link, and developer support.\n' +
-  '- `/help` (or `/usage`): Lists supported slash commands.\n\n' +
-  '_Target an MR by replying to its message or sending the command immediately after._';
+const COMMAND_CATEGORIES = [
+  {
+    id: 'gitlab',
+    title: '🦊 **GitLab**',
+    aliases: ['gitlab', 'mr', 'mrs', 'ci', 'pipeline'],
+    commands: [
+      '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).',
+      '- `/approve [link|all]`: Approves target MR (or `/approve all` for all eligible human MRs with green/no pipeline).',
+      '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).',
+      '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).',
+      '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.',
+      '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.',
+      '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.',
+    ],
+    footer: '_Target an MR by replying to its message or sending the command immediately after._',
+  },
+  {
+    id: 'jira',
+    title: '🎫 **Jira & Planning**',
+    aliases: ['jira', 'planning', 'tickets', 'ticket', 'issue', 'issues', 'sprint'],
+    commands: [
+      '- `/standup` (or `/today`): Summarizes your assigned Jira tasks and open GitLab MRs.',
+      '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).',
+      '- `/issue` (or `/ticket`) [KEY]: Fetches details and status for a Jira issue.',
+    ],
+  },
+  {
+    id: 'ops',
+    title: '🚨 **Operations & On-Call**',
+    aliases: ['ops', 'operations', 'opsgenie', 'alerts', 'oncall', 'whoisoncall'],
+    commands: [
+      '- `/alerts` (or `/opsgenie`) [oncall|support]: Open alerts in the CKS OpsGenie queues.',
+      '- `/oncall` (or `/whoisoncall`): Lists currently active on-call engineers (Platform & Support).',
+    ],
+  },
+  {
+    id: 'tools',
+    title: '📅 **Productivity & Tools**',
+    aliases: ['tools', 'tool', 'productivity', 'util', 'utils', 'utilities'],
+    commands: [
+      '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
+      '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
+      '- `/weather [location]`: Shows current weather for location (default: Berlin).',
+      '- `/leaderboard`: Shows top users by bot interactions and command usage.',
+    ],
+  },
+  {
+    id: 'fun',
+    title: '🎲 **Fun & Games**',
+    aliases: ['fun', 'games', 'game'],
+    commands: [
+      '- `/flip`: Flips a coin (Heads or Tails).',
+      '- `/roll` (or `/dice`) [expr]: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).',
+      '- `/snake`: Plays a round of snake by editing one message.',
+      '- `/random`: Outputs a random fact.',
+    ],
+  },
+  {
+    id: 'admin',
+    title: '⚙️ **General & Admin**',
+    aliases: ['admin', 'general', 'system', 'sudo'],
+    commands: [
+      '- `/help` (or `/usage`) [category]: Lists supported slash commands (or filter by category).',
+      '- `/about`: Bot info, GitHub repository link, and developer support.',
+      '- `/marco`: Diagnostic round-trip latency and echo probe.',
+      '- `/sudo [cmd]` (or `/admin`): Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].',
+      '- `/exec <cmd>`: Executes a command [admin only].',
+    ],
+  },
+];
+
+function buildHelpText(category = null) {
+  if (category) {
+    const q = category.toLowerCase().trim();
+    if (q !== 'all') {
+      const match = COMMAND_CATEGORIES.find((c) => c.id === q || c.aliases.includes(q));
+      if (match) {
+        const lines = [`🤖 **teams-live slash commands** — ${match.title}:\n`];
+        lines.push(...match.commands);
+        if (match.footer) {
+          lines.push(`\n${match.footer}`);
+        }
+        return lines.join('\n');
+      }
+      const available = COMMAND_CATEGORIES.map((c) => `\`${c.id}\``).join(', ');
+      return `❓ Unknown category \`${category}\`. Available categories: ${available}, or use \`/help\` for all.`;
+    }
+  }
+
+  const sections = ['🤖 **teams-live slash commands**:'];
+  for (const cat of COMMAND_CATEGORIES) {
+    sections.push(`${cat.title}:\n${cat.commands.join('\n')}`);
+  }
+  sections.push(
+    '_Target an MR by replying to its message or sending the command immediately after._\n\n' +
+    '_Tip: Use `/help <category>` (e.g. `/help gitlab`, `/help jira`, `/help fun`) to filter._'
+  );
+  return sections.join('\n\n');
+}
+
+const HELP_TEXT = buildHelpText();
 
 const ABOUT_TEXT =
   '🧢 **teams-live** — Microsoft Teams integration daemon for GitLab, Jira, and OpsGenie.\n\n' +
@@ -3838,9 +3911,11 @@ export class MergeRequestWatcher {
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
-  async executeHelpCommand(event) {
+  async executeHelpCommand(event, args = []) {
     log(`Executing /help in ${event.conversationId}...`);
-    await sendReply(event.conversationId, event, HELP_TEXT);
+    const category = args[0] || null;
+    const text = buildHelpText(category);
+    await sendReply(event.conversationId, event, text);
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
   }
 
@@ -4384,7 +4459,7 @@ export class MergeRequestWatcher {
     } else if (command === '/about') {
       await this.executeAboutCommand(event);
     } else if (command === '/help' || command === '/usage') {
-      await this.executeHelpCommand(event);
+      await this.executeHelpCommand(event, args);
     } else {
       let bestMatch = null;
       let minDistance = Infinity;

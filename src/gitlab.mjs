@@ -288,6 +288,21 @@ export class GitLabClient {
     );
   }
 
+  async updateMr(project, iid, params = {}) {
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}`,
+      { method: 'PUT', body: params }
+    );
+  }
+
+  async closeMr(project, iid) {
+    return await this.updateMr(project, iid, { state_event: 'close' });
+  }
+
+  async reopenMr(project, iid) {
+    return await this.updateMr(project, iid, { state_event: 'reopen' });
+  }
+
   async getApprovals(project, iid) {
     return await this.request(`projects/${encodeURIComponent(project)}/merge_requests/${iid}/approvals`);
   }

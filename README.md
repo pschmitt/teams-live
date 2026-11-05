@@ -20,17 +20,19 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
 - **Calendar & Meetings**: Queries Microsoft Teams EMEA MiddleTier calendar for remaining weekly meetings with clickable Teams join links.
 - **Slash Commands**:
   - **GitLab**:
-    - `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).
     - `/approve [link|all]`: Approves target GitLab MR (or `/approve all` for all eligible human MRs with green/no pipeline in the group).
-    - `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).
-    - `/rebase [link]`: Triggers conflict-free GitLab MR rebase.
-    - `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.
     - `/ci` (or `/pipeline`) `[link]`: Detailed CI pipeline status, stages, and failed jobs.
+    - `/close [link]`: Closes the target MR.
+    - `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).
+    - `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).
+    - `/rebase [link]`: Triggers conflict-free GitLab MR rebase.
+    - `/reopen [link]`: Reopens a closed target MR.
+    - `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.
     - `/status [link]`: Checks CI, approvals, and rebase state for the target MR.
   - **Jira & Planning**:
-    - `/standup` (or `/today`): Summarizes your assigned Jira sprint tasks and open GitLab MRs.
-    - `/sprint` (or `/jira`): Active Jira sprint tickets and assignees.
     - `/issue` (or `/ticket`) `[KEY]`: Jira issue details, type, status, and assignee.
+    - `/sprint` (or `/jira`): Active Jira sprint tickets and assignees.
+    - `/standup` (or `/today`): Summarizes your assigned Jira sprint tasks and open GitLab MRs.
   - **Operations & On-Call**:
     - `/alerts` (or `/opsgenie`) `[oncall|support]`: Live OpsGenie alerts and on-duty responders.
     - `/oncall` (or `/whoisoncall`): Active on-call engineers across Platform and Support.
@@ -38,18 +40,18 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
     - `/meetings` (or `/cal`, `/calendar`): Remaining weekly agenda with direct meeting links.
     - `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.
     - `/weather [location]`: Current weather observations via wttr.in.
-    - `/leaderboard`: Tracks and ranks chat interactions and command usage.
   - **Fun & Games**:
     - `/flip`: Flips a coin (Heads or Tails).
+    - `/leaderboard`: Tracks and ranks chat interactions and command usage.
+    - `/random`: Random trivia facts.
     - `/roll` (or `/dice`) `[expr]`: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).
     - `/snake`: Plays an interactive round of Snake by editing a message.
-    - `/random`: Random trivia facts.
   - **General & Admin**:
-    - `/help` (or `/usage`) `[category]`: Lists supported slash commands (or filter by category).
     - `/about`: Source repository and project information.
+    - `/exec <cmd>`: Executes a command [admin only].
+    - `/help` (or `/usage`) `[category]`: Lists supported slash commands (or filter by category).
     - `/marco`: Diagnostic round-trip latency and echo probe.
     - `/sudo [cmd]` (or `/admin`): Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].
-    - `/exec <cmd>`: Executes a command [admin only].
 
 ## License & Development
 

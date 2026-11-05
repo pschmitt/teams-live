@@ -41,13 +41,15 @@ const COMMAND_CATEGORIES = [
     title: '🦊 **GitLab**',
     aliases: ['gitlab', 'mr', 'mrs', 'ci', 'pipeline'],
     commands: [
-      '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).',
       '- `/approve [link|all]`: Approves target MR (or `/approve all` for all eligible human MRs with green/no pipeline).',
-      '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).',
-      '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).',
-      '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.',
-      '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.',
       '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.',
+      '- `/close [link]`: Closes the target MR.',
+      '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).',
+      '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).',
+      '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).',
+      '- `/reopen [link]`: Reopens a closed target MR.',
+      '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.',
+      '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.',
     ],
     footer: '_Target an MR by replying to its message or sending the command immediately after._',
   },
@@ -56,9 +58,9 @@ const COMMAND_CATEGORIES = [
     title: '🎫 **Jira & Planning**',
     aliases: ['jira', 'planning', 'tickets', 'ticket', 'issue', 'issues', 'sprint'],
     commands: [
-      '- `/standup` (or `/today`): Summarizes your assigned Jira tasks and open GitLab MRs.',
-      '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).',
       '- `/issue` (or `/ticket`) [KEY]: Fetches details and status for a Jira issue.',
+      '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).',
+      '- `/standup` (or `/today`): Summarizes your assigned Jira tasks and open GitLab MRs.',
     ],
   },
   {
@@ -78,18 +80,18 @@ const COMMAND_CATEGORIES = [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
-      '- `/leaderboard`: Shows top users by bot interactions and command usage.',
     ],
   },
   {
     id: 'fun',
     title: '🎲 **Fun & Games**',
-    aliases: ['fun', 'games', 'game'],
+    aliases: ['fun', 'games', 'game', 'leaderboard'],
     commands: [
       '- `/flip`: Flips a coin (Heads or Tails).',
+      '- `/leaderboard`: Shows top users by bot interactions and command usage.',
+      '- `/random`: Outputs a random fact.',
       '- `/roll` (or `/dice`) [expr]: Rolls dice (e.g. `/roll`, `/roll d20`, `/roll 2d6`).',
       '- `/snake`: Plays a round of snake by editing one message.',
-      '- `/random`: Outputs a random fact.',
     ],
   },
   {
@@ -97,11 +99,11 @@ const COMMAND_CATEGORIES = [
     title: '⚙️ **General & Admin**',
     aliases: ['admin', 'general', 'system', 'sudo'],
     commands: [
-      '- `/help` (or `/usage`) [category]: Lists supported slash commands (or filter by category).',
       '- `/about`: Bot info, GitHub repository link, and developer support.',
+      '- `/exec <cmd>`: Executes a command [admin only].',
+      '- `/help` (or `/usage`) [category]: Lists supported slash commands (or filter by category).',
       '- `/marco`: Diagnostic round-trip latency and echo probe.',
       '- `/sudo [cmd]` (or `/admin`): Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].',
-      '- `/exec <cmd>`: Executes a command [admin only].',
     ],
   },
 ];
@@ -144,49 +146,51 @@ const ABOUT_TEXT =
   '_Maintained by @Philipp Schmitt._';
 
 const KNOWN_COMMANDS = [
-  '/approve',
-  '/merge',
+  '/about',
   '/accept',
-  '/rebase',
-  '/status',
-  '/retry',
-  '/ci',
-  '/pipeline',
-  '/mrs',
+  '/admin',
   '/alerts',
-  '/opsgenie',
-  '/oncall',
-  '/whoisoncall',
-  '/sprint',
-  '/jira',
-  '/issue',
-  '/ticket',
-  '/standup',
-  '/today',
-  '/meetings',
+  '/approve',
+  '/ban',
+  '/bans',
   '/cal',
   '/calendar',
-  '/poll',
-  '/flip',
-  '/roll',
+  '/ci',
+  '/close',
   '/dice',
-  '/weather',
-  '/random',
-  '/marco',
-  '/snake',
-  '/leaderboard',
-  '/kick',
-  '/ban',
-  '/unban',
-  '/bans',
   '/exec',
-  '/sudo',
-  '/admin',
-  '/restart',
-  '/reauth',
-  '/about',
+  '/flip',
   '/help',
+  '/issue',
+  '/jira',
+  '/kick',
+  '/leaderboard',
+  '/marco',
+  '/meetings',
+  '/merge',
+  '/mrs',
+  '/oncall',
+  '/opsgenie',
+  '/pipeline',
+  '/poll',
+  '/random',
+  '/reauth',
+  '/rebase',
+  '/reopen',
+  '/restart',
+  '/retry',
+  '/roll',
+  '/snake',
+  '/sprint',
+  '/standup',
+  '/status',
+  '/sudo',
+  '/ticket',
+  '/today',
+  '/unban',
   '/usage',
+  '/weather',
+  '/whoisoncall',
 ];
 
 function levenshteinDistance(a, b) {
@@ -2665,6 +2669,155 @@ export class MergeRequestWatcher {
     }
   }
 
+  async executeCloseCommand(event, args) {
+    log(`Executing /close command from ${event.from || event.fromMri} in ${event.conversationId}...`);
+    const allMrs = await this.findTargetMrsForCommand(event, args);
+    const mrs = allMrs.slice(0, 1);
+    if (mrs.length === 0) {
+      await sendReply(
+        event.conversationId,
+        event,
+        '❌ No merge request found to close. Quote a message containing an MR or send `/close` immediately following it.'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const mr = mrs[0];
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
+
+    try {
+      const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+      const title = mrState?.title || mr.title;
+      const titleLine = title ? `\n\n💬 **${title}**` : '';
+      const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mrState) : null;
+      const jiraLine = jiraTicket ? `\n\n🎫 [${jiraTicket.key}](${jiraTicket.url})` : '';
+
+      if (mrState.status === 'closed') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `ℹ️ [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nis already closed.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+        return;
+      }
+
+      if (mrState.status === 'merged') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ Cannot close [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nMR is already merged.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      log(`Closing ${mr.project}!${mr.iid} via GitLab API...`);
+      await this.gitlab.closeMr(mr.project, mr.iid);
+      log(`Closed ${mr.project}!${mr.iid} successfully`);
+
+      await sendReply(
+        event.conversationId,
+        event,
+        `🚫 Closed [${mrRef}](${mrUrl})${titleLine}${jiraLine}`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+
+      this.checkAllWatched().catch((err) => log(`Post-close check failed: ${err.message}`));
+    } catch (err) {
+      log(`Error closing ${mr.project}!${mr.iid}: ${err.message}`);
+      const titleLine = mr.title ? `\n\n💬 **${mr.title}**` : '';
+      await sendReply(
+        event.conversationId,
+        event,
+        `❌ Failed to close [${mrRef}](${mrUrl})${titleLine}: ${err.message}`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
+  async executeReopenCommand(event, args) {
+    log(`Executing /reopen command from ${event.from || event.fromMri} in ${event.conversationId}...`);
+    const allMrs = await this.findTargetMrsForCommand(event, args);
+    const mrs = allMrs.slice(0, 1);
+    if (mrs.length === 0) {
+      await sendReply(
+        event.conversationId,
+        event,
+        '❌ No merge request found to reopen. Quote a message containing an MR or send `/reopen` immediately following it.'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const mr = mrs[0];
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
+
+    try {
+      const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+      const title = mrState?.title || mr.title;
+      const titleLine = title ? `\n\n💬 **${title}**` : '';
+      const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mrState) : null;
+      const jiraLine = jiraTicket ? `\n\n🎫 [${jiraTicket.key}](${jiraTicket.url})` : '';
+
+      if (mrState.status === 'merged') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ Cannot reopen [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nMR is already merged.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      if (mrState.status !== 'closed') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `ℹ️ [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nis already open.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+        return;
+      }
+
+      log(`Reopening ${mr.project}!${mr.iid} via GitLab API...`);
+      await this.gitlab.reopenMr(mr.project, mr.iid);
+      log(`Reopened ${mr.project}!${mr.iid} successfully`);
+
+      if (allMrs.sourceMessageId) {
+        await this.watchMessage(
+          event.conversationId,
+          allMrs.sourceMessageId,
+          event.from,
+          mrUrl,
+          event.fromMri,
+          { isHistory: false }
+        ).catch(() => {});
+      }
+
+      await sendReply(
+        event.conversationId,
+        event,
+        `🔓 Reopened [${mrRef}](${mrUrl})${titleLine}${jiraLine}`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+
+      this.checkAllWatched().catch((err) => log(`Post-reopen check failed: ${err.message}`));
+    } catch (err) {
+      log(`Error reopening ${mr.project}!${mr.iid}: ${err.message}`);
+      const titleLine = mr.title ? `\n\n💬 **${mr.title}**` : '';
+      await sendReply(
+        event.conversationId,
+        event,
+        `❌ Failed to reopen [${mrRef}](${mrUrl})${titleLine}: ${err.message}`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeRebaseCommand(event, args) {
     log(`Executing /rebase command from ${event.from || event.fromMri} in ${event.conversationId}...`);
     const mrs = await this.findTargetMrsForCommand(event, args);
@@ -4398,6 +4551,10 @@ export class MergeRequestWatcher {
       await this.executeApproveCommand(event, args);
     } else if (command === '/merge' || command === '/accept') {
       await this.executeMergeCommand(event, args);
+    } else if (command === '/close') {
+      await this.executeCloseCommand(event, args);
+    } else if (command === '/reopen') {
+      await this.executeReopenCommand(event, args);
     } else if (command === '/rebase') {
       await this.executeRebaseCommand(event, args);
     } else if (command === '/status') {

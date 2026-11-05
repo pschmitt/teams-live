@@ -445,6 +445,8 @@ export class GitLabClient {
       project,
       iid,
       title: mr.title,
+      description: mr.description,
+      source_branch: mr.source_branch,
       draft: isDraft,
       web_url: mr.web_url,
       target_branch: mr.target_branch,

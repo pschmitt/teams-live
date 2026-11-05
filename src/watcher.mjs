@@ -624,6 +624,7 @@ export class MergeRequestWatcher {
                 title: m.title ?? null,
                 lastReportedTitle: m.lastReportedTitle ?? m.title ?? null,
                 lastReportedDraft: m.lastReportedDraft ?? null,
+                lastReportedJiraKey: m.lastReportedJiraKey ?? null,
                 status: m.status ?? null,
                 ciMessageServerId: m.ciMessageServerId ?? null,
                 lastReportedPipelineId: m.lastReportedPipelineId ?? null,
@@ -690,6 +691,7 @@ export class MergeRequestWatcher {
             title: m.title ?? null,
             lastReportedTitle: m.lastReportedTitle ?? m.title ?? null,
             lastReportedDraft: m.lastReportedDraft ?? null,
+            lastReportedJiraKey: m.lastReportedJiraKey ?? null,
             status: m.status,
             ciMessageServerId: m.ciMessageServerId,
             lastReportedPipelineId: m.lastReportedPipelineId,
@@ -1097,6 +1099,7 @@ export class MergeRequestWatcher {
           title: savedMr?.title ?? mr.title ?? null,
           lastReportedTitle: savedMr?.lastReportedTitle ?? savedMr?.title ?? mr.title ?? null,
           lastReportedDraft: savedMr?.lastReportedDraft ?? null,
+          lastReportedJiraKey: savedMr?.lastReportedJiraKey ?? null,
           status: savedMr?.status ?? initialMrStatus,
           ciMessageServerId: savedMr?.ciMessageServerId ?? null,
           lastReportedPipelineId: savedMr?.lastReportedPipelineId ?? null,
@@ -1255,6 +1258,7 @@ export class MergeRequestWatcher {
       mrDetails?.needsRebase ||
       mrDetails?.titleChanged ||
       mrDetails?.draftChanged ||
+      mrDetails?.jiraChanged ||
       (!entry.isHistory && !mr.ciMessageServerId)
     ) {
       shouldNotify = true;
@@ -1267,6 +1271,16 @@ export class MergeRequestWatcher {
     const title = mrDetails?.title || mr.title;
     const titleLine = title ? `💬 **${title}**` : '';
     const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
+
+    const jiraTicket =
+      mrDetails?.jiraTicket ||
+      (this.jira?.findAssociatedIssue
+        ? this.jira.findAssociatedIssue({
+            title,
+            description: mrDetails?.description,
+            source_branch: mrDetails?.source_branch,
+          })
+        : null);
 
     let approvalLine = '';
     if (isApproved) {
@@ -1284,6 +1298,9 @@ export class MergeRequestWatcher {
     lines.push(`🦊 [${mrRef}](${mrUrl})`);
     if (titleLine) {
       lines.push(titleLine);
+    }
+    if (jiraTicket) {
+      lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
     }
     if (pipeline) {
       const pipeUrl = pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null);
@@ -1401,6 +1418,19 @@ export class MergeRequestWatcher {
       lines.push(titleLine);
     }
     lines.push(`🎉 **Merged** [${mrRef}](${mrUrl})${targetBranch}`);
+
+    const jiraTicket =
+      mrDetails?.jiraTicket ||
+      (this.jira?.findAssociatedIssue
+        ? this.jira.findAssociatedIssue({
+            title,
+            description: mrDetails?.description,
+            source_branch: mrDetails?.source_branch,
+          })
+        : null);
+    if (jiraTicket) {
+      lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
+    }
 
     const pipe = mrDetails?.pipeline;
     const pipeStatus = pipe?.status || mr.lastReportedPipelineStatus;
@@ -1733,6 +1763,16 @@ export class MergeRequestWatcher {
           mr.lastReportedDraft !== undefined &&
           mr.lastReportedDraft !== isDraft;
 
+        const jiraTicket = this.jira?.findAssociatedIssue
+          ? this.jira.findAssociatedIssue({
+              title: currentTitle,
+              description: mrState.description,
+              source_branch: mrState.source_branch,
+            })
+          : null;
+        const currentJiraKey = jiraTicket?.key || null;
+        const jiraChanged = mr.lastReportedJiraKey !== currentJiraKey;
+
         if (mrState.title && mr.title !== mrState.title) {
           mr.title = mrState.title;
         }
@@ -1764,6 +1804,7 @@ export class MergeRequestWatcher {
             rebaseChanged ||
             titleChanged ||
             draftChanged ||
+            jiraChanged ||
             needsInitialComment)
         ) {
           if (
@@ -1771,12 +1812,15 @@ export class MergeRequestWatcher {
             mr.lastReportedPipelineStatus !== null ||
             mr.lastReportedApprovalStatus !== null ||
             mr.lastReportedNeedsRebase !== null ||
-            mr.lastReportedTitle !== null
+            mr.lastReportedTitle !== null ||
+            mr.lastReportedJiraKey !== null
           ) {
             await this.handleCiStatusComment(entry, mr, pipe, {
               ...mrState,
               titleChanged,
               draftChanged,
+              jiraChanged,
+              jiraTicket,
             });
           }
           if (pipe) {
@@ -1790,12 +1834,16 @@ export class MergeRequestWatcher {
             mr.lastReportedTitle = currentTitle;
           }
           mr.lastReportedDraft = isDraft;
+          mr.lastReportedJiraKey = currentJiraKey;
         }
 
         // Merged status check (with in-place update)
         if (mrState.status === 'merged' && mr.status !== 'merged') {
           if (!entry.isHistory || mr.status !== null) {
-            await this.handleMergedComment(entry, mr, mrState);
+            await this.handleMergedComment(entry, mr, {
+              ...mrState,
+              jiraTicket,
+            });
           }
         }
 
@@ -2488,6 +2536,8 @@ export class MergeRequestWatcher {
         const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
         const title = mrState.title || mr.title;
         const titleLine = title ? `💬 **${title}**\n\n` : '';
+        const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mrState) : null;
+        const jiraLine = jiraTicket ? `🎫 [${jiraTicket.key}](${jiraTicket.url})\n\n` : '';
         const pipe = mrState.pipeline;
         const pipeIcon = pipe?.status ? getCiStatusEmoji(pipe.status) : '🏗️';
         const pipeText = pipe ? `${pipeIcon} [#${pipe.id} (${pipe.status})](${pipe.web_url})` : 'none';
@@ -2501,7 +2551,7 @@ export class MergeRequestWatcher {
             : '⏳ **Not approved yet**';
         const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}`;
 
-        await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${statusText}`);
+        await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${jiraLine}${statusText}`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       } catch (err) {
         const titleText = mr.title ? `: ${mr.title}` : '';
@@ -2595,6 +2645,8 @@ export class MergeRequestWatcher {
       const displayRef = groupPrefix ? fullRef.replace(groupPrefix, '') : fullRef;
       const mention = this.userDirectory.formatMention(mr.author);
       const statusEmoji = getMrStatusEmoji(mr);
+      const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mr) : null;
+      const jiraBadge = jiraTicket ? ` 🎫 [${jiraTicket.key}](${jiraTicket.url})` : '';
 
       const needsRebase =
         !mr.rebase_in_progress &&
@@ -2611,7 +2663,7 @@ export class MergeRequestWatcher {
         rebaseBadge = ' ⚠️ _rebase!_';
       }
 
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url}): ${mr.title} (${mention})${rebaseBadge}`;
+      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${rebaseBadge}`;
     };
 
     if (mode === 'user' && userFilter) {

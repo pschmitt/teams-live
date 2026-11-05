@@ -71,7 +71,7 @@ export class JiraClient {
           seen.add(key);
           results.push({
             key,
-            url: this.baseUrl ? `${this.baseUrl}/browse/${key}` : rawUrl,
+            url: this.issueUrl(key) || rawUrl,
           });
         }
       } catch {
@@ -80,6 +80,86 @@ export class JiraClient {
     }
 
     return results;
+  }
+
+  issueUrl(key) {
+    if (!key) return '';
+    const cleanKey = String(key).trim().toUpperCase();
+    return `${this.baseUrl || 'https://jira.wiit.one'}/browse/${cleanKey}`;
+  }
+
+  findAssociatedIssues(item = {}) {
+    if (!item) return [];
+    const results = [];
+    const seen = new Set();
+
+    const addKey = (rawKey) => {
+      if (!rawKey) return;
+      const key = String(rawKey).trim().toUpperCase();
+      const parts = key.split('-');
+      if (parts.length !== 2) return;
+      const [proj, num] = parts;
+      if (!num || /^0+$/.test(num)) return; // Skip placeholders like CKS-0000
+      if (/^(cve|rfc|iso|sha|arm|x86)$/i.test(proj)) return; // Skip common false positives
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({
+          key,
+          url: this.issueUrl(key),
+        });
+      }
+    };
+
+    const isBot = Boolean(
+      item.isBot ||
+      item.author?.username?.toLowerCase().includes('renovate') ||
+      item.author?.username?.toLowerCase().includes('bot') ||
+      (Array.isArray(item.labels) && item.labels.includes('renovate'))
+    );
+
+    // 1. Explicit ticket label in description (e.g. "Ticket: ...", "Jira: ...", "Closes: ...", "Relates to: ...")
+    if (item.description) {
+      const labelMatches = item.description.matchAll(
+        /(?:^|\n)\s*(?:ticket|jira|issue|closes|fixes|resolves|relates to)[\s:]+(?:https?:\/\/[^\s"'<>]+\/browse\/)?([a-zA-Z][a-zA-Z0-9]+-\d+)/gim
+      );
+      for (const m of labelMatches) {
+        addKey(m[1]);
+      }
+    }
+
+    // 2. Source branch (e.g. story/CKS-123-..., feature/HELP-1590-..., bugfix/IMGT-456-...)
+    if (item.source_branch) {
+      const branchMatch =
+        item.source_branch.match(/^(?:story|feature|hotfix|bugfix|fix)\/([a-zA-Z][a-zA-Z0-9]+)-(\d+)/i) ||
+        item.source_branch.match(/^([a-zA-Z][a-zA-Z0-9]+)-(\d+)/i);
+      if (branchMatch) {
+        addKey(`${branchMatch[1]}-${branchMatch[2]}`);
+      }
+    }
+
+    // 3. Title (e.g. "[CKS-484] ...", "CKS-484: ...", "... (CKS-626)")
+    if (item.title) {
+      const titleMatches = item.title.matchAll(/(?:^|[\[\(\s])([a-zA-Z][a-zA-Z0-9]+)-([1-9]\d*)(?:[\]\)\s:]|$)/g);
+      for (const m of titleMatches) {
+        addKey(`${m[1]}-${m[2]}`);
+      }
+    }
+
+    // 4. Description full Jira browse URL (for non-bots, searching before any "Release Notes" section)
+    if (item.description && !isBot) {
+      const textToSearch = item.description.split(/###?\s*Release Notes/i)[0];
+      const urlMatches = textToSearch.matchAll(/https?:\/\/[^\s"'<>]+\/browse\/([a-zA-Z][a-zA-Z0-9]+-\d+)/gi);
+      for (const m of urlMatches) {
+        addKey(m[1]);
+      }
+    }
+
+    return results;
+  }
+
+  findAssociatedIssue(item = {}) {
+    const issues = this.findAssociatedIssues(item);
+    return issues.length > 0 ? issues[0] : null;
   }
 
   async getCurrentUser() {

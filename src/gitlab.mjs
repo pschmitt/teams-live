@@ -417,6 +417,14 @@ export class GitLabClient {
       state === 'opened' &&
       (detailedMergeStatus === 'need_rebase' || hasConflicts || mr.should_be_rebased === true || diverged);
 
+    const isDraft = Boolean(
+      mr.draft ||
+      mr.work_in_progress ||
+      mr.title?.startsWith('Draft:') ||
+      mr.title?.startsWith('WIP:') ||
+      detailedMergeStatus === 'draft_status'
+    );
+
     let latestPipeline = null;
     try {
       const pipelines = await this.getPipelines(project, iid);
@@ -437,6 +445,7 @@ export class GitLabClient {
       project,
       iid,
       title: mr.title,
+      draft: isDraft,
       web_url: mr.web_url,
       target_branch: mr.target_branch,
       state,

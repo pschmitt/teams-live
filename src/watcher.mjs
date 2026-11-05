@@ -621,6 +621,9 @@ export class MergeRequestWatcher {
               mrs: (saved.mrs ?? []).map((m) => ({
                 project: m.project,
                 iid: m.iid,
+                title: m.title ?? null,
+                lastReportedTitle: m.lastReportedTitle ?? m.title ?? null,
+                lastReportedDraft: m.lastReportedDraft ?? null,
                 status: m.status ?? null,
                 ciMessageServerId: m.ciMessageServerId ?? null,
                 lastReportedPipelineId: m.lastReportedPipelineId ?? null,
@@ -684,6 +687,9 @@ export class MergeRequestWatcher {
           mrs: (v.mrs || []).map((m) => ({
             project: m.project,
             iid: m.iid,
+            title: m.title ?? null,
+            lastReportedTitle: m.lastReportedTitle ?? m.title ?? null,
+            lastReportedDraft: m.lastReportedDraft ?? null,
             status: m.status,
             ciMessageServerId: m.ciMessageServerId,
             lastReportedPipelineId: m.lastReportedPipelineId,
@@ -1089,6 +1095,8 @@ export class MergeRequestWatcher {
           project: mr.project,
           iid: mr.iid,
           title: savedMr?.title ?? mr.title ?? null,
+          lastReportedTitle: savedMr?.lastReportedTitle ?? savedMr?.title ?? mr.title ?? null,
+          lastReportedDraft: savedMr?.lastReportedDraft ?? null,
           status: savedMr?.status ?? initialMrStatus,
           ciMessageServerId: savedMr?.ciMessageServerId ?? null,
           lastReportedPipelineId: savedMr?.lastReportedPipelineId ?? null,
@@ -1242,7 +1250,13 @@ export class MergeRequestWatcher {
     }
 
     const isApproved = Boolean(mrDetails?.approved || mrDetails?.status === 'approved');
-    if (isApproved || mrDetails?.needsRebase || (!entry.isHistory && !mr.ciMessageServerId)) {
+    if (
+      isApproved ||
+      mrDetails?.needsRebase ||
+      mrDetails?.titleChanged ||
+      mrDetails?.draftChanged ||
+      (!entry.isHistory && !mr.ciMessageServerId)
+    ) {
       shouldNotify = true;
     }
 
@@ -1709,6 +1723,16 @@ export class MergeRequestWatcher {
         seenProjects.add(projectKey);
         updatedMrs.push(mr);
 
+        const currentTitle = mrState.title || mr.title;
+        const isDraft = Boolean(
+          mrState.draft ?? (currentTitle?.startsWith('Draft:') || currentTitle?.startsWith('WIP:'))
+        );
+        const titleChanged = Boolean(currentTitle && mr.lastReportedTitle && mr.lastReportedTitle !== currentTitle);
+        const draftChanged =
+          mr.lastReportedDraft !== null &&
+          mr.lastReportedDraft !== undefined &&
+          mr.lastReportedDraft !== isDraft;
+
         if (mrState.title && mr.title !== mrState.title) {
           mr.title = mrState.title;
         }
@@ -1734,10 +1758,26 @@ export class MergeRequestWatcher {
 
         if (
           mrState.status !== 'merged' &&
-          (pipelineChanged || approvalChanged || approversChanged || rebaseChanged || needsInitialComment)
+          (pipelineChanged ||
+            approvalChanged ||
+            approversChanged ||
+            rebaseChanged ||
+            titleChanged ||
+            draftChanged ||
+            needsInitialComment)
         ) {
-          if (!entry.isHistory || mr.lastReportedPipelineStatus !== null || mr.lastReportedApprovalStatus !== null || mr.lastReportedNeedsRebase !== null) {
-            await this.handleCiStatusComment(entry, mr, pipe, mrState);
+          if (
+            !entry.isHistory ||
+            mr.lastReportedPipelineStatus !== null ||
+            mr.lastReportedApprovalStatus !== null ||
+            mr.lastReportedNeedsRebase !== null ||
+            mr.lastReportedTitle !== null
+          ) {
+            await this.handleCiStatusComment(entry, mr, pipe, {
+              ...mrState,
+              titleChanged,
+              draftChanged,
+            });
           }
           if (pipe) {
             mr.lastReportedPipelineId = pipe.id;
@@ -1746,6 +1786,10 @@ export class MergeRequestWatcher {
           mr.lastReportedApprovalStatus = isApproved;
           mr.lastReportedApprovedBy = approversKey;
           mr.lastReportedNeedsRebase = needsRebase;
+          if (currentTitle) {
+            mr.lastReportedTitle = currentTitle;
+          }
+          mr.lastReportedDraft = isDraft;
         }
 
         // Merged status check (with in-place update)

@@ -38,6 +38,7 @@ const REBASE_PREFIX = '**Rebase';
 const HELP_TEXT =
   '🤖 **teams-live slash commands**:\n\n' +
   '- `/approve [link|all]`: Approves target MR (or `/approve all` for all eligible human MRs with green/no pipeline).\n' +
+  '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).\n' +
   '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).\n' +
   '- `/status [link]`: Checks CI, approvals, and rebase state for the target MR.\n' +
   '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.\n' +
@@ -71,6 +72,8 @@ const ABOUT_TEXT =
 
 const KNOWN_COMMANDS = [
   '/approve',
+  '/merge',
+  '/accept',
   '/rebase',
   '/status',
   '/retry',
@@ -2381,6 +2384,155 @@ export class MergeRequestWatcher {
     }
   }
 
+  async executeMergeCommand(event, args) {
+    log(`Executing /merge command from ${event.from || event.fromMri} in ${event.conversationId}...`);
+    const allMrs = await this.findTargetMrsForCommand(event, args);
+    const mrs = allMrs.slice(0, 1);
+    if (mrs.length === 0) {
+      await sendReply(
+        event.conversationId,
+        event,
+        '❌ No merge request found to merge. Quote a message containing an MR or send `/merge` immediately following it.'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    const mr = mrs[0];
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
+
+    try {
+      const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+      const title = mrState?.title || mr.title;
+      const titleLine = title ? `\n\n💬 **${title}**` : '';
+      const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mrState) : null;
+      const jiraLine = jiraTicket ? `\n\n🎫 [${jiraTicket.key}](${jiraTicket.url})` : '';
+
+      // Precondition 1: Already merged?
+      if (mrState.status === 'merged') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `ℹ️ [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nis already merged.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+        return;
+      }
+
+      // Precondition 2: Closed?
+      if (mrState.status === 'closed') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nMR is closed.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      // Precondition 3: Draft / WIP?
+      if (mrState.draft) {
+        await sendReply(
+          event.conversationId,
+          event,
+          `⚠️ Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nMR is marked as Draft/WIP. Undraft it before merging.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+        return;
+      }
+
+      // Precondition 4: Conflicts / needs rebase?
+      if (mrState.hasConflicts || mrState.detailedMergeStatus === 'conflict') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `💥 Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nBranch has merge conflicts.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      if (mrState.needsRebase || mrState.detailedMergeStatus === 'need_rebase') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `⚠️ Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nBranch needs to be rebased (\`${mrState.detailedMergeStatus || 'need_rebase'}\`).`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+        return;
+      }
+
+      // Precondition 5: CI check (if failed)
+      const pipe = mrState.pipeline;
+      if (pipe && pipe.status === 'failed') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nCI pipeline [#${pipe.id}](${pipe.web_url}) has failed.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      // Precondition 6: Approvals check (if GitLab requires approvals and not approved yet)
+      if (mrState.detailedMergeStatus === 'not_approved') {
+        await sendReply(
+          event.conversationId,
+          event,
+          `⏳ Cannot merge [${mrRef}](${mrUrl})${titleLine}${jiraLine}\n\nMR is not approved yet.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+        return;
+      }
+
+      // Action: Merge MR via GitLab API
+      log(`Merging ${mr.project}!${mr.iid} via GitLab API...`);
+      const mergeResult = await this.gitlab.mergeMr(mr.project, mr.iid, {
+        shouldRemoveSourceBranch: true,
+        mergeWhenPipelineSucceeds: true,
+      });
+      log(`Merged ${mr.project}!${mr.iid} result: state=${mergeResult?.state}, autoMerge=${mergeResult?.merge_when_pipeline_succeeds}`);
+
+      if (mergeResult?.state === 'merged') {
+        const targetBranch = mrState?.target_branch ? ` into \`${mrState.target_branch}\`` : '';
+        await sendReply(
+          event.conversationId,
+          event,
+          `🎉 Merged [${mrRef}](${mrUrl})${targetBranch}${titleLine}${jiraLine}`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      } else if (mergeResult?.merge_when_pipeline_succeeds) {
+        const pipeNote = pipe ? ` when [Pipeline #${pipe.id}](${pipe.web_url}) succeeds` : ' when CI succeeds';
+        await sendReply(
+          event.conversationId,
+          event,
+          `⏳ Auto-merge enabled for [${mrRef}](${mrUrl})${titleLine}${jiraLine} (will merge${pipeNote}).`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.running).catch(() => {});
+      } else {
+        await sendReply(
+          event.conversationId,
+          event,
+          `✅ Merge requested for [${mrRef}](${mrUrl})${titleLine}${jiraLine} (status: \`${mergeResult?.state || 'in progress'}\`).`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      }
+
+      // Trigger immediate status check of watched entries so reactions and comment update
+      this.checkAllWatched().catch((err) => log(`Post-merge check failed: ${err.message}`));
+    } catch (err) {
+      log(`Error merging ${mr.project}!${mr.iid}: ${err.message}`);
+      const titleLine = mr.title ? `\n\n💬 **${mr.title}**` : '';
+      await sendReply(
+        event.conversationId,
+        event,
+        `❌ Merge failed for [${mrRef}](${mrUrl})${titleLine}: ${err.message}`
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeRebaseCommand(event, args) {
     log(`Executing /rebase command from ${event.from || event.fromMri} in ${event.conversationId}...`);
     const mrs = await this.findTargetMrsForCommand(event, args);
@@ -4110,6 +4262,8 @@ export class MergeRequestWatcher {
 
     if (command === '/approve') {
       await this.executeApproveCommand(event, args);
+    } else if (command === '/merge' || command === '/accept') {
+      await this.executeMergeCommand(event, args);
     } else if (command === '/rebase') {
       await this.executeRebaseCommand(event, args);
     } else if (command === '/status') {

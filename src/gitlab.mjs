@@ -256,6 +256,31 @@ export class GitLabClient {
     );
   }
 
+  async mergeMr(project, iid, {
+    shouldRemoveSourceBranch = true,
+    mergeWhenPipelineSucceeds = true,
+    squash = null,
+    sha = null,
+  } = {}) {
+    const body = {};
+    if (shouldRemoveSourceBranch !== null) {
+      body.should_remove_source_branch = shouldRemoveSourceBranch;
+    }
+    if (mergeWhenPipelineSucceeds !== null) {
+      body.merge_when_pipeline_succeeds = mergeWhenPipelineSucceeds;
+    }
+    if (squash !== null) {
+      body.squash = squash;
+    }
+    if (sha) {
+      body.sha = sha;
+    }
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${iid}/merge`,
+      { method: 'PUT', body }
+    );
+  }
+
   async rebaseMr(project, iid, { skipCi = false } = {}) {
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${iid}/rebase`,

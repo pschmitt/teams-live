@@ -70,6 +70,8 @@ export function loadConfig(configPath) {
     },
     rebase: rawNotify.rebase ?? fileConfig.gitlab?.notify_rebase ?? true,
     approval_lost: rawNotify.approval_lost ?? fileConfig.gitlab?.notify_approval_lost ?? false,
+    merged: rawNotify.merged ?? fileConfig.gitlab?.notify_merged ?? true,
+    closed: rawNotify.closed ?? fileConfig.gitlab?.notify_closed ?? true,
   };
 
   const gitlab = {
@@ -87,6 +89,8 @@ export function loadConfig(configPath) {
     notify_ci_on_success: notify.ci.on_success,
     notify_approval_lost: notify.approval_lost,
     notify_rebase: notify.rebase,
+    notify_merged: notify.merged,
+    notify_closed: notify.closed,
     max_watch_duration_seconds: Number(
       fileConfig.gitlab?.max_watch_duration_seconds ?? process.env.TEAMS_MAX_WATCH_DURATION ?? 7200
     ),

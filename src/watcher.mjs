@@ -1469,6 +1469,79 @@ export class MergeRequestWatcher {
     }
   }
 
+  async handleClosedComment(entry, mr, mrDetails) {
+    const notifyClosed = this.config.gitlab.notify?.closed ?? true;
+    if (!notifyClosed) return;
+
+    let title = mrDetails?.title || mr.title;
+    if (!title) {
+      try {
+        const mrData = await this.gitlab.getMr(mr.project, mr.iid);
+        title = mrData?.title || null;
+        if (title) mr.title = title;
+      } catch {
+        // ignore
+      }
+    }
+
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
+    const titleLine = title ? `💬 **${title}**` : '';
+
+    const jiraTicket =
+      mrDetails?.jiraTicket ||
+      (this.jira?.findAssociatedIssue
+        ? this.jira.findAssociatedIssue({
+            title,
+            description: mrDetails?.description,
+            source_branch: mrDetails?.source_branch,
+          })
+        : null);
+
+    const lines = [];
+    lines.push(`🦊 [${mrRef}](${mrUrl})`);
+    if (titleLine) {
+      lines.push(titleLine);
+    }
+    if (jiraTicket) {
+      lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
+    }
+    lines.push('🚫 **Closed** (unmerged)');
+
+    const pipe = mrDetails?.pipeline;
+    const pipeStatus = pipe?.status || mr.lastReportedPipelineStatus;
+    const pipeIcon = pipeStatus ? getCiStatusEmoji(pipeStatus) : '🏗️';
+    if (pipe) {
+      lines.push(`${pipeIcon} [Pipeline #${pipe.id}](${pipe.web_url})`);
+    } else if (mr.lastReportedPipelineId) {
+      const pipeUrl = this.gitlab.pipelineLink(mr.project, mr.lastReportedPipelineId);
+      lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
+    }
+
+    const msg = lines.join('\n\n');
+
+    if (mr.ciMessageServerId) {
+      log(`updating CI status comment to closed for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating CI comment to closed failed (${updateResult.error?.message}), falling back to other comment or reply`);
+    }
+
+    if (mr.rebaseMessageServerId) {
+      log(`updating rebase comment to closed for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, mr.rebaseMessageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating rebase comment to closed failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting closed comment for ${mr.project}!${mr.iid}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      mr.ciMessageServerId = String(result.value.timestamp);
+      this.saveState();
+    }
+  }
+
   formatJobStatusMessage(jobData, project, mr = null) {
     const icon = getCiStatusEmoji(jobData.status);
     const statusText = jobData.status || 'unknown';
@@ -1850,6 +1923,16 @@ export class MergeRequestWatcher {
           }
         }
 
+        // Closed status check (with in-place update)
+        if (mrState.status === 'closed' && mr.status !== 'closed') {
+          if (!entry.isHistory || mr.status !== null) {
+            await this.handleClosedComment(entry, mr, {
+              ...mrState,
+              jiraTicket,
+            });
+          }
+        }
+
         mr.status = mrState.status;
       }
 
@@ -1963,6 +2046,8 @@ export class MergeRequestWatcher {
       if ((entry.mrs || []).length > 0) {
         if (statuses.length > 0 && statuses.every((s) => s === 'merged')) {
           overallStatus = 'merged';
+        } else if (statuses.length > 0 && statuses.every((s) => s === 'closed')) {
+          overallStatus = 'closed';
         } else if (anyCiFailed || anyJobFailed || anyPipeFailed) {
           overallStatus = 'failed';
         } else if (statuses.includes('approved')) {
@@ -2168,44 +2253,9 @@ export class MergeRequestWatcher {
       const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
       const title = mrState?.title || mr.title;
       const titleLine = title ? `\n\n💬 **${title}**` : '';
-
-      // Precondition 1: Rebase check
-      if (mrState.needsRebase || mrState.hasConflicts) {
-        const reason = mrState.hasConflicts ? 'merge conflicts' : 'needs to be rebased';
-        await sendReply(
-          event.conversationId,
-          event,
-          `⚠️ Cannot approve [${mrRef}](${mrUrl})${titleLine}\n\nBranch has ${reason} (\`${mrState.detailedMergeStatus || 'need_rebase'}\`).`
-        );
-        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
-        return;
-      }
-
-      // Precondition 2: CI check (green pipeline or no pipeline at all)
       const pipe = mrState.pipeline;
-      if (pipe) {
-        if (pipe.status === 'running' || pipe.status === 'pending') {
-          await sendReply(
-            event.conversationId,
-            event,
-            `⏳ Cannot approve [${mrRef}](${mrUrl})${titleLine}\n\nCI pipeline [#${pipe.id}](${pipe.web_url}) is still ${pipe.status}.`
-          );
-          this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.running).catch(() => {});
-          return;
-        }
 
-        if (pipe.status !== 'success') {
-          await sendReply(
-            event.conversationId,
-            event,
-            `❌ Cannot approve [${mrRef}](${mrUrl})${titleLine}\n\nCI pipeline [#${pipe.id}](${pipe.web_url}) is ${pipe.status}.`
-          );
-          this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
-          return;
-        }
-      }
-
-      // Precondition 3: Already approved?
+      // Precondition 1: Already approved?
       if (mrState.status === 'approved' || mrState.approved) {
         await sendReply(
           event.conversationId,
@@ -2216,7 +2266,7 @@ export class MergeRequestWatcher {
         return;
       }
 
-      // Precondition 4: Already merged or closed?
+      // Precondition 2: Already merged or closed?
       if (mrState.status === 'merged' || mrState.status === 'closed') {
         await sendReply(
           event.conversationId,
@@ -2238,11 +2288,20 @@ export class MergeRequestWatcher {
       );
 
       if (!isSimpleDirectReply) {
-        const pipelineNote = pipe ? '' : ' _(no CI pipeline)_';
+        const notes = [];
+        if (pipe && pipe.status !== 'success') {
+          notes.push(`CI pipeline is ${pipe.status}`);
+        } else if (!pipe) {
+          notes.push('no CI pipeline');
+        }
+        if (mrState.needsRebase || mrState.hasConflicts) {
+          notes.push(mrState.hasConflicts ? 'merge conflicts' : 'needs rebase');
+        }
+        const noteText = notes.length > 0 ? ` _(${notes.join(', ')})_` : '';
         await sendReply(
           event.conversationId,
           event,
-          `✅ Approved [${mrRef}](${mrUrl})${titleLine}${pipelineNote}`
+          `✅ Approved [${mrRef}](${mrUrl})${titleLine}${noteText}`
         );
       } else {
         log(`Skipping 'Approved' reply for ${mr.project}!${mr.iid} in ${event.conversationId} because it is a direct response to a watched MR message`);

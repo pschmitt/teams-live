@@ -189,6 +189,7 @@ export const STATUS_REACTIONS = {
   approved: 'like', // 👍 approved, not merged
   merged: '2705_whiteheavycheckmark', // ✅
   failed: '274c_crossmark', // ❌ CI failed
+  closed: '274c_crossmark', // ❌ closed unmerged
 };
 
 export const COMMAND_REACTIONS = {

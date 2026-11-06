@@ -66,7 +66,7 @@ export class HRWorksClient {
       }
 
       const json = await resp.json();
-      return json.response || json;
+      return json.service_response || json.response || json;
     } catch (err) {
       console.warn(`[HRWorksClient] Call to ${service} failed: ${err.message}`);
       return null;

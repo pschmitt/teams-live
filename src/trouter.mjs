@@ -38,7 +38,7 @@ async function register(auth, epid, appId, templateKey, path) {
         templateKey,
         platformUIVersion: CLIENT_VERSION,
       },
-      registrationId: randomUUID(),
+      registrationId: appId === 'TeamsCDLWebWorker' ? epid : randomUUID(),
       nodeId: '',
       transports: { TROUTER: [{ context: '', path, ttl: REGISTRATION_TTL }] },
     }),

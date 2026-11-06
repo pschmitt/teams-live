@@ -5207,6 +5207,9 @@ export class MergeRequestWatcher {
       this.getOrFetchMeetingsText({ force: true }).catch((err) => log(`Precompute /meetings failed: ${err.message}`)),
     ]);
     log('Precompute /mrs, /alerts, /sprint, and /meetings cache completed');
+    if (this.hrworks) {
+      this.hrworks.prefetchAllAbsences().catch((err) => log(`Precompute HRworks absences failed: ${err.message}`));
+    }
   }
 
   startPrecompute() {

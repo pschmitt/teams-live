@@ -921,7 +921,7 @@ export function formatWhereisCard(person, presence = {}, { activeMeeting = null,
                    catLower.includes('home') || catLower.includes('mobil') ? '🏠' : '🌴';
       lines.push(`- 🏢 **HRworks**: None today (${icon} Upcoming: **${cat}**${dates}${status})`);
     } else if (hrworksAbsence.reason === 'not_found') {
-      lines.push('- 🏢 **HRworks**: Person not found in team calendar');
+      lines.push('- 🏢 **HRworks**: Person not found in HRworks calendar');
     } else if (hrworksAbsence.reason === 'calendar_unavailable') {
       lines.push('- ⚠️ **HRworks**: Calendar data unavailable');
     } else {

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { normalizeName, stripDiacritics } from './users.mjs';
+import { normalizeName } from './users.mjs';
 
 /**
  * Returns inclusive date strings (YYYY-MM-DD) for FullCalendar events where
@@ -24,7 +24,17 @@ export class HRWorksClient {
     this.token = config.token || null;
     this.tokenFile = config.token_file || null;
     this.cache = new Map();
-    this.cacheTtlMs = 10 * 60 * 1000; // 10 minutes cache
+    this.cacheTtlMs = 10 * 60 * 1000; // 10 minutes cache for team/single-OU
+    this.companyTtlMs = 30 * 60 * 1000; // 30 minutes cache for full company prefetch
+    this.batchSize = config.batchSize || 12;
+    this.companyData = {
+      employeesByRaw: new Map(),
+      absencesByKey: new Map(),
+      availableUnits: [],
+      lastFullPrefetchAt: 0,
+      lastTeamPrefetchAt: 0,
+      loadingPromise: null,
+    };
   }
 
   getToken() {
@@ -40,7 +50,7 @@ export class HRWorksClient {
     return this.token;
   }
 
-  async callService(service, data = {}) {
+  async callService(service, data = {}, { timeoutMs = 60000 } = {}) {
     const token = this.getToken();
     if (!token) {
       console.warn('[HRWorksClient] No Home Assistant token configured');
@@ -56,7 +66,7 @@ export class HRWorksClient {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(data),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!resp.ok) {
@@ -73,6 +83,37 @@ export class HRWorksClient {
     }
   }
 
+  mergeIntoCompanyCache(data) {
+    if (!data) return;
+    if (Array.isArray(data.available_organizational_units) && data.available_organizational_units.length > 0) {
+      this.companyData.availableUnits = data.available_organizational_units;
+    }
+    if (Array.isArray(data.employees)) {
+      for (const emp of data.employees) {
+        const key = emp.rawName || emp.displayName || emp.id;
+        if (key && emp.rawName && emp.rawName.includes(',')) {
+          this.companyData.employeesByRaw.set(key, emp);
+        } else if (key && emp.displayName && !this.companyData.employeesByRaw.has(key)) {
+          this.companyData.employeesByRaw.set(key, emp);
+        }
+      }
+    }
+    if (Array.isArray(data.absences)) {
+      for (const ab of data.absences) {
+        const key = `${ab.rawName || ab.employee || ab.resourceId}|${ab.start}|${ab.end}|${ab.category}`;
+        this.companyData.absencesByKey.set(key, ab);
+      }
+    }
+  }
+
+  getAggregatedCompanyData() {
+    if (this.companyData.employeesByRaw.size === 0) return null;
+    return {
+      employees: Array.from(this.companyData.employeesByRaw.values()),
+      absences: Array.from(this.companyData.absencesByKey.values()),
+    };
+  }
+
   async getTeamAbsences({ organizationalUnit = null, date = null } = {}) {
     const cacheKey = `${organizationalUnit || 'team'}:${date || 'current'}`;
     const cached = this.cache.get(cacheKey);
@@ -84,15 +125,81 @@ export class HRWorksClient {
     if (organizationalUnit) payload.organizational_unit = organizationalUnit;
     if (date) payload.date = date;
 
-    const data = await this.callService('get_team_absences', payload);
+    const data = await this.callService('get_team_absences', payload, { timeoutMs: 90000 });
     if (data && Array.isArray(data.employees)) {
       this.cache.set(cacheKey, {
         data,
         expiresAt: Date.now() + this.cacheTtlMs,
       });
+      this.mergeIntoCompanyCache(data);
       return data;
     }
     return null;
+  }
+
+  async getCompanyAbsences({ units = [] } = {}) {
+    const payload = {};
+    if (Array.isArray(units) && units.length > 0) {
+      payload.units = units;
+    }
+    const data = await this.callService('get_company_absences', payload, { timeoutMs: 180000 });
+    if (data) {
+      this.mergeIntoCompanyCache(data);
+      return data;
+    }
+    return null;
+  }
+
+  /**
+   * Periodically prefetches team absences and batches of organizational units across
+   * the company so `/whereis <anyone>` resolves immediately from memory.
+   */
+  async prefetchAllAbsences({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && this.companyData.lastFullPrefetchAt && now - this.companyData.lastFullPrefetchAt < this.companyTtlMs) {
+      // Still refresh immediate team if its 10m TTL expired
+      if (now - this.companyData.lastTeamPrefetchAt >= this.cacheTtlMs) {
+        await this.getTeamAbsences().catch(() => null);
+        this.companyData.lastTeamPrefetchAt = Date.now();
+      }
+      return this.getAggregatedCompanyData();
+    }
+
+    if (this.companyData.loadingPromise) {
+      return await this.companyData.loadingPromise;
+    }
+
+    this.companyData.loadingPromise = (async () => {
+      try {
+        // 1. Always fetch immediate team first (fast)
+        await this.getTeamAbsences().catch(() => null);
+        this.companyData.lastTeamPrefetchAt = Date.now();
+
+        // 2. Discover organizational units if needed
+        let units = this.companyData.availableUnits;
+        if (!Array.isArray(units) || units.length === 0) {
+          const disc = await this.getCompanyAbsences({ units: [] });
+          units = disc?.available_organizational_units || [];
+        }
+
+        if (!Array.isArray(units) || units.length === 0) {
+          return this.getAggregatedCompanyData();
+        }
+
+        // 3. Fetch organizational units in batches
+        for (let i = 0; i < units.length; i += this.batchSize) {
+          const batch = units.slice(i, i + this.batchSize);
+          await this.getCompanyAbsences({ units: batch });
+        }
+
+        this.companyData.lastFullPrefetchAt = Date.now();
+        return this.getAggregatedCompanyData();
+      } finally {
+        this.companyData.loadingPromise = null;
+      }
+    })();
+
+    return await this.companyData.loadingPromise;
   }
 
   /**
@@ -102,14 +209,42 @@ export class HRWorksClient {
   async findPersonAbsence(person, { organizationalUnit = null } = {}) {
     if (!person) return null;
 
-    // 1. Fetch team absences first
-    let calData = await this.getTeamAbsences({ organizationalUnit });
-    let employee = this.matchEmployee(person, calData?.employees);
+    let calData = null;
+    let employee = null;
 
-    // 2. If not found and person has department, try that OU
+    // 1. If a specific organizationalUnit wasn't forced, check the prefetched company-wide cache first!
+    if (!organizationalUnit) {
+      const companyAgg = this.getAggregatedCompanyData();
+      if (companyAgg) {
+        employee = this.matchEmployee(person, companyAgg.employees);
+        if (employee) {
+          calData = companyAgg;
+        }
+      }
+    }
+
+    // 2. Fetch team absences (or explicit organizationalUnit) if not already matched
+    if (!employee) {
+      const teamData = await this.getTeamAbsences({ organizationalUnit });
+      if (teamData) {
+        calData = this.getAggregatedCompanyData() || teamData;
+        employee = this.matchEmployee(person, calData.employees);
+      }
+    }
+
+    // 3. If still not found and person has department, try querying that department via getCompanyAbsences
     if (!employee && !organizationalUnit && person.department) {
-      calData = await this.getTeamAbsences({ organizationalUnit: person.department });
-      employee = this.matchEmployee(person, calData?.employees);
+      const deptData = await this.getCompanyAbsences({ units: [person.department] });
+      if (deptData && Array.isArray(deptData.employees) && deptData.employees.length > 0) {
+        calData = this.getAggregatedCompanyData() || deptData;
+        employee = this.matchEmployee(person, calData.employees);
+      } else {
+        const ouData = await this.getTeamAbsences({ organizationalUnit: person.department });
+        if (ouData) {
+          calData = this.getAggregatedCompanyData() || ouData;
+          employee = this.matchEmployee(person, calData.employees);
+        }
+      }
     }
 
     if (!calData || !Array.isArray(calData.absences)) {
@@ -134,7 +269,7 @@ export class HRWorksClient {
       };
     }
 
-    // 3. Find absences for this employee
+    // 4. Find absences for this employee
     const empAbsences = calData.absences.filter((a) => {
       if (a.resourceId && a.resourceId === employee.id) return true;
       if (a.rawName && a.rawName === employee.rawName) return true;
@@ -152,7 +287,7 @@ export class HRWorksClient {
       };
     }
 
-    // 4. Calculate today in Berlin time (YYYY-MM-DD)
+    // 5. Calculate today in Berlin time (YYYY-MM-DD)
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(new Date());
 
     let activeToday = null;
@@ -194,8 +329,6 @@ export class HRWorksClient {
     const pDisplayNorm = normalizeName(person.displayName);
     const pGivenNorm = normalizeName(person.givenName);
     const pSurNorm = normalizeName(person.surname);
-    const pEmail = (person.email || person.userPrincipalName || '').toLowerCase();
-    const pEmailPrefix = pEmail ? pEmail.split('@')[0] : '';
 
     // Direct display name match
     if (pDisplayNorm) {

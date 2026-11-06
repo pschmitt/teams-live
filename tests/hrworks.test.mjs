@@ -37,6 +37,7 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
           absences: [
             {
               resourceId: '0-1',
+              rawName: 'Schmitt, Philipp',
               category: 'Ausgleich Ü',
               start: '2026-11-06T00:00:00.0+01:00',
               end: '2026-11-07T00:00:00.0+01:00',
@@ -72,6 +73,116 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
   assert.ok(res3);
   assert.equal(res3.employee, null);
   assert.equal(res3.reason, 'not_found');
+});
+
+test('HRWorksClient prefetchAllAbsences batches organizational units and serves findPersonAbsence from memory', async () => {
+  const mockClient = new HRWorksClient({ url: 'https://ha.brkn.lol', token: 'fake-token', batchSize: 2 });
+  const calls = [];
+
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body || '{}');
+    calls.push({ url, body });
+
+    if (url.includes('get_team_absences')) {
+      return {
+        ok: true,
+        json: async () => ({
+          service_response: {
+            employees: [{ id: 'Schmitt, Philipp', rawName: 'Schmitt, Philipp', displayName: 'Philipp Schmitt' }],
+            absences: [],
+          },
+        }),
+      };
+    }
+
+    if (url.includes('get_company_absences')) {
+      if (!body.units || body.units.length === 0) {
+        return {
+          ok: true,
+          json: async () => ({
+            service_response: {
+              available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+              employees: [],
+              absences: [],
+            },
+          }),
+        };
+      }
+      if (body.units.includes('OpenStack')) {
+        return {
+          ok: true,
+          json: async () => ({
+            service_response: {
+              available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+              employees: [
+                {
+                  id: 'Seelbach, David',
+                  rawName: 'Seelbach, David',
+                  displayName: 'David Seelbach',
+                  firstName: 'David',
+                  lastName: 'Seelbach',
+                  unit: 'OpenStack',
+                },
+              ],
+              absences: [
+                {
+                  employee: 'David Seelbach',
+                  rawName: 'Seelbach, David',
+                  resourceId: 'Seelbach, David',
+                  category: 'Absent',
+                  start: '2026-09-27T00:00:00.0+02:00',
+                  end: '2026-11-07T00:00:00.0+01:00',
+                  status: '',
+                  unit: 'OpenStack',
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          service_response: {
+            available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+            employees: [
+              {
+                id: 'Doe, John',
+                rawName: 'Doe, John',
+                displayName: 'John Doe',
+                firstName: 'John',
+                lastName: 'Doe',
+                unit: 'Unix CC',
+              },
+            ],
+            absences: [],
+          },
+        }),
+      };
+    }
+
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  await mockClient.prefetchAllAbsences();
+  // 1 team call + 1 discovery call + 2 batch calls (size 2 for 3 units) = 4 calls
+  assert.equal(calls.length, 4);
+
+  const countBeforeLookup = calls.length;
+  const david = await mockClient.findPersonAbsence({
+    displayName: 'David Seelbach',
+    givenName: 'David',
+    surname: 'Seelbach',
+    email: 'david.seelbach@wiit.cloud',
+  });
+  // Resolved straight from prefetched cache without extra HTTP calls
+  assert.equal(calls.length, countBeforeLookup);
+  assert.ok(david);
+  assert.equal(david.employee.displayName, 'David Seelbach');
+  assert.ok(david.absence);
+  assert.equal(david.absence.category, 'Absent');
+  assert.equal(david.absence.startDate, '2026-09-27');
+  assert.equal(david.absence.endDate, '2026-11-06');
 });
 
 test('formatWhereisCard formats HRworks line for active, none, upcoming, and error', () => {
@@ -130,5 +241,5 @@ test('formatWhereisCard formats HRworks line for active, none, upcoming, and err
       reason: 'not_found',
     },
   });
-  assert.match(card5, /🏢 \*\*HRworks\*\*: Person not found in team calendar/);
+  assert.match(card5, /🏢 \*\*HRworks\*\*: Person not found in HRworks calendar/);
 });

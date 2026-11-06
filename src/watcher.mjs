@@ -17,11 +17,12 @@ import {
   getThreadMessages,
   getMessage,
   getCalendarView,
+  getUserPresence,
   searchPeople,
   resolveProfiles,
   escapeHtml,
 } from './teams.mjs';
-import { UserDirectory, normalizeName, formatContactCard, formatSearchResultsList } from './users.mjs';
+import { UserDirectory, normalizeName, formatContactCard, formatSearchResultsList, formatWhereisCard } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -76,11 +77,12 @@ const COMMAND_CATEGORIES = [
   {
     id: 'tools',
     title: '📅 **Productivity & Tools**',
-    aliases: ['tools', 'tool', 'productivity', 'util', 'utils', 'utilities', 'whois', 'directory'],
+    aliases: ['tools', 'tool', 'productivity', 'util', 'utils', 'utilities', 'whois', 'whereis', 'where', 'directory'],
     commands: [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
+      '- `/whereis [search]` (or `/where`): Checks if a person is available, in a meeting (with join link), or away.',
       '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
     ],
   },
@@ -192,6 +194,8 @@ const KNOWN_COMMANDS = [
   '/unban',
   '/usage',
   '/weather',
+  '/where',
+  '/whereis',
   '/who',
   '/whois',
   '/whoisoncall',
@@ -3113,6 +3117,115 @@ export class MergeRequestWatcher {
     }
   }
 
+  async executeWhereisCommand(event, args) {
+    const target = this.extractWhoisTarget(event, args);
+    let query = target ? target.trim() : '';
+    if (!query || query.toLowerCase() === 'me') {
+      query = event.fromMri || event.from || 'me';
+    }
+
+    try {
+      log(`Executing /whereis for "${query}" in ${event.conversationId}...`);
+      const results = await this.userDirectory.searchDirectory(query);
+      if (!results || results.length === 0) {
+        const suggestions = this.userDirectory.findSuggestions(query);
+        let tip = '';
+        if (suggestions.length > 0) {
+          const first = suggestions[0];
+          const queryCandidate = first.email || first.displayName;
+          tip = `\n\n💡 *Did you mean*: \`/whereis ${queryCandidate}\`?`;
+        }
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ No one found matching "**${escapeHtml(query)}**" in the Teams directory.${tip}`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      // Check disambiguation
+      let targetPerson = null;
+      if (results.length === 1) {
+        targetPerson = results[0];
+      } else {
+        const qNorm = normalizeName(query);
+        const qLower = query.toLowerCase();
+        const exactMatches = results.filter((r) => {
+          if (r.mri && r.mri === query) return true;
+          if (r.email && r.email.toLowerCase() === qLower) return true;
+          if (r.email && r.email.split('@')[0].toLowerCase() === qLower) return true;
+          if (r.displayName && normalizeName(r.displayName) === qNorm) return true;
+          return false;
+        });
+
+        if (exactMatches.length === 1) {
+          targetPerson = exactMatches[0];
+        } else {
+          const text = formatSearchResultsList(results, query, { command: '/whereis' });
+          await sendReply(event.conversationId, event, text);
+          this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+          return;
+        }
+      }
+
+      // Fetch Presence
+      let presenceData = {};
+      if (targetPerson.mri) {
+        try {
+          const presRes = await getUserPresence(targetPerson.mri);
+          if (presRes.ok && Array.isArray(presRes.value?.data)) {
+            presenceData = presRes.value.data[0]?.presence || {};
+          }
+        } catch (err) {
+          log(`Warning: Failed to fetch presence for ${targetPerson.mri}: ${err.message}`);
+        }
+      }
+
+      // Check active meetings from calendar
+      let activeMeeting = null;
+      try {
+        const now = new Date();
+        const calRes = await getCalendarView({
+          startDate: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+          endDate: new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+          limit: 10,
+        });
+
+        if (calRes.ok && Array.isArray(calRes.value?.meetings)) {
+          const nowMs = now.getTime();
+          const targetEmail = targetPerson.email?.toLowerCase();
+          const currentMeetings = calRes.value.meetings.filter((m) => {
+            const startMs = new Date(m.startTime).getTime();
+            const endMs = new Date(m.endTime).getTime();
+            return nowMs >= startMs - 5 * 60 * 1000 && nowMs <= endMs + 5 * 60 * 1000;
+          });
+
+          if (currentMeetings.length > 0) {
+            activeMeeting = currentMeetings.find((m) =>
+              m.organizer?.email?.toLowerCase() === targetEmail ||
+              (targetPerson.mri && m.id?.includes(targetPerson.mri))
+            ) || (presenceData.activity === 'InAMeeting' || presenceData.activity === 'InACall' ? currentMeetings[0] : null);
+          }
+        }
+      } catch (err) {
+        log(`Warning: Calendar view query failed: ${err.message}`);
+      }
+
+      const text = formatWhereisCard(targetPerson, presenceData, {
+        activeMeeting,
+        userDirectory: this.userDirectory,
+      });
+
+      await sendReply(event.conversationId, event, text);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+    } catch (err) {
+      log(`Failed to execute /whereis: ${err.message}`);
+      await sendReply(event.conversationId, event, `❌ Failed to look up user location/status: ${err.message}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeRandomCommand(event) {
     log(`Executing /random fact in ${event.conversationId}...`);
     try {
@@ -4682,6 +4795,8 @@ export class MergeRequestWatcher {
       await this.executeWeatherCommand(event, args);
     } else if (command === '/whois' || command === '/who') {
       await this.executeWhoisCommand(event, args);
+    } else if (command === '/whereis' || command === '/where') {
+      await this.executeWhereisCommand(event, args);
     } else if (command === '/random') {
       await this.executeRandomCommand(event);
     } else if (command === '/marco') {

@@ -813,7 +813,7 @@ export function formatContactCard(person, { userDirectory = null } = {}) {
 /**
  * Formats multiple search results into a clean, numbered disambiguation list.
  */
-export function formatSearchResultsList(results, query) {
+export function formatSearchResultsList(results, query, { command = '/whois' } = {}) {
   const lines = [`🔍 **Multiple contacts found matching "${query}"** (${results.length} results):\n`];
   const maxDisplay = 8;
   const displayed = results.slice(0, maxDisplay);
@@ -826,7 +826,7 @@ export function formatSearchResultsList(results, query) {
     const orgPart = person.companyName && !roleParts.includes(person.companyName) ? ` (${person.companyName})` : '';
     const detailsStr = roleParts ? `   - 💼 ${roleParts}${orgPart}` : (orgPart ? `   - 🏛️ ${orgPart}` : '');
     const emailStr = person.email ? `[${person.email}](mailto:${person.email})` : 'No email';
-    const inspectCmd = person.email ? ` • 🔎 \`/whois ${person.email}\`` : '';
+    const inspectCmd = person.email ? ` • 🔎 \`${command} ${person.email}\`` : '';
 
     lines.push(`${num}. 👤 **${name}**${mention}`);
     if (detailsStr) lines.push(detailsStr);
@@ -838,6 +838,105 @@ export function formatSearchResultsList(results, query) {
     lines.push(`_...and ${results.length - maxDisplay} more candidates. Please refine your query (e.g. with full name or email)._\n`);
   }
 
-  lines.push('_💡 Tip: Run `/whois <email | full name>` for the full contact card._');
+  lines.push(`_💡 Tip: Run \`${command} <email | full name>\` for details._`);
+  return lines.join('\n');
+}
+
+/**
+ * Formats a user's presence, location, and active meeting into a rich Markdown status card.
+ */
+export function formatWhereisCard(person, presence = {}, { activeMeeting = null, userDirectory = null } = {}) {
+  const lines = [];
+  const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
+  const mention = person.mri ? `@[${name}](${person.mri}#contact)` : `**${name}**`;
+
+  lines.push(`📍 **Where is ${mention}?**\n`);
+
+  // Presence / Status
+  const availability = presence.availability || 'Unknown';
+  const activity = presence.activity || '';
+  const isOof = presence.calendarData?.isOutOfOffice === true;
+
+  let statusText = '';
+  if (isOof) {
+    statusText = `🌴 **Out of Office**${activity === 'OffWork' ? ' (Off work)' : ''}`;
+  } else if (activity === 'InAMeeting') {
+    statusText = '🔴 **In a meeting**';
+  } else if (activity === 'InACall') {
+    statusText = '📞 **In a call**';
+  } else if (activity === 'Presenting') {
+    statusText = '🖥️ **Presenting** (Do Not Disturb)';
+  } else if (availability === 'Busy') {
+    statusText = '🔴 **Busy**';
+  } else if (availability === 'Available') {
+    statusText = '🟢 **Available**';
+  } else if (availability === 'Away') {
+    statusText = '🟡 **Away**';
+  } else if (availability === 'BeRightBack') {
+    statusText = '🟡 **Be Right Back**';
+  } else if (availability === 'DoNotDisturb') {
+    statusText = '⛔ **Do Not Disturb**';
+  } else if (availability === 'Offline') {
+    statusText = `⚪ **Offline**${activity === 'OffWork' ? ' (Off work)' : ''}`;
+  } else {
+    statusText = `⚪ **${availability}**`;
+  }
+
+  lines.push(`- **Status**: ${statusText}`);
+
+  // Active meeting information
+  if (activeMeeting) {
+    let meetingLine = `- 📅 **Meeting**: **${activeMeeting.subject || 'Scheduled Meeting'}**`;
+    if (activeMeeting.endTime) {
+      const end = new Date(activeMeeting.endTime);
+      if (!isNaN(end.getTime())) {
+        const timeStr = end.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' });
+        meetingLine += ` (until ${timeStr} CET)`;
+      }
+    }
+    lines.push(meetingLine);
+
+    if (activeMeeting.joinUrl) {
+      lines.push(`- 🔗 **Meeting Link**: [Join Meeting](${activeMeeting.joinUrl})`);
+    }
+  } else if (activity === 'InAMeeting' || activity === 'InACall') {
+    lines.push('- 📅 **Meeting**: In a call / meeting');
+  }
+
+  // Device & activity details
+  if (presence.deviceType) {
+    const devIcon = presence.deviceType.toLowerCase() === 'mobile' ? '📱' :
+                    presence.deviceType.toLowerCase() === 'web' ? '🌐' : '💻';
+    lines.push(`- ${devIcon} **Device**: ${presence.deviceType}`);
+  }
+
+  if (presence.lastActiveTime) {
+    const lastActive = new Date(presence.lastActiveTime);
+    if (!isNaN(lastActive.getTime())) {
+      const diffMs = Date.now() - lastActive.getTime();
+      const diffMins = Math.round(diffMs / 60000);
+      let timeDesc = '';
+      if (diffMins < 2) {
+        timeDesc = 'Just now';
+      } else if (diffMins < 60) {
+        timeDesc = `${diffMins}m ago`;
+      } else {
+        const hours = Math.floor(diffMins / 60);
+        const mins = diffMins % 60;
+        timeDesc = `${hours}h ${mins}m ago`;
+      }
+      const timeStr = lastActive.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' });
+      lines.push(`- 🕒 **Last active**: ${timeDesc} (${timeStr} CET)`);
+    }
+  }
+
+  // Teams communication links
+  const targetId = person.email || person.mri;
+  if (targetId) {
+    const chatUrl = `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(targetId)}`;
+    const callUrl = `https://teams.microsoft.com/l/call/0/0?users=${encodeURIComponent(targetId)}`;
+    lines.push(`- 💬 **Teams**: [Start Chat](${chatUrl}) • [Call in Teams](${callUrl})`);
+  }
+
   return lines.join('\n');
 }

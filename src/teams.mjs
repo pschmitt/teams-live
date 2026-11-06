@@ -173,6 +173,39 @@ export async function getCalendarView(options = {}) {
   return { ok: true, value: { count: meetings.length, meetings } };
 }
 
+export async function getUserPresence(mris) {
+  const authRes = requireSkypeSpacesAuth();
+  if (!authRes.ok) {
+    if (await attemptTokenRefreshOnAuthError(authRes)) {
+      return getUserPresence(mris);
+    }
+    return authRes;
+  }
+
+  const { skypeToken, spacesToken } = authRes.value;
+  const mriList = Array.isArray(mris) ? mris : [mris];
+  const payload = mriList.map((m) => (typeof m === 'string' ? { mri: m } : m));
+
+  const url = 'https://presence.teams.microsoft.com/v1/presence/getpresence/';
+  const response = await httpRequest(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${spacesToken}`,
+      Authentication: `skypetoken=${skypeToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'x-ms-client-version': '1415/26101515217',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok && (await attemptTokenRefreshOnAuthError(response))) {
+    return getUserPresence(mris);
+  }
+
+  return response;
+}
+
 export const botSentMessageIds = new Set();
 export const BOT_WATERMARK = '\u200B\u200C\u200B';
 

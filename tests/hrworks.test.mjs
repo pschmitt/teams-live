@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
 import { HRWorksClient, getInclusiveDateRange } from '../src/hrworks.mjs';
+import { formatWhereisCard } from '../src/users.mjs';
 
 const originalFetch = globalThis.fetch;
 
@@ -31,6 +32,7 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
         service_response: {
           employees: [
             { id: '0-1', rawName: 'Schmitt, Philipp', displayName: 'Philipp Schmitt' },
+            { id: '0-2', rawName: 'Herzig, Nils', displayName: 'Nils Herzig' },
           ],
           absences: [
             {
@@ -55,4 +57,78 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
   assert.equal(res.absence.category, 'Ausgleich Ü');
   assert.equal(res.absence.startDate, '2026-11-06');
   assert.equal(res.absence.endDate, '2026-11-06');
+
+  // Test employee with no absence
+  const person2 = { displayName: 'Nils Herzig', email: 'nils.herzig@wiit.cloud' };
+  const res2 = await mockClient.findPersonAbsence(person2);
+  assert.ok(res2);
+  assert.equal(res2.employee.displayName, 'Nils Herzig');
+  assert.equal(res2.absence, null);
+  assert.equal(res2.upcomingAbsence, null);
+
+  // Test employee not in team calendar
+  const person3 = { displayName: 'Jane Doe', email: 'jane.doe@wiit.cloud' };
+  const res3 = await mockClient.findPersonAbsence(person3);
+  assert.ok(res3);
+  assert.equal(res3.employee, null);
+  assert.equal(res3.reason, 'not_found');
+});
+
+test('formatWhereisCard formats HRworks line for active, none, upcoming, and error', () => {
+  const person = { displayName: 'Test User', email: 'test@wiit.cloud' };
+  const presence = { availability: 'Available', activity: 'Available' };
+
+  // 1. Active today
+  const card1 = formatWhereisCard(person, presence, {
+    hrworksAbsence: {
+      absence: {
+        category: 'Ausgleich Ü',
+        isToday: true,
+        startDate: '2026-11-06',
+        endDate: '2026-11-06',
+        status: 'Checked, OK',
+      },
+    },
+  });
+  assert.match(card1, /\*\*HRworks Today\*\*: \*\*Ausgleich Ü\*\* \[2026-11-06\] \(Checked, OK\)/);
+
+  // 2. None registered (present)
+  const card2 = formatWhereisCard(person, presence, {
+    hrworksAbsence: {
+      employee: { displayName: 'Test User' },
+      absence: null,
+      upcomingAbsence: null,
+    },
+  });
+  assert.match(card2, /🏢 \*\*HRworks\*\*: None registered \(Present\)/);
+
+  // 3. Upcoming absence
+  const card3 = formatWhereisCard(person, presence, {
+    hrworksAbsence: {
+      employee: { displayName: 'Test User' },
+      absence: null,
+      upcomingAbsence: {
+        category: 'Urlaub',
+        startDate: '2026-11-10',
+        endDate: '2026-11-12',
+      },
+    },
+  });
+  assert.match(card3, /🏢 \*\*HRworks\*\*: None today \(🌴 Upcoming: \*\*Urlaub\*\* \[2026-11-10 – 2026-11-12\]\)/);
+
+  // 4. Lookup error
+  const card4 = formatWhereisCard(person, presence, {
+    hrworksAbsence: {
+      error: 'Connection timed out',
+    },
+  });
+  assert.match(card4, /⚠️ \*\*HRworks\*\*: Lookup failed \(Connection timed out\)/);
+
+  // 5. Not found in calendar
+  const card5 = formatWhereisCard(person, presence, {
+    hrworksAbsence: {
+      reason: 'not_found',
+    },
+  });
+  assert.match(card5, /🏢 \*\*HRworks\*\*: Person not found in team calendar/);
 });

@@ -112,8 +112,26 @@ export class HRWorksClient {
       employee = this.matchEmployee(person, calData?.employees);
     }
 
-    if (!employee || !calData || !Array.isArray(calData.absences)) {
-      return null;
+    if (!calData || !Array.isArray(calData.absences)) {
+      return {
+        checked: true,
+        employee: employee || null,
+        absence: null,
+        upcomingAbsence: null,
+        allAbsences: [],
+        reason: 'calendar_unavailable',
+      };
+    }
+
+    if (!employee) {
+      return {
+        checked: true,
+        employee: null,
+        absence: null,
+        upcomingAbsence: null,
+        allAbsences: [],
+        reason: 'not_found',
+      };
     }
 
     // 3. Find absences for this employee
@@ -125,7 +143,13 @@ export class HRWorksClient {
     });
 
     if (empAbsences.length === 0) {
-      return { employee, absence: null, allAbsences: [] };
+      return {
+        checked: true,
+        employee,
+        absence: null,
+        upcomingAbsence: null,
+        allAbsences: [],
+      };
     }
 
     // 4. Calculate today in Berlin time (YYYY-MM-DD)
@@ -156,8 +180,10 @@ export class HRWorksClient {
     }
 
     return {
+      checked: true,
       employee,
-      absence: activeToday || upcoming || null,
+      absence: activeToday || null,
+      upcomingAbsence: upcoming || null,
       allAbsences: empAbsences,
     };
   }

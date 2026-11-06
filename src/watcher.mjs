@@ -3228,6 +3228,7 @@ export class MergeRequestWatcher {
           hrworksAbsence = await this.hrworks.findPersonAbsence(targetPerson);
         } catch (err) {
           log(`Warning: HRworks absence query failed: ${err.message}`);
+          hrworksAbsence = { checked: true, error: err.message };
         }
       }
 

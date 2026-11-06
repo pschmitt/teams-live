@@ -885,23 +885,48 @@ export function formatWhereisCard(person, presence = {}, { activeMeeting = null,
   lines.push(`- **Status**: ${statusText}`);
 
   // HRworks absence details
-  if (hrworksAbsence && hrworksAbsence.absence) {
-    const ab = hrworksAbsence.absence;
-    const cat = ab.category || 'Leave';
-    const status = ab.status ? ` (${ab.status})` : '';
-    let dates = '';
-    if (ab.startDate) {
-      if (ab.endDate && ab.endDate !== ab.startDate) {
-        dates = ` [${ab.startDate} – ${ab.endDate}]`;
-      } else {
-        dates = ` [${ab.startDate}]`;
+  if (hrworksAbsence) {
+    if (hrworksAbsence.error) {
+      lines.push(`- ⚠️ **HRworks**: Lookup failed (${hrworksAbsence.error})`);
+    } else if (hrworksAbsence.absence) {
+      const ab = hrworksAbsence.absence;
+      const cat = ab.category || 'Leave';
+      const status = ab.status ? ` (${ab.status})` : '';
+      let dates = '';
+      if (ab.startDate) {
+        if (ab.endDate && ab.endDate !== ab.startDate) {
+          dates = ` [${ab.startDate} – ${ab.endDate}]`;
+        } else {
+          dates = ` [${ab.startDate}]`;
+        }
       }
+      const catLower = cat.toLowerCase();
+      const icon = catLower.includes('krank') || catLower.includes('ill') ? '🤒' :
+                   catLower.includes('home') || catLower.includes('mobil') ? '🏠' : '🌴';
+      lines.push(`- ${icon} **HRworks Today**: **${cat}**${dates}${status}`);
+    } else if (hrworksAbsence.upcomingAbsence) {
+      const ab = hrworksAbsence.upcomingAbsence;
+      const cat = ab.category || 'Leave';
+      const status = ab.status ? ` (${ab.status})` : '';
+      let dates = '';
+      if (ab.startDate) {
+        if (ab.endDate && ab.endDate !== ab.startDate) {
+          dates = ` [${ab.startDate} – ${ab.endDate}]`;
+        } else {
+          dates = ` [${ab.startDate}]`;
+        }
+      }
+      const catLower = cat.toLowerCase();
+      const icon = catLower.includes('krank') || catLower.includes('ill') ? '🤒' :
+                   catLower.includes('home') || catLower.includes('mobil') ? '🏠' : '🌴';
+      lines.push(`- 🏢 **HRworks**: None today (${icon} Upcoming: **${cat}**${dates}${status})`);
+    } else if (hrworksAbsence.reason === 'not_found') {
+      lines.push('- 🏢 **HRworks**: Person not found in team calendar');
+    } else if (hrworksAbsence.reason === 'calendar_unavailable') {
+      lines.push('- ⚠️ **HRworks**: Calendar data unavailable');
+    } else {
+      lines.push('- 🏢 **HRworks**: None registered (Present)');
     }
-    const catLower = cat.toLowerCase();
-    const icon = catLower.includes('krank') || catLower.includes('ill') ? '🤒' :
-                 catLower.includes('home') || catLower.includes('mobil') ? '🏠' : '🌴';
-    const label = ab.isToday ? 'HR Absence Today' : 'Upcoming Absence';
-    lines.push(`- ${icon} **${label}**: **${cat}**${dates}${status}`);
   }
 
   // Active meeting information

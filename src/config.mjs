@@ -149,6 +149,22 @@ export function loadConfig(configPath) {
     web_base_url: (getString(fileConfig.opsgenie?.web_base_url) || process.env.OPSGENIE_WEB_BASE_URL || 'https://germanedgecloudgmbh.app.opsgenie.com').replace(/\/+$/, ''),
   };
 
+  const homeAssistant = {
+    url: (getString(fileConfig.home_assistant?.url) || process.env.HASS_URL || 'https://ha.brkn.lol').replace(/\/+$/, ''),
+    token_file: getNullableString(fileConfig.home_assistant?.token_file) || process.env.HASS_TOKEN_FILE || null,
+    token: null,
+  };
+
+  if (homeAssistant.token_file && fs.existsSync(homeAssistant.token_file)) {
+    try {
+      homeAssistant.token = fs.readFileSync(homeAssistant.token_file, 'utf8').trim();
+    } catch (e) {
+      console.warn(`Could not read Home Assistant token file ${homeAssistant.token_file}: ${e.message}`);
+    }
+  } else if (process.env.HASS_TOKEN) {
+    homeAssistant.token = process.env.HASS_TOKEN.trim();
+  }
+
   let conversations = fileConfig.conversations;
   if (!conversations || !Array.isArray(conversations) || conversations.length === 0) {
     conversations = [
@@ -168,6 +184,7 @@ export function loadConfig(configPath) {
     gitlab,
     jira,
     opsgenie,
+    home_assistant: homeAssistant,
     teams,
     conversations,
   };

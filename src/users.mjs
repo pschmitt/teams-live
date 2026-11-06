@@ -8,12 +8,12 @@ export function normalizeName(str) {
   return String(str)
     .trim()
     .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
     .replace(/ä/g, 'ae')
     .replace(/ö/g, 'oe')
     .replace(/ü/g, 'ue')
-    .replace(/ß/g, 'ss');
+    .replace(/ß/g, 'ss')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
 export function stripDiacritics(str) {
@@ -845,7 +845,7 @@ export function formatSearchResultsList(results, query, { command = '/whois' } =
 /**
  * Formats a user's presence, location, and active meeting into a rich Markdown status card.
  */
-export function formatWhereisCard(person, presence = {}, { activeMeeting = null, userDirectory = null } = {}) {
+export function formatWhereisCard(person, presence = {}, { activeMeeting = null, hrworksAbsence = null, userDirectory = null } = {}) {
   const lines = [];
   const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
   const mention = person.mri ? `@[${name}](${person.mri}#contact)` : `**${name}**`;
@@ -883,6 +883,26 @@ export function formatWhereisCard(person, presence = {}, { activeMeeting = null,
   }
 
   lines.push(`- **Status**: ${statusText}`);
+
+  // HRworks absence details
+  if (hrworksAbsence && hrworksAbsence.absence) {
+    const ab = hrworksAbsence.absence;
+    const cat = ab.category || 'Leave';
+    const status = ab.status ? ` (${ab.status})` : '';
+    let dates = '';
+    if (ab.startDate) {
+      if (ab.endDate && ab.endDate !== ab.startDate) {
+        dates = ` [${ab.startDate} – ${ab.endDate}]`;
+      } else {
+        dates = ` [${ab.startDate}]`;
+      }
+    }
+    const catLower = cat.toLowerCase();
+    const icon = catLower.includes('krank') || catLower.includes('ill') ? '🤒' :
+                 catLower.includes('home') || catLower.includes('mobil') ? '🏠' : '🌴';
+    const label = ab.isToday ? 'HR Absence Today' : 'Upcoming Absence';
+    lines.push(`- ${icon} **${label}**: **${cat}**${dates}${status}`);
+  }
 
   // Active meeting information
   if (activeMeeting) {

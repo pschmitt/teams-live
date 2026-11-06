@@ -617,11 +617,12 @@ function formatAlertsText(data, mode = 'all') {
 }
 
 export class MergeRequestWatcher {
-  constructor({ config, gitlab, jira, opsgenie, authManager, health = null }) {
+  constructor({ config, gitlab, jira, opsgenie, hrworks = null, authManager, health = null }) {
     this.config = config;
     this.gitlab = gitlab;
     this.jira = jira;
     this.opsgenie = opsgenie;
+    this.hrworks = hrworks;
     this.authManager = authManager;
     this.health = health;
     this.serviceAlertState = new Map();
@@ -3212,8 +3213,19 @@ export class MergeRequestWatcher {
         log(`Warning: Calendar view query failed: ${err.message}`);
       }
 
+      // Check HRworks absences
+      let hrworksAbsence = null;
+      if (this.hrworks) {
+        try {
+          hrworksAbsence = await this.hrworks.findPersonAbsence(targetPerson);
+        } catch (err) {
+          log(`Warning: HRworks absence query failed: ${err.message}`);
+        }
+      }
+
       const text = formatWhereisCard(targetPerson, presenceData, {
         activeMeeting,
+        hrworksAbsence,
         userDirectory: this.userDirectory,
       });
 

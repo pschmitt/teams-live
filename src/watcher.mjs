@@ -2249,15 +2249,23 @@ export class MergeRequestWatcher {
   }
 
   async setCommandReaction(conversationId, messageId, reactionKey) {
+    if (!conversationId || !messageId) {
+      log(`Cannot set command reaction: missing conversationId (${conversationId}) or messageId (${messageId})`);
+      return;
+    }
     try {
       if (reactionKey !== COMMAND_REACTIONS.pending) {
-        await Promise.allSettled([
-          removeReaction(conversationId, messageId, COMMAND_REACTIONS.pending),
-          addReaction(conversationId, messageId, reactionKey),
-        ]);
-        return;
+        try {
+          await removeReaction(conversationId, messageId, COMMAND_REACTIONS.pending);
+        } catch {}
       }
-      return await addReaction(conversationId, messageId, reactionKey);
+      const res = await addReaction(conversationId, messageId, reactionKey);
+      if (res && !res.ok) {
+        log(`Warning: Failed to set reaction ${reactionKey} on ${messageId} in ${conversationId}: ${res.error?.message || JSON.stringify(res.error)}`);
+      } else {
+        log(`Set reaction ${reactionKey} on ${messageId} in ${conversationId}`);
+      }
+      return res;
     } catch (err) {
       log(`Failed to set reaction ${reactionKey} on ${messageId} in ${conversationId}: ${err.message}`);
     }
@@ -2395,7 +2403,7 @@ export class MergeRequestWatcher {
       } else {
         log(`Skipping 'Approved' reply for ${mr.project}!${mr.iid} in ${event.conversationId} because it is a direct response to a watched MR message`);
       }
-      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success);
 
       // Trigger immediate status check of watched entries so reactions update
       this.checkAllWatched().catch((err) => log(`Post-approval check failed: ${err.message}`));

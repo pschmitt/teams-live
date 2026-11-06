@@ -5,7 +5,7 @@ import {
   editMessage,
   parseContentWithMentionsAndLinks,
 } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
-import { addReaction, removeReaction } from 'msteams-mcp/dist/api/chatsvc-reactions.js';
+import { addReaction as mcpAddReaction, removeReaction as mcpRemoveReaction } from 'msteams-mcp/dist/api/chatsvc-reactions.js';
 import { getCalendarView as mcpGetCalendarView } from 'msteams-mcp/dist/api/calendar-api.js';
 import { requireSkypeSpacesAuth } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { httpRequest } from 'msteams-mcp/dist/utils/http.js';
@@ -19,8 +19,6 @@ export {
   getThreadMessages,
   getMessage,
   editMessage,
-  addReaction,
-  removeReaction,
   markdownToTeamsHtml,
   parseContentWithMentionsAndLinks,
 };
@@ -47,6 +45,22 @@ async function attemptTokenRefreshOnAuthError(res) {
     console.error(new Date().toISOString(), '[teams] Token refresh threw:', err.message);
   }
   return false;
+}
+
+export async function addReaction(conversationId, messageId, emojiKey) {
+  let res = await mcpAddReaction(conversationId, messageId, emojiKey);
+  if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+    res = await mcpAddReaction(conversationId, messageId, emojiKey);
+  }
+  return res;
+}
+
+export async function removeReaction(conversationId, messageId, emojiKey) {
+  let res = await mcpRemoveReaction(conversationId, messageId, emojiKey);
+  if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+    res = await mcpRemoveReaction(conversationId, messageId, emojiKey);
+  }
+  return res;
 }
 
 function isRetryableNetworkError(res) {

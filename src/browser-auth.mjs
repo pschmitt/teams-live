@@ -75,8 +75,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
   let openedTabId = null;
   let targetId = target?.id;
 
-  if (!targetId) {
-    log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
+  const openAuthTab = async () => {
     const query = new URLSearchParams({ url: 'https://teams.cloud.microsoft/', session_id: sessionId });
     const openRes = await fetch(`${url}${prefix}/json/new?${query}`, {
       method: 'PUT',
@@ -90,6 +89,11 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     targetId = newPage.id;
     openedTabId = targetId;
     await new Promise(r => setTimeout(r, 6000));
+  };
+
+  if (!targetId) {
+    log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
+    await openAuthTab();
   }
 
   // 3. Export auth and find Spaces token
@@ -99,10 +103,10 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     let authData = null;
     let storage = {};
 
-    const authUrl = `${url}${prefix}/api/pages/${encodeURIComponent(targetId)}/auth`;
     const maxAttempts = 5;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const authUrl = `${url}${prefix}/api/pages/${encodeURIComponent(targetId)}/auth`;
       const authRes = await fetch(authUrl, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -120,6 +124,11 @@ export async function acquireFromBrowserDaemon(bdConfig) {
       });
 
       if (!authRes.ok) {
+        if (!openedTabId && (authRes.status === 404 || authRes.status === 502)) {
+          // The mesh overview can briefly retain a tab that has already closed.
+          await openAuthTab();
+          continue;
+        }
         const errText = await authRes.text().catch(() => '');
         throw new Error(`Auth export failed (HTTP ${authRes.status}): ${errText.slice(0, 200)}`);
       }

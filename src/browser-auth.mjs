@@ -241,11 +241,33 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     return auth;
   } finally {
     if (openedTabId) {
-      await fetch(`${url}${prefix}/json/close/${encodeURIComponent(openedTabId)}`, {
-        method: 'PUT',
-        headers,
-        signal: AbortSignal.timeout(10000),
-      }).catch(() => {});
+      try {
+        const sessionRes = await fetch(`${url}${prefix}/api/sessions/${encodeURIComponent(sessionId)}`, {
+          headers,
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!sessionRes.ok) throw new Error('Could not inspect browser session');
+        const { session } = await sessionRes.json();
+        if (!Number.isInteger(session?.tabs_count)) throw new Error('Missing browser tab count');
+        if (session.tabs_count <= 1) {
+          // Chromium exits when its last tab closes, leaving a stale daemon session.
+          const query = new URLSearchParams({ url: 'about:blank', session_id: sessionId });
+          const blankRes = await fetch(`${url}${prefix}/json/new?${query}`, {
+            method: 'PUT',
+            headers,
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!blankRes.ok) throw new Error('Could not keep browser session open');
+        }
+        const closeRes = await fetch(`${url}${prefix}/json/close/${encodeURIComponent(openedTabId)}`, {
+          method: 'PUT',
+          headers,
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!closeRes.ok) throw new Error('Could not close authentication tab');
+      } catch {
+        log('Could not safely close the temporary authentication tab');
+      }
     }
   }
 }

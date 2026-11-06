@@ -120,6 +120,76 @@ export const SEED_USERS = [
   },
 ];
 
+export function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+export function scorePerson(person, query) {
+  if (!person || !query) return 0;
+  const qNorm = normalizeName(query);
+  const qLower = query.toLowerCase();
+  const nameNorm = normalizeName(person.displayName || '');
+  const emailLower = (person.email || '').toLowerCase();
+  const emailPrefix = emailLower.split('@')[0];
+
+  let score = 0;
+
+  // Exact matches
+  if (nameNorm === qNorm || emailLower === qLower || emailPrefix === qLower) {
+    score += 1000;
+  }
+
+  // Name starts with query
+  if (nameNorm.startsWith(qNorm)) {
+    score += 120;
+  } else if (nameNorm.split(/\s+/).some((w) => w.startsWith(qNorm))) {
+    score += 80;
+  } else if (nameNorm.includes(qNorm)) {
+    score += 40;
+  }
+
+  // Email matches
+  if (emailLower.startsWith(qLower)) {
+    score += 90;
+  } else if (emailPrefix.split('.').some((w) => w.startsWith(qLower))) {
+    score += 70;
+  } else if (emailLower.includes(qLower)) {
+    score += 30;
+  }
+
+  // Internal vs External
+  if (emailLower.endsWith('@wiit.cloud') || emailLower.endsWith('@wiit.de') || emailLower.endsWith('@wiit.it')) {
+    score += 25;
+  }
+  if (person.userType === 'Member') {
+    score += 15;
+  }
+  if (!nameNorm.startsWith('ext-') && !emailPrefix.includes('.ext') && !emailPrefix.includes('-ext')) {
+    score += 20;
+  }
+
+  // Completeness bonus (has job title / department)
+  if (person.jobTitle) score += 10;
+  if (person.department) score += 10;
+
+  return score;
+}
+
 export class UserDirectory {
   constructor({ searchFn = null, resolveProfilesFn = null, seedUsers = SEED_USERS } = {}) {
     this.searchFn = searchFn;
@@ -627,7 +697,58 @@ export class UserDirectory {
       }
     }
 
+    // Sort results by relevance to query
+    results.sort((a, b) => scorePerson(b, cleanQuery) - scorePerson(a, cleanQuery));
+
     return results.map((u) => (u.mri && this.users.get(u.mri)) || u);
+  }
+
+  /**
+   * Finds fuzzy suggestions when no direct match is found for a query.
+   */
+  findSuggestions(query, maxDistance = 2) {
+    if (!query || typeof query !== 'string') return [];
+    const qNorm = normalizeName(query);
+    if (qNorm.length < 3) return [];
+
+    const suggestions = [];
+    const seen = new Set();
+
+    for (const user of this.users.values()) {
+      if (!user.displayName || seen.has(user.displayName)) continue;
+
+      const nameNorm = normalizeName(user.displayName);
+      const nameParts = nameNorm.split(/\s+/);
+
+      let minDist = levenshteinDistance(qNorm, nameNorm);
+      for (const part of nameParts) {
+        if (part.length >= 3) {
+          const d = levenshteinDistance(qNorm, part);
+          if (d < minDist) minDist = d;
+        }
+      }
+
+      if (user.gitlabUsernames) {
+        for (const u of user.gitlabUsernames) {
+          const d = levenshteinDistance(qNorm, u.toLowerCase());
+          if (d < minDist) minDist = d;
+        }
+      }
+
+      if (user.email) {
+        const prefix = user.email.split('@')[0].toLowerCase();
+        const d = levenshteinDistance(qNorm, prefix);
+        if (d < minDist) minDist = d;
+      }
+
+      if (minDist <= maxDistance) {
+        seen.add(user.displayName);
+        suggestions.push({ user, distance: minDist });
+      }
+    }
+
+    suggestions.sort((a, b) => a.distance - b.distance);
+    return suggestions.map((s) => s.user);
   }
 }
 
@@ -637,9 +758,9 @@ export class UserDirectory {
 export function formatContactCard(person, { userDirectory = null } = {}) {
   const lines = [];
   const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
-  const mention = person.mri ? `@[${name}](${person.mri})` : `**${name}**`;
+  const mention = person.mri ? `@[${name}](${person.mri}#contact)` : `**${name}**`;
 
-  lines.push(`👤 **${name}** (${mention})\n`);
+  lines.push(`🪪 **Contact Card**: ${mention}\n`);
 
   if (person.jobTitle) {
     lines.push(`- 💼 **Role**: ${person.jobTitle}`);
@@ -690,21 +811,33 @@ export function formatContactCard(person, { userDirectory = null } = {}) {
 }
 
 /**
- * Formats multiple search results into a concise list.
+ * Formats multiple search results into a clean, numbered disambiguation list.
  */
 export function formatSearchResultsList(results, query) {
-  const lines = [`🔍 **Teams Directory Search: "${query}"** (${results.length} results):\n`];
-  for (const person of results.slice(0, 10)) {
+  const lines = [`🔍 **Multiple contacts found matching "${query}"** (${results.length} results):\n`];
+  const maxDisplay = 8;
+  const displayed = results.slice(0, maxDisplay);
+
+  displayed.forEach((person, idx) => {
+    const num = idx + 1;
     const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
-    const roleParts = [person.jobTitle, person.department].filter(Boolean).join(', ');
-    const roleStr = roleParts ? ` — ${roleParts}` : '';
-    const emailStr = person.email ? `  📧 [${person.email}](mailto:${person.email})` : '';
-    lines.push(`- 👤 **${name}**${roleStr}`);
-    if (emailStr) lines.push(emailStr);
+    const mention = person.mri ? ` (@[${name}](${person.mri}))` : '';
+    const roleParts = [person.jobTitle, person.department].filter(Boolean).join(' • ');
+    const orgPart = person.companyName && !roleParts.includes(person.companyName) ? ` (${person.companyName})` : '';
+    const detailsStr = roleParts ? `   - 💼 ${roleParts}${orgPart}` : (orgPart ? `   - 🏛️ ${orgPart}` : '');
+    const emailStr = person.email ? `[${person.email}](mailto:${person.email})` : 'No email';
+    const inspectCmd = person.email ? ` • 🔎 \`/whois ${person.email}\`` : '';
+
+    lines.push(`${num}. 👤 **${name}**${mention}`);
+    if (detailsStr) lines.push(detailsStr);
+    lines.push(`   - 📧 ${emailStr}${inspectCmd}`);
+    lines.push('');
+  });
+
+  if (results.length > maxDisplay) {
+    lines.push(`_...and ${results.length - maxDisplay} more candidates. Please refine your query (e.g. with full name or email)._\n`);
   }
-  if (results.length > 10) {
-    lines.push(`\n_...and ${results.length - 10} more results._`);
-  }
-  lines.push('\n_Tip: Run `/whois <email | full name>` for complete details._');
+
+  lines.push('_💡 Tip: Run `/whois <email | full name>` for the full contact card._');
   return lines.join('\n');
 }

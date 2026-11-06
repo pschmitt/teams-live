@@ -3062,10 +3062,17 @@ export class MergeRequestWatcher {
       log(`Executing /whois for "${query}" in ${event.conversationId}...`);
       const results = await this.userDirectory.searchDirectory(query);
       if (!results || results.length === 0) {
+        const suggestions = this.userDirectory.findSuggestions(query);
+        let tip = '';
+        if (suggestions.length > 0) {
+          const first = suggestions[0];
+          const queryCandidate = first.email || first.displayName;
+          tip = `\n\n💡 *Did you mean*: \`/whois ${queryCandidate}\`?`;
+        }
         await sendReply(
           event.conversationId,
           event,
-          `❌ No one found matching "**${escapeHtml(query)}**" in the Teams directory.`
+          `❌ No one found matching "**${escapeHtml(query)}**" in the Teams directory.${tip}`
         );
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
         return;
@@ -3079,10 +3086,10 @@ export class MergeRequestWatcher {
         return;
       }
 
-      // Check for exact match among multiple results
+      // Check for an unambiguous single exact match among multiple results
       const qNorm = normalizeName(query);
       const qLower = query.toLowerCase();
-      const exactMatch = results.find((r) => {
+      const exactMatches = results.filter((r) => {
         if (r.mri && r.mri === query) return true;
         if (r.email && r.email.toLowerCase() === qLower) return true;
         if (r.email && r.email.split('@')[0].toLowerCase() === qLower) return true;
@@ -3090,8 +3097,8 @@ export class MergeRequestWatcher {
         return false;
       });
 
-      if (exactMatch) {
-        const text = formatContactCard(exactMatch, { userDirectory: this.userDirectory });
+      if (exactMatches.length === 1) {
+        const text = formatContactCard(exactMatches[0], { userDirectory: this.userDirectory });
         await sendReply(event.conversationId, event, text);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
       } else {

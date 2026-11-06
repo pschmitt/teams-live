@@ -4,7 +4,6 @@ import {
   getMessage,
   editMessage,
   parseContentWithMentionsAndLinks,
-  buildMentionsProperty,
 } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
 import { addReaction, removeReaction } from 'msteams-mcp/dist/api/chatsvc-reactions.js';
 import { getCalendarView as mcpGetCalendarView } from 'msteams-mcp/dist/api/calendar-api.js';
@@ -24,7 +23,6 @@ export {
   removeReaction,
   markdownToTeamsHtml,
   parseContentWithMentionsAndLinks,
-  buildMentionsProperty,
 };
 
 async function attemptTokenRefreshOnAuthError(res) {
@@ -232,11 +230,37 @@ export function escapeHtml(text) {
     .replace(/'/g, '&#39;');
 }
 
+export function buildMentionsProperty(mentions) {
+  const mentionObjects = mentions.map((mention, index) => ({
+    '@type': 'http://schema.skype.com/Mention',
+    'itemid': mention.itemid !== undefined ? mention.itemid : index,
+    'mri': String(mention.mri).split('/contacts/').pop(),
+    'mentionType': mention.mentionType || (String(mention.mri).includes('tag:') ? 'tag' : 'person'),
+    'displayName': mention.displayName,
+  }));
+  return JSON.stringify(mentionObjects);
+}
+
 export function renderReplyContent(replyMarkdown) {
-  const { html, mentions } = parseContentWithMentionsAndLinks(replyMarkdown);
+  const parsed = parseContentWithMentionsAndLinks(replyMarkdown);
+  const mentions = parsed.mentions || [];
+  let html = parsed.html;
+
+  for (let i = 0; i < mentions.length; i++) {
+    const mention = mentions[i];
+    if (typeof mention.mri === 'string' && mention.mri.endsWith('#contact')) {
+      mention.mri = mention.mri.replace(/#contact$/, '');
+      mention.mentionType = 'share-contact';
+      html = html.replace(
+        new RegExp(`<span itemtype="http://schema\\.skype\\.com/Mention" itemscope itemid="${i}">`),
+        `<span itemtype="http://schema.skype.com/Mention" itemscope="Share_Contact_Card" itemid="${i}">`
+      );
+    }
+  }
+
   return {
     html: html + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`,
-    mentions: mentions || [],
+    mentions,
   };
 }
 

@@ -8,6 +8,7 @@ import {
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { signInViaBrowserDaemon } from 'msteams-mcp/dist/auth/token-refresh.js';
 import { writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
+import { acquireFromBrowserDaemon } from './browser-auth.mjs';
 
 export { getUserProfile, getUserDisplayName };
 
@@ -147,6 +148,16 @@ export class AuthManager {
     // 3. Fallback to browser-daemon only if explicitly configured
     if (this.config.browser_daemon?.url) {
       log(`Attempting sign-in via browser-daemon profile "${this.config.browser_daemon.profile}"...`);
+      try {
+        const directAuth = await acquireFromBrowserDaemon(this.config.browser_daemon);
+        if (directAuth) {
+          log('Sign-in via direct browser-daemon succeeded');
+          return directAuth;
+        }
+      } catch (err) {
+        log(`Direct browser-daemon sign-in threw: ${err.message}`);
+      }
+
       try {
         const daemonResult = await signInViaBrowserDaemon();
         if (daemonResult.ok) {

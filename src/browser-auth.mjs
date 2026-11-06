@@ -77,7 +77,8 @@ export async function acquireFromBrowserDaemon(bdConfig) {
 
   if (!targetId) {
     log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
-    const openRes = await fetch(`${url}${prefix}/json/new?https://teams.cloud.microsoft/`, {
+    const query = new URLSearchParams({ url: 'https://teams.cloud.microsoft/', session_id: sessionId });
+    const openRes = await fetch(`${url}${prefix}/json/new?${query}`, {
       method: 'PUT',
       headers,
       signal: AbortSignal.timeout(20000),
@@ -240,8 +241,10 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     return auth;
   } finally {
     if (openedTabId) {
-      fetch(`${url}${prefix}/json/close/${encodeURIComponent(openedTabId)}`, {
+      await fetch(`${url}${prefix}/json/close/${encodeURIComponent(openedTabId)}`, {
+        method: 'PUT',
         headers,
+        signal: AbortSignal.timeout(10000),
       }).catch(() => {});
     }
   }

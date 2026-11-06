@@ -793,7 +793,7 @@ export function formatContactCard(person, { userDirectory = null } = {}) {
       : targetUser.gitlabUsernames;
     const primary = gitlabList.find((u) => !u.includes('.') && !u.includes('-') && !u.includes('_')) || gitlabList[0];
     if (primary) {
-      lines.push(`- 🦊 **GitLab**: [\`@${primary}\`](https://git.wiit.one/${primary})`);
+      lines.push(`- 🦊 **GitLab**: [@${primary}](https://git.wiit.one/${primary})`);
     }
   }
 

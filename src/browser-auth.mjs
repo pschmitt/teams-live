@@ -33,18 +33,50 @@ export async function acquireFromBrowserDaemon(bdConfig) {
 
   const prefix = prof.node_name && prof.node_name !== localNode ? `/api/peers/${encodeURIComponent(prof.node_name)}` : '';
 
-  // 2. Locate active Teams tab in the profile's session
-  let target = (ov.targets || []).find(
-    t => (prof.session_id ? t.sessionId === prof.session_id : true) &&
-         t.url &&
-         (t.url.includes('teams.cloud.microsoft') || t.url.includes('teams.microsoft.com'))
+  let sessionId = prof.session_id;
+  if (!sessionId) {
+    log(`Profile "${profileName}" has no active session, creating session...`);
+    const sessRes = await fetch(`${url}${prefix}/api/sessions`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile: profileName,
+        persistent: true,
+        engine: 'chromium',
+        default_tabs: false,
+        idle_timeout_minutes: 30,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!sessRes.ok) {
+      throw new Error(`Failed to create browser session: HTTP ${sessRes.status}`);
+    }
+    const sessData = await sessRes.json();
+    sessionId = sessData.id;
+  }
+
+  const isTeamsUrl = (u) => {
+    try {
+      const parsed = new URL(u);
+      return ['teams.cloud.microsoft', 'teams.microsoft.com'].includes(parsed.hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  };
+
+  // 2. Locate active Teams page tab in the profile's session
+  const targets = ov.targets || [];
+  let target = targets.find(
+    t => t.type === 'page' &&
+         (sessionId ? (t.sessionId === sessionId || t.session_id === sessionId) : true) &&
+         isTeamsUrl(t.url)
   );
 
   let openedTabId = null;
   let targetId = target?.id;
 
   if (!targetId) {
-    log(`No active Teams tab found in session ${prof.session_id}, opening tab...`);
+    log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
     const openRes = await fetch(`${url}${prefix}/json/new?https://teams.cloud.microsoft/`, {
       method: 'PUT',
       headers,
@@ -56,47 +88,65 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     const newPage = await openRes.json();
     targetId = newPage.id;
     openedTabId = targetId;
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 6000));
   }
 
-  // 3. Export auth
+  // 3. Export auth and find Spaces token
   try {
-    const authUrl = `${url}${prefix}/api/pages/${encodeURIComponent(targetId)}/auth`;
-    const authRes = await fetch(authUrl, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: prof.session_id,
-        storage: true,
-        urls: [
-          'https://teams.microsoft.com',
-          'https://teams.cloud.microsoft',
-          'https://asm.skype.com',
-          'https://login.microsoftonline.com',
-        ],
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!authRes.ok) {
-      const errText = await authRes.text().catch(() => '');
-      throw new Error(`Auth export failed (HTTP ${authRes.status}): ${errText.slice(0, 200)}`);
-    }
-
-    const authData = await authRes.json();
-    const storage = authData.local_storage || {};
-
-    // 4. Find Spaces token
     let spacesToken = null;
-    for (const [k, v] of Object.entries(storage)) {
-      if (k.includes('spaces.skype.com')) {
+    let refreshToken = null;
+    let authData = null;
+    let storage = {};
+
+    const authUrl = `${url}${prefix}/api/pages/${encodeURIComponent(targetId)}/auth`;
+    const maxAttempts = 5;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const authRes = await fetch(authUrl, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          storage: true,
+          urls: [
+            'https://teams.microsoft.com',
+            'https://teams.cloud.microsoft',
+            'https://asm.skype.com',
+            'https://login.microsoftonline.com',
+          ],
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!authRes.ok) {
+        const errText = await authRes.text().catch(() => '');
+        throw new Error(`Auth export failed (HTTP ${authRes.status}): ${errText.slice(0, 200)}`);
+      }
+
+      authData = await authRes.json();
+      storage = authData.local_storage || {};
+
+      for (const [k, v] of Object.entries(storage)) {
         try {
           const parsed = JSON.parse(v);
-          if (parsed.secret && typeof parsed.secret === 'string' && parsed.secret.startsWith('ey')) {
+          if (parsed.credentialType === 'RefreshToken' && parsed.secret && typeof parsed.secret === 'string' && parsed.secret.startsWith('1.')) {
+            refreshToken = parsed.secret;
+          }
+          const targetScope = parsed.target || '';
+          if ((k.includes('spaces.skype.com') || targetScope.includes('spaces.skype.com')) &&
+              parsed.secret && typeof parsed.secret === 'string' && parsed.secret.startsWith('ey')) {
             spacesToken = parsed.secret;
-            break;
           }
         } catch {}
+      }
+
+      if (spacesToken) {
+        break;
+      }
+
+      if (attempt < maxAttempts) {
+        log(`Waiting for Skype Spaces token in localStorage (attempt ${attempt}/${maxAttempts})...`);
+        await new Promise(r => setTimeout(r, 3000));
       }
     }
 
@@ -170,10 +220,11 @@ export async function acquireFromBrowserDaemon(bdConfig) {
       cookies,
       origins: [
         {
-          origin: new URL(authData.url || 'https://teams.cloud.microsoft').origin,
+          origin: new URL(authData?.url || 'https://teams.cloud.microsoft').origin,
           localStorage: Object.entries(storage).map(([name, value]) => ({ name, value })),
         },
       ],
+      ...(refreshToken ? { refreshToken } : {}),
     };
 
     // 7. Write session state and clear token cache

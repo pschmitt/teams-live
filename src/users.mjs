@@ -121,8 +121,9 @@ export const SEED_USERS = [
 ];
 
 export class UserDirectory {
-  constructor({ searchFn = null, seedUsers = SEED_USERS } = {}) {
+  constructor({ searchFn = null, resolveProfilesFn = null, seedUsers = SEED_USERS } = {}) {
     this.searchFn = searchFn;
+    this.resolveProfilesFn = resolveProfilesFn;
     this.users = new Map(); // mri -> user
     this.byMri = new Map();
     this.byDisplayName = new Map();
@@ -152,6 +153,10 @@ export class UserDirectory {
         email: userData.email || '',
         givenName: userData.givenName || '',
         surname: userData.surname || '',
+        jobTitle: userData.jobTitle || '',
+        department: userData.department || '',
+        companyName: userData.companyName || userData.tenantName || '',
+        userType: userData.userType || '',
         gitlabUsernames: new Set(),
         jiraUsernames: new Set(),
       };
@@ -166,6 +171,11 @@ export class UserDirectory {
       }
       if (userData.givenName && !user.givenName) user.givenName = userData.givenName;
       if (userData.surname && !user.surname) user.surname = userData.surname;
+      if (userData.jobTitle) user.jobTitle = userData.jobTitle;
+      if (userData.department) user.department = userData.department;
+      if (userData.companyName) user.companyName = userData.companyName;
+      if (userData.tenantName && !user.companyName) user.companyName = userData.tenantName;
+      if (userData.userType) user.userType = userData.userType;
     }
 
     // Add explicit usernames
@@ -197,6 +207,10 @@ export class UserDirectory {
     // Index by email
     if (user.email) {
       this.byEmail.set(user.email.toLowerCase(), user);
+      const prefix = user.email.split('@')[0].toLowerCase();
+      if (prefix && !this.byEmail.has(prefix)) {
+        this.byEmail.set(prefix, user);
+      }
     }
 
     // Index by gitlab usernames
@@ -279,8 +293,18 @@ export class UserDirectory {
       return null;
     }
 
-    const q = String(query).trim().replace(/^@+/, '');
+    let q = String(query).trim();
     if (!q) return null;
+
+    // Check for Teams mention format: @[DisplayName](mri)
+    const mentionMatch = q.match(/@?\[([^\]]+)\]\(([^)]+)\)/);
+    if (mentionMatch) {
+      const mri = mentionMatch[2];
+      if (this.byMri.has(mri)) return this.byMri.get(mri);
+      q = mentionMatch[1];
+    } else {
+      q = q.replace(/^@+/, '');
+    }
 
     // 1. Direct MRI match
     if (this.byMri.has(q)) return this.byMri.get(q);
@@ -365,6 +389,10 @@ export class UserDirectory {
               email: match.email,
               givenName: match.givenName,
               surname: match.surname,
+              jobTitle: match.jobTitle,
+              department: match.department,
+              companyName: match.companyName,
+              userType: match.userType,
               gitlabUsernames: typeof authorOrName === 'object' && authorOrName.username ? [authorOrName.username] : [],
             });
             this.lookupCache.set(queryKey, added);
@@ -461,4 +489,222 @@ export class UserDirectory {
 
     return false;
   }
+
+  /**
+   * Enriches a user object or MRI with rich profile attributes from MiddleTier
+   * (job title, department, company name, user type) if resolveProfilesFn is available.
+   */
+  async enrichUser(userOrMri) {
+    if (!userOrMri) return null;
+    let mri = typeof userOrMri === 'string' ? userOrMri : userOrMri.mri;
+    if (!mri) return typeof userOrMri === 'object' ? userOrMri : null;
+
+    if (!mri.startsWith('8:orgid:')) {
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mri)) {
+        mri = `8:orgid:${mri}`;
+      } else {
+        return typeof userOrMri === 'object' ? userOrMri : this.findUser(mri);
+      }
+    }
+
+    if (!this.resolveProfilesFn) {
+      return typeof userOrMri === 'object' ? userOrMri : this.findUser(mri);
+    }
+
+    try {
+      const res = await this.resolveProfilesFn([mri]);
+      if (res?.ok && res.value?.profiles instanceof Map && res.value.profiles.has(mri)) {
+        const p = res.value.profiles.get(mri);
+        return this.addUser({
+          mri,
+          displayName: p.displayName,
+          email: p.email,
+          givenName: p.givenName,
+          surname: p.surname,
+          jobTitle: p.jobTitle,
+          department: p.department,
+          companyName: p.companyName,
+          userType: p.userType,
+        });
+      }
+    } catch {
+      // Non-fatal resolution error
+    }
+
+    return typeof userOrMri === 'object' ? userOrMri : this.findUser(mri);
+  }
+
+  /**
+   * Searches the Teams directory and cross-references local known identities.
+   * Handles MRIs, @mentions, email addresses, usernames, and display names.
+   */
+  async searchDirectory(query, { limit = 10 } = {}) {
+    if (!query) return [];
+
+    let cleanQuery = String(query).trim();
+    if (!cleanQuery) return [];
+
+    // 1. Check for Teams mention format: @[DisplayName](mri)
+    const mentionMatch = cleanQuery.match(/@?\[([^\]]+)\]\(([^)]+)\)/);
+    if (mentionMatch) {
+      const mri = mentionMatch[2];
+      const name = mentionMatch[1];
+      let user = this.findUser(mri) || this.addUser({ displayName: name, mri });
+      if (user) {
+        user = await this.enrichUser(user);
+        return [user];
+      }
+    }
+
+    // 2. Direct MRI match or GUID
+    if (cleanQuery.startsWith('8:orgid:') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanQuery)) {
+      const mri = cleanQuery.startsWith('8:orgid:') ? cleanQuery : `8:orgid:${cleanQuery}`;
+      let user = this.findUser(mri) || this.addUser({ displayName: cleanQuery, mri });
+      if (user) {
+        user = await this.enrichUser(user);
+        return [user];
+      }
+    }
+
+    cleanQuery = cleanQuery.replace(/^@+/, '').trim();
+    if (!cleanQuery) return [];
+
+    const results = [];
+    const seenMris = new Set();
+
+    // 3. Check local directory (seed users, interactions, configured users)
+    const localUser = this.findUser(cleanQuery);
+    if (localUser && localUser.mri) {
+      const enriched = await this.enrichUser(localUser);
+      results.push(enriched || localUser);
+      seenMris.add(localUser.mri);
+    }
+
+    // 4. Query live Teams directory via searchFn (Substrate People Search)
+    if (this.searchFn) {
+      try {
+        const res = await this.searchFn(cleanQuery, limit);
+        const searchList = res?.ok ? res.value?.results : (res?.results || (Array.isArray(res) ? res : []));
+        if (Array.isArray(searchList) && searchList.length > 0) {
+          const mrisToEnrich = [];
+          for (const item of searchList) {
+            const added = this.addUser(item);
+            if (added && added.mri && !seenMris.has(added.mri)) {
+              seenMris.add(added.mri);
+              results.push(added);
+              if (!added.jobTitle || !added.department || !added.companyName) {
+                mrisToEnrich.push(added.mri);
+              }
+            }
+          }
+
+          // Batch enrich profiles with resolveProfilesFn if available
+          if (mrisToEnrich.length > 0 && this.resolveProfilesFn && mrisToEnrich.length <= 10) {
+            try {
+              const profileRes = await this.resolveProfilesFn(mrisToEnrich);
+              if (profileRes?.ok && profileRes.value?.profiles instanceof Map) {
+                for (const [mri, p] of profileRes.value.profiles.entries()) {
+                  this.addUser({
+                    mri,
+                    displayName: p.displayName,
+                    email: p.email,
+                    givenName: p.givenName,
+                    surname: p.surname,
+                    jobTitle: p.jobTitle,
+                    department: p.department,
+                    companyName: p.companyName,
+                    userType: p.userType,
+                  });
+                }
+              }
+            } catch {
+              // Batch resolution failure is non-fatal
+            }
+          }
+        }
+      } catch {
+        // Substrate search error is non-fatal if local results exist
+      }
+    }
+
+    return results.map((u) => (u.mri && this.users.get(u.mri)) || u);
+  }
+}
+
+/**
+ * Formats a user's details as a rich Markdown contact card for Microsoft Teams.
+ */
+export function formatContactCard(person, { userDirectory = null } = {}) {
+  const lines = [];
+  const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
+  const mention = person.mri ? `@[${name}](${person.mri})` : `**${name}**`;
+
+  lines.push(`👤 **${name}** (${mention})\n`);
+
+  if (person.jobTitle) {
+    lines.push(`- 💼 **Role**: ${person.jobTitle}`);
+  }
+  if (person.department) {
+    lines.push(`- 🏢 **Department**: ${person.department}`);
+  }
+  if (person.companyName) {
+    const userTypeStr = person.userType ? ` (${person.userType})` : '';
+    lines.push(`- 🏛️ **Organization**: ${person.companyName}${userTypeStr}`);
+  } else if (person.userType) {
+    lines.push(`- 🏷️ **Account Type**: ${person.userType}`);
+  }
+  if (person.email) {
+    lines.push(`- 📧 **Email**: [${person.email}](mailto:${person.email})`);
+    lines.push(`- 💬 **Teams Chat**: [Start Chat](https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(person.email)})`);
+  }
+
+  // Cross-service integrations from userDirectory if available
+  const targetUser = userDirectory
+    ? (userDirectory.findUser(person.mri) ||
+       userDirectory.findUser(person.email) ||
+       userDirectory.findUser(person.displayName) ||
+       person)
+    : person;
+
+  if (targetUser.gitlabUsernames?.size > 0 || (Array.isArray(targetUser.gitlabUsernames) && targetUser.gitlabUsernames.length > 0)) {
+    const gitlabList = targetUser.gitlabUsernames instanceof Set
+      ? Array.from(targetUser.gitlabUsernames)
+      : targetUser.gitlabUsernames;
+    const primary = gitlabList.find((u) => !u.includes('.') && !u.includes('-') && !u.includes('_')) || gitlabList[0];
+    if (primary) {
+      lines.push(`- 🦊 **GitLab**: [\`@${primary}\`](https://git.wiit.one/${primary})`);
+    }
+  }
+
+  if (targetUser.jiraUsernames?.size > 0 || (Array.isArray(targetUser.jiraUsernames) && targetUser.jiraUsernames.length > 0)) {
+    const jiraList = targetUser.jiraUsernames instanceof Set
+      ? Array.from(targetUser.jiraUsernames)
+      : targetUser.jiraUsernames;
+    const primaryJira = jiraList.find((u) => !u.includes(' ') && !u.includes('.') && !u.includes('-')) || jiraList[0];
+    if (primaryJira) {
+      lines.push(`- 🎫 **Jira**: \`${primaryJira}\``);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Formats multiple search results into a concise list.
+ */
+export function formatSearchResultsList(results, query) {
+  const lines = [`🔍 **Teams Directory Search: "${query}"** (${results.length} results):\n`];
+  for (const person of results.slice(0, 10)) {
+    const name = person.displayName || [person.givenName, person.surname].filter(Boolean).join(' ') || 'Unknown User';
+    const roleParts = [person.jobTitle, person.department].filter(Boolean).join(', ');
+    const roleStr = roleParts ? ` — ${roleParts}` : '';
+    const emailStr = person.email ? `  📧 [${person.email}](mailto:${person.email})` : '';
+    lines.push(`- 👤 **${name}**${roleStr}`);
+    if (emailStr) lines.push(emailStr);
+  }
+  if (results.length > 10) {
+    lines.push(`\n_...and ${results.length - 10} more results._`);
+  }
+  lines.push('\n_Tip: Run `/whois <email | full name>` for complete details._');
+  return lines.join('\n');
 }

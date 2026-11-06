@@ -12,7 +12,8 @@ import { requireSkypeSpacesAuth } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { httpRequest } from 'msteams-mcp/dist/utils/http.js';
 import { markdownToTeamsHtml } from 'msteams-mcp/dist/utils/parsers-markdown.js';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
-import { searchPeople } from 'msteams-mcp/dist/api/substrate-api.js';
+import { searchPeople as mcpSearchPeople } from 'msteams-mcp/dist/api/substrate-api.js';
+import { resolveProfiles as mcpResolveProfiles } from 'msteams-mcp/dist/api/profile-api.js';
 
 export {
   sendMessage,
@@ -24,7 +25,6 @@ export {
   markdownToTeamsHtml,
   parseContentWithMentionsAndLinks,
   buildMentionsProperty,
-  searchPeople,
 };
 
 async function attemptTokenRefreshOnAuthError(res) {
@@ -91,6 +91,22 @@ async function retrySendWithRecovery(sendFn) {
   }
 
   return result;
+}
+
+export async function searchPeople(query, limit = 10) {
+  let res = await mcpSearchPeople(query, limit);
+  if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+    res = await mcpSearchPeople(query, limit);
+  }
+  return res;
+}
+
+export async function resolveProfiles(mris) {
+  let res = await mcpResolveProfiles(mris);
+  if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+    res = await mcpResolveProfiles(mris);
+  }
+  return res;
 }
 
 export async function getCalendarView(options = {}) {

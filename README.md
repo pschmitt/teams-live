@@ -40,6 +40,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
     - `/meetings` (or `/cal`, `/calendar`): Remaining weekly agenda with direct meeting links.
     - `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.
     - `/weather [location]`: Current weather observations via wttr.in.
+    - `/whois <search>` (or `/who`): Looks up a person in the Teams directory and displays contact details.
   - **Fun & Games**:
     - `/flip`: Flips a coin (Heads or Tails).
     - `/leaderboard`: Tracks and ranks chat interactions and command usage.

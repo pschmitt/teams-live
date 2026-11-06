@@ -18,9 +18,10 @@ import {
   getMessage,
   getCalendarView,
   searchPeople,
+  resolveProfiles,
   escapeHtml,
 } from './teams.mjs';
-import { UserDirectory } from './users.mjs';
+import { UserDirectory, normalizeName, formatContactCard, formatSearchResultsList } from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -75,11 +76,12 @@ const COMMAND_CATEGORIES = [
   {
     id: 'tools',
     title: '📅 **Productivity & Tools**',
-    aliases: ['tools', 'tool', 'productivity', 'util', 'utils', 'utilities'],
+    aliases: ['tools', 'tool', 'productivity', 'util', 'utils', 'utilities', 'whois', 'directory'],
     commands: [
       '- `/meetings` (or `/cal`, `/calendar`): Summary of meetings for the rest of the current week.',
       '- `/poll "Question" "Opt1" "Opt2"`: Creates an interactive reaction poll.',
       '- `/weather [location]`: Shows current weather for location (default: Berlin).',
+      '- `/whois <search>` (or `/who`): Looks up a person in the Teams directory and shows contact details.',
     ],
   },
   {
@@ -190,6 +192,8 @@ const KNOWN_COMMANDS = [
   '/unban',
   '/usage',
   '/weather',
+  '/who',
+  '/whois',
   '/whoisoncall',
 ];
 
@@ -660,7 +664,10 @@ export class MergeRequestWatcher {
     this.savedEntries = new Map();
     this.userInteractions = new Map();
     this.bannedUsers = new Map();
-    this.userDirectory = new UserDirectory({ searchFn: searchPeople });
+    this.userDirectory = new UserDirectory({
+      searchFn: searchPeople,
+      resolveProfilesFn: resolveProfiles,
+    });
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
     this.loadState();
@@ -3018,6 +3025,87 @@ export class MergeRequestWatcher {
     }
   }
 
+  extractWhoisTarget(event, args) {
+    const rawArgs = args.join(' ').trim();
+    if (rawArgs) return rawArgs;
+
+    // Check if command was sent in reply to another message
+    const html = event.rawHtml || '';
+    const mriMatch = html.match(/itemprop=["']mri["']\s+itemid=["']([^"']+)["']/i) ||
+                     html.match(/itemid=["']([^"']+)["']\s+itemprop=["']mri["']/i);
+    if (mriMatch) return mriMatch[1];
+
+    const senderMatch = html.match(/<strong[^>]*itemprop=["']mri["'][^>]*>([^<]+)<\/strong>/i);
+    if (senderMatch) return senderMatch[1].trim();
+
+    return null;
+  }
+
+  async executeWhoisCommand(event, args) {
+    const target = this.extractWhoisTarget(event, args);
+    if (!target) {
+      await sendReply(
+        event.conversationId,
+        event,
+        'ℹ️ Usage: `/whois <name | email | username | @mention>` (or reply to a message with `/whois`)'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      return;
+    }
+
+    try {
+      let query = target.trim();
+      if (query.toLowerCase() === 'me') {
+        query = event.fromMri || event.from || 'me';
+      }
+
+      log(`Executing /whois for "${query}" in ${event.conversationId}...`);
+      const results = await this.userDirectory.searchDirectory(query);
+      if (!results || results.length === 0) {
+        await sendReply(
+          event.conversationId,
+          event,
+          `❌ No one found matching "**${escapeHtml(query)}**" in the Teams directory.`
+        );
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      // If exactly 1 result, show full contact card
+      if (results.length === 1) {
+        const text = formatContactCard(results[0], { userDirectory: this.userDirectory });
+        await sendReply(event.conversationId, event, text);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+        return;
+      }
+
+      // Check for exact match among multiple results
+      const qNorm = normalizeName(query);
+      const qLower = query.toLowerCase();
+      const exactMatch = results.find((r) => {
+        if (r.mri && r.mri === query) return true;
+        if (r.email && r.email.toLowerCase() === qLower) return true;
+        if (r.email && r.email.split('@')[0].toLowerCase() === qLower) return true;
+        if (r.displayName && normalizeName(r.displayName) === qNorm) return true;
+        return false;
+      });
+
+      if (exactMatch) {
+        const text = formatContactCard(exactMatch, { userDirectory: this.userDirectory });
+        await sendReply(event.conversationId, event, text);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      } else {
+        const text = formatSearchResultsList(results, query);
+        await sendReply(event.conversationId, event, text);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+      }
+    } catch (err) {
+      log(`Failed to execute /whois: ${err.message}`);
+      await sendReply(event.conversationId, event, `❌ Failed to look up user in Teams directory: ${err.message}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeRandomCommand(event) {
     log(`Executing /random fact in ${event.conversationId}...`);
     try {
@@ -4585,6 +4673,8 @@ export class MergeRequestWatcher {
       await this.executeRollCommand(event, args);
     } else if (command === '/weather') {
       await this.executeWeatherCommand(event, args);
+    } else if (command === '/whois' || command === '/who') {
+      await this.executeWhoisCommand(event, args);
     } else if (command === '/random') {
       await this.executeRandomCommand(event);
     } else if (command === '/marco') {

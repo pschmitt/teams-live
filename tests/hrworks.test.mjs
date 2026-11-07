@@ -201,6 +201,7 @@ test('formatWhereisCard formats HRworks line for active, none, upcoming, and err
       },
     },
   });
+  assert.match(card1, /🟢 \*\*Status\*\*: \*\*Available\*\*/);
   assert.match(card1, /\*\*HRworks Today\*\*: \*\*Ausgleich Ü\*\* \[2026-11-06\] \(Checked, OK\)/);
 
   // 2. None registered (present)
@@ -211,7 +212,7 @@ test('formatWhereisCard formats HRworks line for active, none, upcoming, and err
       upcomingAbsence: null,
     },
   });
-  assert.match(card2, /🏢 \*\*HRworks\*\*: None registered \(Present\)/);
+  assert.match(card2, /🏢 \*\*HRworks\*\*: Present \(not on leave\/sick\)/);
 
   // 3. Upcoming absence
   const card3 = formatWhereisCard(person, presence, {

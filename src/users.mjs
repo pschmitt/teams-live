@@ -857,32 +857,41 @@ export function formatWhereisCard(person, presence = {}, { activeMeeting = null,
   const activity = presence.activity || '';
   const isOof = presence.calendarData?.isOutOfOffice === true;
 
-  let statusText = '';
+  let statusIcon = '⚪';
+  let statusText = `**${availability}**`;
   if (isOof) {
-    statusText = `🌴 **Out of Office**${activity === 'OffWork' ? ' (Off work)' : ''}`;
+    statusIcon = '🌴';
+    statusText = `**Out of Office**${activity === 'OffWork' ? ' (Off work)' : ''}`;
   } else if (activity === 'InAMeeting') {
-    statusText = '🔴 **In a meeting**';
+    statusIcon = '🔴';
+    statusText = '**In a meeting**';
   } else if (activity === 'InACall') {
-    statusText = '📞 **In a call**';
+    statusIcon = '📞';
+    statusText = '**In a call**';
   } else if (activity === 'Presenting') {
-    statusText = '🖥️ **Presenting** (Do Not Disturb)';
+    statusIcon = '🖥️';
+    statusText = '**Presenting** (Do Not Disturb)';
   } else if (availability === 'Busy') {
-    statusText = '🔴 **Busy**';
+    statusIcon = '🔴';
+    statusText = '**Busy**';
   } else if (availability === 'Available') {
-    statusText = '🟢 **Available**';
+    statusIcon = '🟢';
+    statusText = '**Available**';
   } else if (availability === 'Away') {
-    statusText = '🟡 **Away**';
+    statusIcon = '🟡';
+    statusText = '**Away**';
   } else if (availability === 'BeRightBack') {
-    statusText = '🟡 **Be Right Back**';
+    statusIcon = '🟡';
+    statusText = '**Be Right Back**';
   } else if (availability === 'DoNotDisturb') {
-    statusText = '⛔ **Do Not Disturb**';
+    statusIcon = '⛔';
+    statusText = '**Do Not Disturb**';
   } else if (availability === 'Offline') {
-    statusText = `⚪ **Offline**${activity === 'OffWork' ? ' (Off work)' : ''}`;
-  } else {
-    statusText = `⚪ **${availability}**`;
+    statusIcon = '⚪';
+    statusText = `**Offline**${activity === 'OffWork' ? ' (Off work)' : ''}`;
   }
 
-  lines.push(`- **Status**: ${statusText}`);
+  lines.push(`- ${statusIcon} **Status**: ${statusText}`);
 
   // HRworks absence details
   if (hrworksAbsence) {
@@ -925,7 +934,7 @@ export function formatWhereisCard(person, presence = {}, { activeMeeting = null,
     } else if (hrworksAbsence.reason === 'calendar_unavailable') {
       lines.push('- ⚠️ **HRworks**: Calendar data unavailable');
     } else {
-      lines.push('- 🏢 **HRworks**: None registered (Present)');
+      lines.push('- 🏢 **HRworks**: Present (not on leave/sick)');
     }
   }
 

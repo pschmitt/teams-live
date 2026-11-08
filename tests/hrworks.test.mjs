@@ -400,4 +400,12 @@ test('HealthMonitor tracks homeassistant service and watcher.getConnectorsStatus
   assert.equal(conn.homeassistant.status, 'ok');
   assert.equal(conn.homeassistant.url, 'https://ha.brkn.lol');
   assert.match(conn.homeassistant.details, /1 employees, 1 absences, 1 units/);
+
+  const cacheLines = watcher.getPrecomputeCacheLines();
+  assert.equal(cacheLines.length, 5);
+  assert.match(cacheLines[0], /`\/mrs`/);
+  assert.match(cacheLines[1], /`\/alerts`/);
+  assert.match(cacheLines[2], /`\/sprint`/);
+  assert.match(cacheLines[3], /`\/meetings`/);
+  assert.match(cacheLines[4], /`\/whereis` \(HR works\): \d+s ago \(1 employees, 1 absences\)/);
 });

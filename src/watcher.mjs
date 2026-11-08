@@ -1132,6 +1132,28 @@ export class MergeRequestWatcher {
     };
   }
 
+  getPrecomputeCacheLines() {
+    const mrsAge = this.mrsCache?.text ? `${Math.round((Date.now() - this.mrsCache.timestamp) / 1000)}s ago` : 'empty';
+    const alertsAge = this.alertsCache?.data ? `${Math.round((Date.now() - this.alertsCache.timestamp) / 1000)}s ago` : 'empty';
+    const sprintAge = this.sprintCache?.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
+    const meetingsAge = this.meetingsCache?.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
+
+    const hrworksStats = this.hrworks?.getStats?.() || {};
+    const hrworksPrefetch = hrworksStats.lastFullPrefetchAt || hrworksStats.lastTeamPrefetchAt || 0;
+    const hrworksAge = !this.hrworks?.isConfigured?.()
+      ? 'not configured'
+      : (hrworksPrefetch ? `${Math.round((Date.now() - hrworksPrefetch) / 1000)}s ago` : 'empty');
+    const hrworksDetails = hrworksStats.employees ? ` (${hrworksStats.employees} employees, ${hrworksStats.absences} absences)` : '';
+
+    return [
+      `  - \`/mrs\`: ${mrsAge}`,
+      `  - \`/alerts\`: ${alertsAge}`,
+      `  - \`/sprint\`: ${sprintAge}`,
+      `  - \`/meetings\`: ${meetingsAge}`,
+      `  - \`/whereis\` (HR works): ${hrworksAge}${hrworksDetails}`,
+    ];
+  }
+
   setSelfMri(mri) {
     this.selfMri = mri;
   }
@@ -2975,26 +2997,23 @@ export class MergeRequestWatcher {
       const convCount = this.watchedConversations.size;
       const watchedMrsCount = this.watched.size;
       const completedCount = this.completedMessages.size;
-      const mrsAge = this.mrsCache.text ? `${Math.round((Date.now() - this.mrsCache.timestamp) / 1000)}s ago` : 'empty';
-      const sprintAge = this.sprintCache.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
-      const meetingsAge = this.meetingsCache.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
 
       const conn = await this.getConnectorsStatus();
       const brokenConnectors = [];
       if (conn.teams.status !== 'ok') {
-        brokenConnectors.push(`- **Microsoft Teams**: ❌ Disconnected (${conn.teams.details})`);
+        brokenConnectors.push(`- 💬 **Microsoft Teams**: ❌ Disconnected (${conn.teams.details})`);
       }
       if (conn.gitlab.status === 'auth_expired' || conn.gitlab.status === 'error') {
-        brokenConnectors.push(`- **GitLab**: ❌ ${conn.gitlab.error || 'Authentication expired'}`);
+        brokenConnectors.push(`- 🦊 **GitLab**: ❌ ${conn.gitlab.error || 'Authentication expired'}`);
       }
       if (conn.jira.status === 'auth_expired' || conn.jira.status === 'error') {
-        brokenConnectors.push(`- **Jira**: ❌ ${conn.jira.error || 'Authentication expired'}`);
+        brokenConnectors.push(`- 📋 **Jira**: ❌ ${conn.jira.error || 'Authentication expired'}`);
       }
       if (conn.opsgenie.status === 'auth_expired' || conn.opsgenie.status === 'error') {
-        brokenConnectors.push(`- **OpsGenie**: ❌ ${conn.opsgenie.error || 'Authentication expired'}`);
+        brokenConnectors.push(`- 🚨 **OpsGenie**: ❌ ${conn.opsgenie.error || 'Authentication expired'}`);
       }
       if (conn.homeassistant && (conn.homeassistant.status === 'auth_expired' || conn.homeassistant.status === 'error')) {
-        brokenConnectors.push(`- **Home Assistant (HR works)**: ❌ ${conn.homeassistant.error || 'Authentication expired'}`);
+        brokenConnectors.push(`- 🏠 **Home Assistant (HR works)**: ❌ ${conn.homeassistant.error || 'Authentication expired'}`);
       }
 
       let connectorNotice = '';
@@ -3006,14 +3025,15 @@ export class MergeRequestWatcher {
         event.conversationId,
         event,
         '🤖 **teams-live status**:\n\n' +
-        `- **Uptime**: ${uptimeStr} (started ${startTime})\n` +
-        `- **Runtime**: Node.js ${process.version} (PID ${process.pid})\n` +
-        `- **Memory (RSS)**: ${memRss} MB\n` +
-        `- **Trouter**: Connected 🟢\n` +
-        `- **Watched Conversations**: ${convCount}\n` +
-        `- **Active MR Watchers**: ${watchedMrsCount}\n` +
-        `- **Precompute Cache**: /mrs (${mrsAge}), /sprint (${sprintAge}), /meetings (${meetingsAge})\n` +
-        `- **Completed Message Cache**: ${completedCount}\n` +
+        `- ⏱️ **Uptime**: ${uptimeStr} (started ${startTime})\n` +
+        `- ⚙️ **Runtime**: Node.js ${process.version} (PID ${process.pid})\n` +
+        `- 💾 **Memory (RSS)**: ${memRss} MB\n` +
+        `- 🔌 **Trouter**: Connected 🟢\n` +
+        `- 💬 **Watched Conversations**: ${convCount}\n` +
+        `- 👀 **Active MR Watchers**: ${watchedMrsCount}\n` +
+        `- ⚡ **Precompute Cache**:\n` +
+        this.getPrecomputeCacheLines().join('\n') + '\n' +
+        `- 📬 **Completed Message Cache**: ${completedCount}\n` +
         connectorNotice +
         '\n_Tip: To check an MR status, use `/status [link]` or quote an MR message._'
       );
@@ -3856,9 +3876,6 @@ export class MergeRequestWatcher {
     const convCount = this.watchedConversations.size;
     const watchedMrsCount = this.watched.size;
     const completedCount = this.completedMessages.size;
-    const mrsAge = this.mrsCache.text ? `${Math.round((Date.now() - this.mrsCache.timestamp) / 1000)}s ago` : 'empty';
-    const sprintAge = this.sprintCache.text ? `${Math.round((Date.now() - this.sprintCache.timestamp) / 1000)}s ago` : 'empty';
-    const meetingsAge = this.meetingsCache.text ? `${Math.round((Date.now() - this.meetingsCache.timestamp) / 1000)}s ago` : 'empty';
 
     const conn = await this.getConnectorsStatus();
 
@@ -3870,29 +3887,30 @@ export class MergeRequestWatcher {
 
     const text =
       '🔧 **teams-live status (sudo)**:\n\n' +
-      `- **Uptime**: ${uptimeStr} (PID ${process.pid})\n` +
-      `- **Memory**: ${memRss} MB RSS (${heapUsed} MB Heap)\n` +
-      `- **Watched Channels**: ${convCount}\n` +
-      `- **Active MR Watchers**: ${watchedMrsCount}\n` +
-      `- **Precompute Cache**: /mrs (${mrsAge}), /sprint (${sprintAge}), /meetings (${meetingsAge})\n` +
-      `- **Completed Messages**: ${completedCount}\n\n` +
+      `- ⏱️ **Uptime**: ${uptimeStr} (PID ${process.pid})\n` +
+      `- 💾 **Memory**: ${memRss} MB RSS (${heapUsed} MB Heap)\n` +
+      `- 💬 **Watched Channels**: ${convCount}\n` +
+      `- 👀 **Active MR Watchers**: ${watchedMrsCount}\n` +
+      `- ⚡ **Precompute Cache**:\n` +
+      this.getPrecomputeCacheLines().join('\n') + '\n' +
+      `- 📬 **Completed Messages**: ${completedCount}\n\n` +
       '🔌 **Connectors**:\n' +
-      `- **Microsoft Teams**: ${teamsIcon} ${conn.teams.status === 'ok' ? 'Connected' : 'Disconnected'}\n` +
+      `- 💬 **Microsoft Teams**: ${teamsIcon} ${conn.teams.status === 'ok' ? 'Connected' : 'Disconnected'}\n` +
       `  - **User**: ${conn.teams.user}\n` +
       `  - **Status**: ${conn.teams.details}\n` +
-      `- **GitLab**: ${glIcon} ${conn.gitlab.status === 'ok' ? 'Connected' : (conn.gitlab.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      `- 🦊 **GitLab**: ${glIcon} ${conn.gitlab.status === 'ok' ? 'Connected' : (conn.gitlab.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       `  - **Host**: \`${conn.gitlab.host}\`${conn.gitlab.group ? ` (group: \`${conn.gitlab.group}\`)` : ''}\n` +
       (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
       (conn.gitlab.error ? `  - **Error**: \`${conn.gitlab.error}\`\n` : '') +
-      `- **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      `- 📋 **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.jira.configured ? `  - **URL**: \`${conn.jira.url}\` (project: \`${conn.jira.project}\`)\n` +
                               `  - **User**: ${conn.jira.user}\n` : '') +
       (conn.jira.error ? `  - **Error**: \`${conn.jira.error}\`\n` : '') +
-      `- **OpsGenie**: ${ogIcon} ${conn.opsgenie.status === 'ok' ? 'Connected' : (conn.opsgenie.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      `- 🚨 **OpsGenie**: ${ogIcon} ${conn.opsgenie.status === 'ok' ? 'Connected' : (conn.opsgenie.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.opsgenie.configured ? `  - **Endpoint**: ${conn.opsgenie.endpoint}\n` +
                                   `  - **Keys**: On-Call ${conn.opsgenie.onCall ? '✅' : '❌'} | Support ${conn.opsgenie.support ? '✅' : '❌'}\n` : '') +
       (conn.opsgenie.error ? `  - **Error**: \`${conn.opsgenie.error}\`\n` : '') +
-      `- **Home Assistant (HR works)**: ${haIcon} ${conn.homeassistant?.status === 'ok' ? 'Connected' : (conn.homeassistant?.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      `- 🏠 **Home Assistant (HR works)**: ${haIcon} ${conn.homeassistant?.status === 'ok' ? 'Connected' : (conn.homeassistant?.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.homeassistant?.configured ? `  - **URL**: \`${conn.homeassistant.url}\`\n` +
                                         `  - **Cache**: ${conn.homeassistant.details}\n` : '') +
       (conn.homeassistant?.error ? `  - **Error**: \`${conn.homeassistant.error}\`\n` : '');

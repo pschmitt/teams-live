@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { afterEach, mock, test } from 'node:test';
 
 import { HRWorksClient, getInclusiveDateRange } from '../src/hrworks.mjs';
 import { formatWhereisCard } from '../src/users.mjs';
 
 const originalFetch = globalThis.fetch;
 
+// The fixtures describe absences on 2026-11-06, and HRWorksClient compares them
+// with the current date in Berlin, so pin the clock to that day.
+const FIXTURE_NOW = new Date('2026-11-06T12:00:00+01:00');
+const pinClock = () => mock.timers.enable({ apis: ['Date'], now: FIXTURE_NOW });
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  mock.timers.reset();
 });
 
 test('getInclusiveDateRange subtracts 1 second for midnight ends', () => {
@@ -21,6 +27,7 @@ test('getInclusiveDateRange subtracts 1 second for midnight ends', () => {
 });
 
 test('HRWorksClient unwraps service_response and matches employee absence', async () => {
+  pinClock();
   const mockClient = new HRWorksClient({ url: 'https://ha.brkn.lol', token: 'fake-token' });
 
   globalThis.fetch = async (url) => {
@@ -76,6 +83,7 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
 });
 
 test('HRWorksClient prefetchAllAbsences batches organizational units and serves findPersonAbsence from memory', async () => {
+  pinClock();
   const mockClient = new HRWorksClient({ url: 'https://ha.brkn.lol', token: 'fake-token', batchSize: 2 });
   const calls = [];
 

@@ -145,4 +145,5 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `opsgenie.on_call_schedule_id`, `.support_schedule_id` | Schedules for `/oncall`. |
 | `opsgenie.base_url`, `.web_base_url` | OpsGenie API and web URLs. |
 | `home_assistant.url`, `.token_file` | Home Assistant with the HR WORKS integration, for `/whereis`. |
+| `home_assistant.hrworks_batch_size` | Organizational units per HR WORKS request when prefetching the company (4). Keep each request under the proxy timeout. |
 | `conversations` | Chats to watch: `{ id, name, gitlab }`. Default: the self chat `48:notes`. |

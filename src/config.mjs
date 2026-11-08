@@ -181,6 +181,7 @@ export function loadConfig(configPath) {
     url: (getString(fileConfig.home_assistant?.url) || process.env.HASS_URL || 'https://ha.brkn.lol').replace(/\/+$/, ''),
     token_file: getNullableString(fileConfig.home_assistant?.token_file) || process.env.HASS_TOKEN_FILE || null,
     token: null,
+    hrworks_batch_size: Number(fileConfig.home_assistant?.hrworks_batch_size ?? 4),
   };
 
   if (homeAssistant.token_file && fs.existsSync(homeAssistant.token_file)) {

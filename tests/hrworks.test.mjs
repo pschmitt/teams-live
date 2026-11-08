@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, mock, test } from 'node:test';
 
-import { HRWorksClient, getInclusiveDateRange } from '../src/hrworks.mjs';
+import { HRWorksClient, getInclusiveDateRange, summarizeErrorBody } from '../src/hrworks.mjs';
 import { formatWhereisCard } from '../src/users.mjs';
 
 const originalFetch = globalThis.fetch;
@@ -251,4 +251,48 @@ test('formatWhereisCard formats HRworks line for active, none, upcoming, and err
     },
   });
   assert.match(card5, /🏢 \*\*HRworks\*\*: Person not found in HRworks calendar/);
+});
+
+test('prefetchAllAbsences stops at a failed batch and resumes there on the next run', async () => {
+  const client = new HRWorksClient({ url: 'https://ha.example.com', token: 'fake-token', batchSize: 2 });
+  const units = ['A', 'B', 'C', 'D', 'E'];
+  const companyCalls = [];
+  let failBatchWith = 'C';
+
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body || '{}');
+    if (url.includes('get_team_absences')) {
+      return { ok: true, json: async () => ({ service_response: { employees: [], absences: [] } }) };
+    }
+    if (!body.units || body.units.length === 0) {
+      return {
+        ok: true,
+        json: async () => ({ service_response: { available_organizational_units: units, employees: [], absences: [] } }),
+      };
+    }
+    companyCalls.push(body.units.join(','));
+    if (failBatchWith && body.units.includes(failBatchWith)) {
+      return { ok: false, status: 504, text: async () => '<html><head><title>504 Gateway Time-out</title></head></html>' };
+    }
+    return { ok: true, json: async () => ({ service_response: { employees: [], absences: [] } }) };
+  };
+
+  await client.prefetchAllAbsences();
+  // A,B succeeds, C,D fails, E is never tried and the prefetch is not done.
+  assert.deepEqual(companyCalls, ['A,B', 'C,D']);
+  assert.equal(client.companyData.lastFullPrefetchAt, 0);
+  assert.equal(client.companyData.resumeIndex, 2);
+
+  failBatchWith = null;
+  await client.prefetchAllAbsences();
+  assert.deepEqual(companyCalls, ['A,B', 'C,D', 'C,D', 'E']);
+  assert.ok(client.companyData.lastFullPrefetchAt > 0);
+  assert.equal(client.companyData.resumeIndex, 0);
+});
+
+test('summarizeErrorBody keeps error logs to one short line', () => {
+  const html = '<html>\n<head><title>504 Gateway Time-out</title></head>\n<body><center><h1>504</h1></center></body></html>';
+  assert.equal(summarizeErrorBody(html), '504 Gateway Time-out');
+  assert.equal(summarizeErrorBody('{"message":"calendar_failed"}'), '{"message":"calendar_failed"}');
+  assert.equal(summarizeErrorBody('x'.repeat(300)).length, 201);
 });

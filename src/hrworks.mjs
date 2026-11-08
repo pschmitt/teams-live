@@ -18,6 +18,15 @@ export function getInclusiveDateRange(startIso, endIso) {
   return { start: startStr, end: endStr };
 }
 
+// One line for the log: Home Assistant answers with JSON, the proxy in front of
+// it with an HTML error page.
+export function summarizeErrorBody(text) {
+  const raw = String(text ?? '');
+  const title = raw.match(/<title>([^<]*)<\/title>/i);
+  const flat = (title ? title[1] : raw.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  return flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
+}
+
 export class HRWorksClient {
   constructor(config = {}) {
     this.url = (config.url || 'https://ha.brkn.lol').replace(/\/+$/, '');
@@ -26,13 +35,18 @@ export class HRWorksClient {
     this.cache = new Map();
     this.cacheTtlMs = 10 * 60 * 1000; // 10 minutes cache for team/single-OU
     this.companyTtlMs = 30 * 60 * 1000; // 30 minutes cache for full company prefetch
-    this.batchSize = config.batchSize || 12;
+    // Each organizational unit costs the HR WORKS integration a page load, and a
+    // request that runs past the reverse proxy's read timeout (60s) fails as a
+    // 504, so keep batches small.
+    this.batchSize = Number(config.hrworks_batch_size ?? config.batchSize) || 4;
     this.companyData = {
       employeesByRaw: new Map(),
       absencesByKey: new Map(),
       availableUnits: [],
       lastFullPrefetchAt: 0,
       lastTeamPrefetchAt: 0,
+      // Batch to continue with after a failed prefetch.
+      resumeIndex: 0,
       loadingPromise: null,
     };
   }
@@ -71,7 +85,7 @@ export class HRWorksClient {
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        console.warn(`[HRWorksClient] Service ${service} returned ${resp.status}: ${text}`);
+        console.warn(`[HRWorksClient] Service ${service} returned ${resp.status}: ${summarizeErrorBody(text)}`);
         return null;
       }
 
@@ -186,12 +200,22 @@ export class HRWorksClient {
           return this.getAggregatedCompanyData();
         }
 
-        // 3. Fetch organizational units in batches
-        for (let i = 0; i < units.length; i += this.batchSize) {
+        // 3. Fetch organizational units in batches. Stop at the first failure (the
+        // integration's browser is usually down then, and the remaining batches
+        // would fail the same way) and resume from that batch on the next run.
+        const start = this.companyData.resumeIndex < units.length ? this.companyData.resumeIndex : 0;
+        for (let i = start; i < units.length; i += this.batchSize) {
           const batch = units.slice(i, i + this.batchSize);
-          await this.getCompanyAbsences({ units: batch });
+          if (!(await this.getCompanyAbsences({ units: batch }))) {
+            this.companyData.resumeIndex = i;
+            console.warn(
+              `[HRWorksClient] Company prefetch stopped at units ${i + 1}-${i + batch.length} of ${units.length}; resuming there next run`
+            );
+            return this.getAggregatedCompanyData();
+          }
         }
 
+        this.companyData.resumeIndex = 0;
         this.companyData.lastFullPrefetchAt = Date.now();
         return this.getAggregatedCompanyData();
       } finally {

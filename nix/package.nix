@@ -4,6 +4,9 @@
   nodejs,
   msteams-mcp,
   makeWrapper,
+  coreutils,
+  jq,
+  systemd,
 }:
 
 stdenv.mkDerivation {
@@ -38,6 +41,16 @@ stdenv.mkDerivation {
     mkdir -p "$out/bin"
     makeWrapper "${lib.getExe nodejs}" "$out/bin/teams-live" \
       --add-flags "$out/lib/teams-live/src/main.mjs"
+
+    install -Dm755 scripts/teams-live-health.sh "$out/libexec/teams-live-health"
+    makeWrapper "$out/libexec/teams-live-health" "$out/bin/teams-live-health" \
+      --prefix PATH : "${
+        lib.makeBinPath [
+          coreutils
+          jq
+          systemd
+        ]
+      }"
 
     runHook postInstall
   '';

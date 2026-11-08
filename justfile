@@ -17,7 +17,11 @@ check:
   node --check src/snake.mjs
   node --check src/config.mjs
   node --check src/trouter.mjs
+  shellcheck scripts/*.sh
   nix flake check
+
+test:
+  node --test tests/*.test.mjs
 
 fmt:
   nixfmt flake.nix nix/*.nix

@@ -37,6 +37,9 @@ export async function acquireFromBrowserDaemon(bdConfig) {
   const api = (path) => (prefix ? `${prefix}${path}` : `/api${path}`);
 
   let sessionId = prof.session_id;
+  // A session we start only serves this sign-in and is removed afterwards;
+  // a session that was already running belongs to someone else and stays.
+  let createdSession = false;
   if (!sessionId) {
     log(`Profile "${profileName}" has no active session, creating session...`);
     const sessRes = await fetch(`${url}${api('/sessions')}`, {
@@ -56,6 +59,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     }
     const sessData = await sessRes.json();
     sessionId = sessData.id;
+    createdSession = true;
   }
 
   const isTeamsUrl = (u) => {
@@ -94,13 +98,13 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     await new Promise(r => setTimeout(r, 6000));
   };
 
-  if (!targetId) {
-    log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
-    await openAuthTab();
-  }
-
   // 3. Export auth and find Spaces token
   try {
+    if (!targetId) {
+      log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
+      await openAuthTab();
+    }
+
     let spacesToken = null;
     let refreshToken = null;
     let authData = null;
@@ -252,7 +256,19 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     log(`Successfully acquired credentials from browser-daemon for ${auth.userMri}`);
     return auth;
   } finally {
-    if (openedTabId) {
+    if (createdSession) {
+      try {
+        const delRes = await fetch(`${url}${api(`/sessions/${encodeURIComponent(sessionId)}`)}`, {
+          method: 'DELETE',
+          headers,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!delRes.ok) throw new Error(`HTTP ${delRes.status}`);
+        log(`Closed browser session ${sessionId} created for this sign-in`);
+      } catch (err) {
+        log(`Could not close browser session ${sessionId}: ${err.message}`);
+      }
+    } else if (openedTabId) {
       try {
         const sessionRes = await fetch(`${url}${api(`/sessions/${encodeURIComponent(sessionId)}`)}`, {
           headers,

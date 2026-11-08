@@ -9,49 +9,105 @@ let
     mkEnableOption
     mkIf
     mkOption
+    mkPackageOption
+    mkRenamedOptionModule
     types
     ;
   cfg = config.services.teams-live;
 
-  jsonFormat = pkgs.formats.json { };
+  settingsFormat = pkgs.formats.json { };
 
-  overrides = lib.filterAttrs (_: v: v != { }) {
-    browser_daemon = lib.filterAttrs (_: v: v != null && v != "") {
-      url = cfg.browserDaemonUrl;
-      profile = cfg.browserDaemonProfile;
-      secret_file = cfg.browserDaemonSecretFile;
-    };
-    gitlab = lib.filterAttrs (_: v: v != null) {
-      token_file = cfg.gitlabTokenFile;
-    };
-    teams = lib.filterAttrs (_: v: v != null) {
-      credentials_file = cfg.credentialsFile;
-    };
-  };
+  configFile =
+    if cfg.configFile != null then
+      cfg.configFile
+    else
+      settingsFormat.generate "teams-live-config.json" cfg.settings;
 
-  effectiveSettings = lib.recursiveUpdate cfg.settings overrides;
+  stateDir = "${cfg.dataDir}/state";
 
-  defaultConfigFile = jsonFormat.generate "teams-live-config.json" effectiveSettings;
-  configFile = if cfg.configFile != null then cfg.configFile else defaultConfigFile;
+  healthCheck = pkgs.writeShellScript "teams-live-health" ''
+    exec ${lib.getExe' cfg.package "teams-live-health"} \
+      --state-dir ${lib.escapeShellArg stateDir} \
+      --unit teams-live.service "$@"
+  '';
+
+  renamed =
+    from: to:
+    mkRenamedOptionModule [ "services" "teams-live" from ] (
+      [
+        "services"
+        "teams-live"
+        "settings"
+      ]
+      ++ to
+    );
 in
 {
-  options.services.teams-live = {
-    enable = mkEnableOption "Microsoft Teams push watcher and GitLab MR integration";
+  imports = [
+    (renamed "credentialsFile" [
+      "teams"
+      "credentials_file"
+    ])
+    (renamed "gitlabTokenFile" [
+      "gitlab"
+      "token_file"
+    ])
+    (renamed "browserDaemonUrl" [
+      "browser_daemon"
+      "url"
+    ])
+    (renamed "browserDaemonProfile" [
+      "browser_daemon"
+      "profile"
+    ])
+    (renamed "browserDaemonSecretFile" [
+      "browser_daemon"
+      "secret_file"
+    ])
+  ];
 
-    package = mkOption {
-      type = types.package;
-      default =
-        pkgs.teams-live or (pkgs.callPackage ./package.nix {
-          msteams-mcp = pkgs.msteams-mcp or (pkgs.callPackage ./msteams-mcp { });
-        });
-      defaultText = lib.literalExpression "pkgs.teams-live";
-      description = "The teams-live package to run.";
+  options.services.teams-live = {
+    enable = mkEnableOption "teams-live, the Microsoft Teams bot with GitLab, Jira and OpsGenie integration";
+
+    package = mkPackageOption pkgs "teams-live" { };
+
+    settings = mkOption {
+      type = types.submodule { freeformType = settingsFormat.type; };
+      default = { };
+      example = lib.literalExpression ''
+        {
+          gitlab.host = "git.example.com";
+          gitlab.token_file = config.sops.secrets."teams-live/gitlab-token".path;
+          opsgenie.on_call_key._secret = config.sops.secrets."opsgenie/key".path;
+          conversations = [
+            { id = "48:notes"; name = "Notes (Self)"; gitlab = true; }
+          ];
+        }
+      '';
+      description = ''
+        teams-live configuration, written to a JSON file in the Nix store.
+        See `docs/nix.md` in the teams-live repository for the keys.
+
+        Never put a secret here directly: replace any string value with
+        `{ _secret = "/path/to/file"; }` and teams-live reads the value
+        from that file when it starts.
+      '';
+    };
+
+    configFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = ''
+        Path to a complete JSON configuration file, used instead of
+        {option}`settings`. A file outside the Nix store does not restart
+        the service when it changes; restart it yourself.
+      '';
     };
 
     dataDir = mkOption {
-      type = types.str;
+      type = types.path;
       default = "/var/lib/teams-live";
-      description = "Directory for state, token caches, and session credentials.";
+      description = "Directory for state, token caches and session data.";
     };
 
     user = mkOption {
@@ -69,84 +125,66 @@ in
     extraGroups = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Extra groups for the teams-live service.";
+      description = "Supplementary groups for the service, for example to read secret files.";
     };
 
-    configFile = mkOption {
-      type = types.nullOr (types.either types.path types.str);
-      default = null;
-      description = "Path to an explicit JSON/YAML configuration file. Overrides settings if provided.";
-    };
-
-    credentialsFile = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Path to a Teams session state or credentials JSON file (SOPS secret).";
-    };
-
-    gitlabTokenFile = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Path to the GitLab API token file (SOPS secret).";
-    };
-
-    browserDaemonUrl = mkOption {
+    healthCheck = mkOption {
       type = types.str;
-      default = "";
-      description = "Optional URL to browser-daemon node for automated re-authentication. Leave empty to disable.";
-    };
-
-    browserDaemonProfile = mkOption {
-      type = types.str;
-      default = "work";
-      description = "Profile on the browser-daemon node with an active Teams session.";
-    };
-
-    browserDaemonSecretFile = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Optional path to the browser-daemon cluster secret (SOPS secret).";
-    };
-
-    settings = mkOption {
-      type = types.submodule {
-        freeformType = jsonFormat.type;
-      };
-      default = { };
-      description = "Structured configuration for teams-live, serialized as JSON.";
+      readOnly = true;
+      default = "${healthCheck}";
+      defaultText = lib.literalExpression "teams-live-health for this service";
+      description = ''
+        Health check command for monitoring (monit, Nagios, ...). It exits
+        0 while the service is healthy, starting or degraded, and non-zero
+        when it should be restarted.
+      '';
     };
   };
 
   config = mkIf cfg.enable {
+    warnings = lib.optional (cfg.configFile != null && cfg.settings != { }) ''
+      services.teams-live: both configFile and settings are set; settings is ignored.
+    '';
+
     environment.systemPackages = [ cfg.package ];
 
     users = {
-      users.${cfg.user} = {
-        isSystemUser = true;
-        inherit (cfg) group extraGroups;
-        home = cfg.dataDir;
+      users = mkIf (cfg.user == "teams-live") {
+        teams-live = {
+          isSystemUser = true;
+          inherit (cfg) group extraGroups;
+          home = cfg.dataDir;
+        };
       };
-      groups.${cfg.group} = { };
+      groups = mkIf (cfg.group == "teams-live") { teams-live = { }; };
     };
 
-    systemd.tmpfiles.rules = [
-      "d ${cfg.dataDir} 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.dataDir}/state 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.dataDir}/cache 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.dataDir}/config 0700 ${cfg.user} ${cfg.group} -"
-    ];
+    systemd.tmpfiles.settings.teams-live =
+      lib.genAttrs
+        [
+          cfg.dataDir
+          stateDir
+          "${cfg.dataDir}/cache"
+          "${cfg.dataDir}/config"
+        ]
+        (_: {
+          d = {
+            inherit (cfg) user group;
+            mode = "0700";
+          };
+        });
 
     systemd.services.teams-live = {
-      description = "Microsoft Teams push watcher and GitLab MR integration";
+      description = "teams-live Microsoft Teams bot";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
 
       environment = {
-        XDG_STATE_HOME = "${cfg.dataDir}/state";
+        HOME = cfg.dataDir;
+        XDG_STATE_HOME = stateDir;
         XDG_CACHE_HOME = "${cfg.dataDir}/cache";
         XDG_CONFIG_HOME = "${cfg.dataDir}/config";
-        HOME = cfg.dataDir;
       };
 
       serviceConfig = {
@@ -161,15 +199,10 @@ in
         Restart = "always";
         RestartSec = "10s";
 
-        # Security sandbox
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;
         ReadWritePaths = [ cfg.dataDir ];
-        ReadOnlyPaths =
-          lib.optional (cfg.credentialsFile != null) cfg.credentialsFile
-          ++ lib.optional (cfg.gitlabTokenFile != null) cfg.gitlabTokenFile
-          ++ lib.optional (cfg.browserDaemonSecretFile != null) cfg.browserDaemonSecretFile;
         PrivateTmp = true;
         ProtectControlGroups = true;
         ProtectKernelModules = true;

@@ -54,6 +54,28 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
     - `/marco`: Diagnostic round-trip latency and echo probe.
     - `/sudo [cmd]` (or `/admin`): Administrative controls (restart, reauth, status, kick, ban, unban, bans) [admin only].
 
+## Install
+
+On NixOS, add the flake input and enable the module:
+
+```nix
+{
+  imports = [ inputs.teams-live.nixosModules.default ];
+  services.teams-live = {
+    enable = true;
+    settings.gitlab.host = "git.example.com";
+  };
+}
+```
+
+Settings, secrets and the health check are in [docs/nix.md](docs/nix.md).
+
+## Documentation
+
+| Topic | |
+| --- | --- |
+| [Nix](docs/nix.md) | Flake outputs, NixOS module, secrets, settings reference |
+
 ## License & Development
 
 - Repository: [github.com/pschmitt/teams-live](https://github.com/pschmitt/teams-live)

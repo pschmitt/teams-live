@@ -31,6 +31,30 @@ export function parseConfigFile(filePath) {
   }
 }
 
+const isSecretRef = (val) =>
+  val !== null &&
+  typeof val === 'object' &&
+  !Array.isArray(val) &&
+  Object.keys(val).length === 1 &&
+  typeof val._secret === 'string';
+
+// Replace every `{ "_secret": "/path" }` in the config with the trimmed contents
+// of that file, so a config file can live in the Nix store without secrets.
+export function resolveSecrets(val, where = 'config') {
+  if (isSecretRef(val)) {
+    try {
+      return fs.readFileSync(val._secret, 'utf8').trim();
+    } catch (err) {
+      throw new Error(`Could not read secret for ${where} from ${val._secret}: ${err.message}`);
+    }
+  }
+  if (Array.isArray(val)) return val.map((v, i) => resolveSecrets(v, `${where}[${i}]`));
+  if (val !== null && typeof val === 'object') {
+    return Object.fromEntries(Object.entries(val).map(([k, v]) => [k, resolveSecrets(v, `${where}.${k}`)]));
+  }
+  return val;
+}
+
 export function loadConfig(configPath) {
   let fileConfig = {};
   if (configPath) {
@@ -38,6 +62,7 @@ export function loadConfig(configPath) {
   } else if (process.env.TEAMS_LIVE_CONFIG) {
     fileConfig = parseConfigFile(process.env.TEAMS_LIVE_CONFIG);
   }
+  fileConfig = resolveSecrets(fileConfig);
 
   const getString = (val) => (typeof val === 'string' ? val : '');
   const getNullableString = (val) => (typeof val === 'string' ? val : null);

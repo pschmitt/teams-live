@@ -143,7 +143,7 @@ test('retries with an owned tab when the advertised Teams tab has closed', async
   assert.equal(calls.some((call) => call.url.searchParams.get('url') === 'about:blank'), false);
 });
 
-test('reaches a profile on another node through the peer proxy', async () => {
+test('reaches a profile on another node through the peer proxy and closes the session it created', async () => {
   const calls = [];
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input);
@@ -164,11 +164,8 @@ test('reaches a profile on another node through the peer proxy', async () => {
     if (url.pathname === '/api/peers/remote/pages/owned-tab/auth') {
       return { ok: false, status: 403, text: async () => 'test error' };
     }
-    if (url.pathname === '/api/peers/remote/sessions/new-session') {
-      return { ok: true, json: async () => ({ session: { tabs_count: 2 } }) };
-    }
-    if (url.pathname === '/api/peers/remote/json/close/owned-tab') {
-      return { ok: true };
+    if (url.pathname === '/api/peers/remote/sessions/new-session' && options.method === 'DELETE') {
+      return { ok: true, json: async () => ({ status: 'terminated' }) };
     }
     throw new Error(`Unexpected request path: ${url.pathname}`);
   };
@@ -180,6 +177,8 @@ test('reaches a profile on another node through the peer proxy', async () => {
 
   assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/sessions' && c.method === 'POST'));
   assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/pages/owned-tab/auth'));
-  assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/json/close/owned-tab'));
+  assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/sessions/new-session' && c.method === 'DELETE'));
+  // The whole session goes, so no blank tab is kept and no tab closed one by one.
+  assert.ok(!calls.some((c) => c.url.searchParams.get('url') === 'about:blank'));
   assert.ok(!calls.some((c) => c.url.pathname.includes('/remote/api/')));
 });

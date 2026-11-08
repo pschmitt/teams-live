@@ -142,3 +142,44 @@ test('retries with an owned tab when the advertised Teams tab has closed', async
   assert.equal(calls.some((call) => call.url.pathname === '/json/close/stale-tab'), false);
   assert.equal(calls.some((call) => call.url.searchParams.get('url') === 'about:blank'), false);
 });
+
+test('reaches a profile on another node through the peer proxy', async () => {
+  const calls = [];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    calls.push({ url, method: options.method || 'GET' });
+    if (url.pathname === '/api/mesh/overview') {
+      return { ok: true, json: async () => ({
+        local_node: { name: 'local' },
+        profiles: [{ name: 'ha-msteams', node_name: 'remote', session_id: null }],
+        targets: [],
+      }) };
+    }
+    if (url.pathname === '/api/peers/remote/sessions' && options.method === 'POST') {
+      return { ok: true, json: async () => ({ id: 'new-session' }) };
+    }
+    if (url.pathname === '/api/peers/remote/json/new') {
+      return { ok: true, json: async () => ({ id: url.searchParams.get('url') === 'about:blank' ? 'blank-tab' : 'owned-tab' }) };
+    }
+    if (url.pathname === '/api/peers/remote/pages/owned-tab/auth') {
+      return { ok: false, status: 403, text: async () => 'test error' };
+    }
+    if (url.pathname === '/api/peers/remote/sessions/new-session') {
+      return { ok: true, json: async () => ({ session: { tabs_count: 2 } }) };
+    }
+    if (url.pathname === '/api/peers/remote/json/close/owned-tab') {
+      return { ok: true };
+    }
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'ha-msteams' }),
+    /Auth export failed/,
+  );
+
+  assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/sessions' && c.method === 'POST'));
+  assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/pages/owned-tab/auth'));
+  assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/json/close/owned-tab'));
+  assert.ok(!calls.some((c) => c.url.pathname.includes('/remote/api/')));
+});

@@ -31,12 +31,15 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     throw new Error(`Profile "${profileName}" not found in browser-daemon`);
   }
 
+  // A profile on another node is reached through the daemon's peer proxy:
+  // `/api/peers/<node>/sessions` for the API and `/api/peers/<node>/json/...` for DevTools.
   const prefix = prof.node_name && prof.node_name !== localNode ? `/api/peers/${encodeURIComponent(prof.node_name)}` : '';
+  const api = (path) => (prefix ? `${prefix}${path}` : `/api${path}`);
 
   let sessionId = prof.session_id;
   if (!sessionId) {
     log(`Profile "${profileName}" has no active session, creating session...`);
-    const sessRes = await fetch(`${url}${prefix}/api/sessions`, {
+    const sessRes = await fetch(`${url}${api('/sessions')}`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -106,7 +109,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     const maxAttempts = 5;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const authUrl = `${url}${prefix}/api/pages/${encodeURIComponent(targetId)}/auth`;
+      const authUrl = `${url}${api(`/pages/${encodeURIComponent(targetId)}/auth`)}`;
       const authRes = await fetch(authUrl, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -251,7 +254,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
   } finally {
     if (openedTabId) {
       try {
-        const sessionRes = await fetch(`${url}${prefix}/api/sessions/${encodeURIComponent(sessionId)}`, {
+        const sessionRes = await fetch(`${url}${api(`/sessions/${encodeURIComponent(sessionId)}`)}`, {
           headers,
           signal: AbortSignal.timeout(10000),
         });

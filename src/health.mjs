@@ -4,24 +4,27 @@ import path from 'node:path';
 const log = (...args) => console.error(new Date().toISOString(), '[health]', ...args);
 
 export class HealthMonitor {
-  constructor({ stateDir, gitlab, jira, opsgenie, authManager, getTrouter }) {
+  constructor({ stateDir, gitlab, jira, opsgenie, hrworks, authManager, getTrouter }) {
     this.stateDir = stateDir || process.env.XDG_STATE_HOME || '/var/lib/teams-live/state';
     this.healthPath = path.join(this.stateDir, 'health.json');
     this.gitlab = gitlab;
     this.jira = jira;
     this.opsgenie = opsgenie;
+    this.hrworks = hrworks;
     this.authManager = authManager;
     this.getTrouter = getTrouter;
     this.serviceStatus = {
       gitlab: { status: gitlab?.token ? 'ok' : 'unconfigured', error: null, last_check: null },
       jira: { status: jira?.isConfigured() ? 'ok' : 'unconfigured', error: null, last_check: null },
       opsgenie: { status: opsgenie?.isConfigured() ? 'ok' : 'unconfigured', error: null, last_check: null },
+      homeassistant: { status: hrworks?.isConfigured?.() ? 'ok' : 'unconfigured', error: null, last_check: null },
     };
     this.timer = null;
   }
 
   setServiceStatus(service, ok, error = null) {
-    const key = String(service || '').toLowerCase();
+    let key = String(service || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key === 'ha' || key === 'hrworks') key = 'homeassistant';
     if (!this.serviceStatus[key]) return;
     this.serviceStatus[key] = {
       status: ok ? 'ok' : (error?.includes('401') || error?.includes('403') || error?.includes('auth') ? 'auth_expired' : 'error'),

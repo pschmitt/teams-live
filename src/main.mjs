@@ -111,16 +111,21 @@ async function main() {
   let trouter = null;
   let stopping = false;
 
+  const hrworks = new HRWorksClient({
+    ...config.home_assistant,
+    onAuthError: (err) => handleAuthError('HomeAssistant', err),
+    onSuccess: () => handleServiceSuccess('HomeAssistant'),
+  });
+
   health = new HealthMonitor({
     gitlab,
     jira,
     opsgenie,
+    hrworks,
     authManager,
     getTrouter: () => trouter,
   });
   health.start(15_000);
-
-  const hrworks = new HRWorksClient(config.home_assistant);
 
   watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, hrworks, authManager, health });
   const systemd = new SystemdWatchdog();

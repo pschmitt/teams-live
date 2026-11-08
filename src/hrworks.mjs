@@ -32,6 +32,9 @@ export class HRWorksClient {
     this.url = (config.url || 'https://ha.brkn.lol').replace(/\/+$/, '');
     this.token = config.token || null;
     this.tokenFile = config.token_file || null;
+    this.onAuthError = config.onAuthError || null;
+    this.onSuccess = config.onSuccess || null;
+    this.lastError = null;
     this.cache = new Map();
     this.cacheTtlMs = 10 * 60 * 1000; // 10 minutes cache for team/single-OU
     this.companyTtlMs = 30 * 60 * 1000; // 30 minutes cache for full company prefetch
@@ -49,6 +52,62 @@ export class HRWorksClient {
       resumeIndex: 0,
       loadingPromise: null,
     };
+  }
+
+  isConfigured() {
+    return Boolean(this.url && this.getToken());
+  }
+
+  getStats() {
+    return {
+      configured: this.isConfigured(),
+      url: this.url,
+      employees: this.companyData.employeesByRaw.size,
+      absences: this.companyData.absencesByKey.size,
+      units: this.companyData.availableUnits.length,
+      lastFullPrefetchAt: this.companyData.lastFullPrefetchAt,
+      lastTeamPrefetchAt: this.companyData.lastTeamPrefetchAt,
+    };
+  }
+
+  async checkConnection({ timeoutMs = 5000 } = {}) {
+    const token = this.getToken();
+    if (!token) {
+      return { ok: false, status: 'unconfigured', error: 'No Home Assistant token configured' };
+    }
+
+    const endpoint = `${this.url}/api/`;
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (resp.status === 401 || resp.status === 403) {
+        const err = `Home Assistant HTTP ${resp.status}: Unauthorized`;
+        this.lastError = err;
+        this.onAuthError?.(err);
+        return { ok: false, status: 'auth_expired', error: err };
+      }
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        const err = `Home Assistant HTTP ${resp.status}: ${summarizeErrorBody(text)}`;
+        this.lastError = err;
+        return { ok: false, status: 'error', error: err };
+      }
+
+      this.lastError = null;
+      this.onSuccess?.();
+      return { ok: true, status: 'ok', error: null };
+    } catch (err) {
+      const errStr = `Home Assistant connection failed: ${err.message}`;
+      this.lastError = errStr;
+      return { ok: false, status: 'error', error: errStr };
+    }
   }
 
   getToken() {
@@ -85,14 +144,22 @@ export class HRWorksClient {
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => '');
+        const errStr = `HRworks HTTP ${resp.status}: ${summarizeErrorBody(text)}`;
         console.warn(`[HRWorksClient] Service ${service} returned ${resp.status}: ${summarizeErrorBody(text)}`);
+        this.lastError = errStr;
+        if (resp.status === 401 || resp.status === 403) {
+          this.onAuthError?.(errStr);
+        }
         return null;
       }
 
+      this.lastError = null;
+      this.onSuccess?.();
       const json = await resp.json();
       return json.service_response || json.response || json;
     } catch (err) {
       console.warn(`[HRWorksClient] Call to ${service} failed: ${err.message}`);
+      this.lastError = err.message;
       return null;
     }
   }

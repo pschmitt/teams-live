@@ -918,6 +918,7 @@ export class MergeRequestWatcher {
       `- **Watched Conversations**: ${this.watchedConversations.size} (${convNames})\n` +
       `- **GitLab**: Polling every ${this.pollIntervalMs / 1000}s\n` +
       `- **Jira**: ${this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'}\n` +
+      `- **Home Assistant (HR works)**: ${this.hrworks?.isConfigured() ? 'Active' : 'Not configured'}\n` +
       `- **Precompute Cache**: Active (every ${this.precomputeIntervalMs / 60000}m)`;
 
     log(`Sending startup announcement to ${adminConv}...`);
@@ -1086,11 +1087,48 @@ export class MergeRequestWatcher {
       error: ogHealth.error,
     };
 
+    // 5. Home Assistant (HR works)
+    const haConfigured = Boolean(this.hrworks?.isConfigured?.());
+    let haCheck = null;
+    if (haConfigured && typeof this.hrworks?.checkConnection === 'function') {
+      haCheck = await this.hrworks.checkConnection().catch(() => null);
+    }
+    const haHealth = services.homeassistant || {};
+    let haStatus = !haConfigured ? 'unconfigured' : (haHealth.status || 'ok');
+    if (haCheck && !haCheck.ok) {
+      haStatus = haCheck.status || 'error';
+    }
+    const haError = haCheck?.error || haHealth.error || this.hrworks?.lastError || null;
+
+    const stats = this.hrworks?.getStats?.() || {};
+    const empCount = stats.employees ?? 0;
+    const absCount = stats.absences ?? 0;
+    const unitsCount = stats.units ?? 0;
+    let haDetails = 'empty';
+    if (empCount > 0 || absCount > 0) {
+      const lastPrefetch = stats.lastFullPrefetchAt || stats.lastTeamPrefetchAt || 0;
+      const ageStr = lastPrefetch ? `${Math.round((Date.now() - lastPrefetch) / 1000)}s ago` : 'cached';
+      const unitsPart = unitsCount > 0 ? `, ${unitsCount} units` : '';
+      haDetails = `${empCount} employees, ${absCount} absences${unitsPart} (${ageStr})`;
+    } else if (haConfigured) {
+      haDetails = '0 employees (prefetch pending)';
+    }
+
+    const homeAssistantStatus = {
+      name: 'Home Assistant (HR works)',
+      configured: haConfigured,
+      status: haStatus,
+      url: this.hrworks?.url || '',
+      details: haDetails,
+      error: haError,
+    };
+
     return {
       teams: teamsStatus,
       gitlab: gitlabStatus,
       jira: jiraStatus,
       opsgenie: opsgenieStatus,
+      homeassistant: homeAssistantStatus,
     };
   }
 
@@ -2955,6 +2993,9 @@ export class MergeRequestWatcher {
       if (conn.opsgenie.status === 'auth_expired' || conn.opsgenie.status === 'error') {
         brokenConnectors.push(`- **OpsGenie**: ❌ ${conn.opsgenie.error || 'Authentication expired'}`);
       }
+      if (conn.homeassistant && (conn.homeassistant.status === 'auth_expired' || conn.homeassistant.status === 'error')) {
+        brokenConnectors.push(`- **Home Assistant (HR works)**: ❌ ${conn.homeassistant.error || 'Authentication expired'}`);
+      }
 
       let connectorNotice = '';
       if (brokenConnectors.length > 0) {
@@ -3825,6 +3866,7 @@ export class MergeRequestWatcher {
     const glIcon = conn.gitlab.status === 'ok' ? '🟢' : (conn.gitlab.status === 'unconfigured' ? '⚪' : '❌');
     const jiraIcon = conn.jira.status === 'ok' ? '🟢' : (conn.jira.status === 'unconfigured' ? '⚪' : '❌');
     const ogIcon = conn.opsgenie.status === 'ok' ? '🟢' : (conn.opsgenie.status === 'unconfigured' ? '⚪' : '❌');
+    const haIcon = conn.homeassistant?.status === 'ok' ? '🟢' : (conn.homeassistant?.status === 'unconfigured' ? '⚪' : '❌');
 
     const text =
       '🔧 **teams-live status (sudo)**:\n\n' +
@@ -3849,7 +3891,11 @@ export class MergeRequestWatcher {
       `- **OpsGenie**: ${ogIcon} ${conn.opsgenie.status === 'ok' ? 'Connected' : (conn.opsgenie.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.opsgenie.configured ? `  - **Endpoint**: ${conn.opsgenie.endpoint}\n` +
                                   `  - **Keys**: On-Call ${conn.opsgenie.onCall ? '✅' : '❌'} | Support ${conn.opsgenie.support ? '✅' : '❌'}\n` : '') +
-      (conn.opsgenie.error ? `  - **Error**: \`${conn.opsgenie.error}\`\n` : '');
+      (conn.opsgenie.error ? `  - **Error**: \`${conn.opsgenie.error}\`\n` : '') +
+      `- **Home Assistant (HR works)**: ${haIcon} ${conn.homeassistant?.status === 'ok' ? 'Connected' : (conn.homeassistant?.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      (conn.homeassistant?.configured ? `  - **URL**: \`${conn.homeassistant.url}\`\n` +
+                                        `  - **Cache**: ${conn.homeassistant.details}\n` : '') +
+      (conn.homeassistant?.error ? `  - **Error**: \`${conn.homeassistant.error}\`\n` : '');
 
     await sendReply(event.conversationId, event, text);
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});

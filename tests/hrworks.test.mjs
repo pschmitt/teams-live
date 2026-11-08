@@ -3,6 +3,8 @@ import { afterEach, mock, test } from 'node:test';
 
 import { HRWorksClient, getInclusiveDateRange, summarizeErrorBody } from '../src/hrworks.mjs';
 import { formatWhereisCard } from '../src/users.mjs';
+import { HealthMonitor } from '../src/health.mjs';
+import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 const originalFetch = globalThis.fetch;
 
@@ -295,4 +297,107 @@ test('summarizeErrorBody keeps error logs to one short line', () => {
   assert.equal(summarizeErrorBody(html), '504 Gateway Time-out');
   assert.equal(summarizeErrorBody('{"message":"calendar_failed"}'), '{"message":"calendar_failed"}');
   assert.equal(summarizeErrorBody('x'.repeat(300)).length, 201);
+});
+
+test('HRWorksClient isConfigured, checkConnection, and getStats', async () => {
+  const unconfigured = new HRWorksClient({ url: 'https://ha.brkn.lol' });
+  assert.equal(unconfigured.isConfigured(), false);
+  const unconfCheck = await unconfigured.checkConnection();
+  assert.equal(unconfCheck.ok, false);
+  assert.equal(unconfCheck.status, 'unconfigured');
+
+  let authErrorMsg = null;
+  let successCount = 0;
+  const client = new HRWorksClient({
+    url: 'https://ha.brkn.lol',
+    token: 'test-token',
+    onAuthError: (msg) => { authErrorMsg = msg; },
+    onSuccess: () => { successCount++; },
+  });
+
+  assert.equal(client.isConfigured(), true);
+  const stats = client.getStats();
+  assert.equal(stats.configured, true);
+  assert.equal(stats.url, 'https://ha.brkn.lol');
+  assert.equal(stats.employees, 0);
+
+  // 1. Successful connection check
+  globalThis.fetch = async (url, opts) => {
+    assert.equal(url, 'https://ha.brkn.lol/api/');
+    assert.equal(opts.headers.Authorization, 'Bearer test-token');
+    return { ok: true, status: 200, json: async () => ({ message: 'API running.' }) };
+  };
+
+  const okCheck = await client.checkConnection();
+  assert.equal(okCheck.ok, true);
+  assert.equal(okCheck.status, 'ok');
+  assert.equal(successCount, 1);
+
+  // 2. Auth failure
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    text: async () => '401: Unauthorized',
+  });
+
+  const authCheck = await client.checkConnection();
+  assert.equal(authCheck.ok, false);
+  assert.equal(authCheck.status, 'auth_expired');
+  assert.match(authErrorMsg, /Home Assistant HTTP 401/);
+
+  // 3. Network error
+  globalThis.fetch = async () => {
+    throw new Error('fetch failed (ECONNREFUSED)');
+  };
+
+  const errCheck = await client.checkConnection();
+  assert.equal(errCheck.ok, false);
+  assert.equal(errCheck.status, 'error');
+  assert.match(errCheck.error, /fetch failed/);
+});
+
+test('HealthMonitor tracks homeassistant service and watcher.getConnectorsStatus includes Home Assistant', async () => {
+  const hrworks = new HRWorksClient({
+    url: 'https://ha.brkn.lol',
+    token: 'test-token',
+  });
+  hrworks.companyData.employeesByRaw.set('1', { displayName: 'Alice' });
+  hrworks.companyData.absencesByKey.set('1', { category: 'Urlaub' });
+  hrworks.companyData.availableUnits = ['Engineering'];
+  hrworks.companyData.lastFullPrefetchAt = Date.now() - 5000;
+
+  const health = new HealthMonitor({
+    hrworks,
+  });
+
+  const h1 = health.getHealth();
+  assert.equal(h1.services.homeassistant.status, 'ok');
+
+  health.setServiceStatus('HomeAssistant', false, '401 Unauthorized');
+  const h2 = health.getHealth();
+  assert.equal(h2.services.homeassistant.status, 'auth_expired');
+
+  health.setServiceStatus('hrworks', true);
+  const h3 = health.getHealth();
+  assert.equal(h3.services.homeassistant.status, 'ok');
+
+  const watcher = new MergeRequestWatcher({
+    config: { gitlab: {}, conversations: [] },
+    hrworks,
+    health,
+  });
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ message: 'API running.' }),
+  });
+
+  const conn = await watcher.getConnectorsStatus();
+  assert.ok(conn.homeassistant);
+  assert.equal(conn.homeassistant.name, 'Home Assistant (HR works)');
+  assert.equal(conn.homeassistant.configured, true);
+  assert.equal(conn.homeassistant.status, 'ok');
+  assert.equal(conn.homeassistant.url, 'https://ha.brkn.lol');
+  assert.match(conn.homeassistant.details, /1 employees, 1 absences, 1 units/);
 });

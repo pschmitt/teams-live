@@ -8,6 +8,13 @@ const TC = JSON.stringify({ cv: '2024.23.01.2', ua: 'TeamsCDL', hr: '', v: CLIEN
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0 Teams/24165.1410.2974.6689/49';
 const REGISTRATION_TTL = 86400;
+// Teams may drop a registration long before its TTL while the socket stays up,
+// so renew well before that. A fresh session also picks up refreshed tokens.
+const DEFAULT_REGISTRATION_INTERVAL_MS = 15 * 60 * 1000;
+const DEFAULT_MAX_SESSION_MS = 60 * 60 * 1000;
+const PING_INTERVAL_MS = 30_000;
+// Pings are acknowledged, so a socket without any inbound frame for this long is dead.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 100_000;
 const MESSAGE_KINDS = new Set(['NewMessage', 'MessageUpdate']);
 const isContentType = (t) => t === 'Text' || t?.startsWith('RichText');
 
@@ -22,6 +29,7 @@ function connectQuery(info, epid) {
 }
 
 async function register(auth, epid, appId, templateKey, path) {
+  if (!auth) throw new Error(`no auth for ${appId} registration`);
   const res = await fetch(REGISTRAR, {
     method: 'POST',
     headers: {
@@ -44,6 +52,7 @@ async function register(auth, epid, appId, templateKey, path) {
     }),
   });
   log(`registrar ${appId}: HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`registrar ${appId}: HTTP ${res.status}`);
 }
 
 function decodeBody(request) {
@@ -116,18 +125,70 @@ function toEvent(url, body, { verbose = false, all = false } = {}) {
 }
 
 export class TrouterClient {
-  constructor({ onEvent, verbose = false, all = false } = {}) {
+  constructor({
+    onEvent,
+    getAuth = null,
+    verbose = false,
+    all = false,
+    registrationIntervalMs = DEFAULT_REGISTRATION_INTERVAL_MS,
+    maxSessionMs = DEFAULT_MAX_SESSION_MS,
+    livenessTimeoutMs = DEFAULT_LIVENESS_TIMEOUT_MS,
+  } = {}) {
     this.onEvent = onEvent;
+    this.getAuth = getAuth;
     this.verbose = verbose;
     this.all = all;
+    this.registrationIntervalMs = registrationIntervalMs;
+    this.maxSessionMs = maxSessionMs;
+    this.livenessTimeoutMs = livenessTimeoutMs;
     this.ws = null;
     this.pingTimer = null;
     this.registrationTimer = null;
+    this.livenessTimer = null;
     this.connected = false;
+    this.connectedAt = null;
+    this.lastFrameAt = null;
+    this.lastEventAt = null;
+    this.lastRegistrationAt = null;
   }
 
   isConnected() {
     return this.connected && this.ws !== null && this.ws.readyState === 1;
+  }
+
+  getStats() {
+    const iso = (t) => (t ? new Date(t).toISOString() : null);
+    return {
+      connected_at: iso(this.connectedAt),
+      last_frame_at: iso(this.lastFrameAt),
+      last_event_at: iso(this.lastEventAt),
+      last_registration_at: iso(this.lastRegistrationAt),
+    };
+  }
+
+  clearTimers() {
+    clearInterval(this.pingTimer);
+    clearInterval(this.registrationTimer);
+    clearInterval(this.livenessTimer);
+    this.pingTimer = null;
+    this.registrationTimer = null;
+    this.livenessTimer = null;
+  }
+
+  // Drop the current session; connect() resolves and the caller reconnects.
+  reconnect(reason) {
+    log(`forcing reconnect: ${reason}`);
+    this.connected = false;
+    this.clearTimers();
+    const ws = this.ws;
+    if (!ws) return;
+    try {
+      ws.close();
+    } catch {}
+    // A half-dead socket may never complete the close handshake.
+    setTimeout(() => {
+      if (this.ws === ws) ws.dispatchEvent?.(new Event('close'));
+    }, 5_000).unref?.();
   }
 
   async connect(auth) {
@@ -149,6 +210,8 @@ export class TrouterClient {
     const wsUrl = `${socketio.replace(/^http/, 'ws')}socket.io/1/websocket/${sessionId}?${query}`;
     const ws = new WebSocket(wsUrl, { headers: { 'X-Skypetoken': auth.skypeToken, 'User-Agent': USER_AGENT } });
     this.ws = ws;
+    this.lastFrameAt = Date.now();
+    const latestAuth = () => this.getAuth?.() ?? auth;
 
     let seq = 1;
     const send = (frame) => ws.send(frame);
@@ -156,22 +219,35 @@ export class TrouterClient {
     let lastLossRegistration = 0;
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        this.connected = false;
+        this.clearTimers();
+        if (this.ws === ws) this.ws = null;
+        if (err) reject(err);
+        else resolve();
+      };
       ws.addEventListener('open', () => log('websocket open'));
       ws.addEventListener('error', (e) => {
-        this.connected = false;
-        reject(new Error(`websocket error: ${e.message ?? e.type}`));
+        finish(new Error(`websocket error: ${e.message ?? e.type}`));
       });
       ws.addEventListener('close', (e) => {
-        this.connected = false;
-        clearInterval(this.pingTimer);
-        clearInterval(this.registrationTimer);
-        log(`websocket closed (${e.code})`);
-        resolve();
+        log(`websocket closed (${e.code ?? 'forced'})`);
+        finish();
       });
 
       ws.addEventListener('message', async ({ data }) => {
         const frame = String(data);
         const type = frame[0];
+        this.lastFrameAt = Date.now();
+
+        if (type === '2') {
+          // socket.io heartbeat
+          send('2::');
+          return;
+        }
 
         if (type === '1') {
           log('connected, authenticating');
@@ -190,17 +266,49 @@ export class TrouterClient {
               ],
             })}`
           );
-          const registerAll = () =>
-            Promise.all([
-              register(auth, epid, 'NextGenCalling', 'DesktopNgc_2.3:SkypeNgc', `${info.surl}NGCallManagerWin`),
-              register(auth, epid, 'SkypeSpacesWeb', 'SkypeSpacesWeb_2.3', `${info.surl}SkypeSpacesWeb`),
-              register(auth, epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl),
-            ]).catch((err) => log(`registration failed: ${err.message}`));
+          const registerAll = async () => {
+            const a = latestAuth();
+            try {
+              await Promise.all([
+                register(a, epid, 'NextGenCalling', 'DesktopNgc_2.3:SkypeNgc', `${info.surl}NGCallManagerWin`),
+                register(a, epid, 'SkypeSpacesWeb', 'SkypeSpacesWeb_2.3', `${info.surl}SkypeSpacesWeb`),
+                register(a, epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl),
+              ]);
+              this.lastRegistrationAt = Date.now();
+              return true;
+            } catch (err) {
+              log(`registration failed: ${err.message}`);
+              return false;
+            }
+          };
 
-          await registerAll();
+          const registered = await registerAll();
+          if (ws.readyState !== 1) return;
+          if (!registered) {
+            this.reconnect('initial registration failed');
+            return;
+          }
           this.connected = true;
-          this.pingTimer = setInterval(() => sendCommand({ name: 'ping' }), 30_000);
-          this.registrationTimer = setInterval(registerAll, (REGISTRATION_TTL - 60) * 1000);
+          this.connectedAt = Date.now();
+          this.pingTimer = setInterval(() => {
+            try {
+              sendCommand({ name: 'ping' });
+            } catch (err) {
+              log(`ping failed: ${err.message}`);
+            }
+          }, PING_INTERVAL_MS);
+          this.registrationTimer = setInterval(async () => {
+            if (!(await registerAll())) this.reconnect('re-registration failed');
+          }, this.registrationIntervalMs);
+          this.livenessTimer = setInterval(() => {
+            const now = Date.now();
+            const silentMs = now - (this.lastFrameAt ?? now);
+            if (silentMs > this.livenessTimeoutMs) {
+              this.reconnect(`no frame from trouter for ${Math.round(silentMs / 1000)}s`);
+            } else if (this.maxSessionMs > 0 && now - this.connectedAt > this.maxSessionMs) {
+              this.reconnect(`session older than ${Math.round(this.maxSessionMs / 60000)}m, recycling`);
+            }
+          }, 15_000);
           return;
         }
 
@@ -214,6 +322,7 @@ export class TrouterClient {
               verbose: this.verbose,
               all: this.all,
             });
+            if (event) this.lastEventAt = Date.now();
             if (event && this.onEvent) {
               this.onEvent(event);
             }
@@ -229,7 +338,12 @@ export class TrouterClient {
             if (Date.now() - lastLossRegistration < 30_000) return;
             lastLossRegistration = Date.now();
             log('server reported message loss, re-registering');
-            await register(auth, epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl);
+            try {
+              await register(latestAuth(), epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl);
+              this.lastRegistrationAt = Date.now();
+            } catch (err) {
+              log(`re-registration after message loss failed: ${err.message}`);
+            }
           } else if (this.verbose) {
             log(`control: ${frame}`);
           }
@@ -240,8 +354,7 @@ export class TrouterClient {
 
   close() {
     this.connected = false;
-    if (this.pingTimer) clearInterval(this.pingTimer);
-    if (this.registrationTimer) clearInterval(this.registrationTimer);
+    this.clearTimers();
     if (this.ws) {
       try {
         this.ws.close();

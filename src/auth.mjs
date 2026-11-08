@@ -32,6 +32,15 @@ export class AuthManager {
     }
   }
 
+  // Latest tokens from the session store, without triggering a refresh.
+  getCachedAuth() {
+    try {
+      return extractMessageAuth() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   getStatus() {
     return getMessageAuthStatus();
   }

@@ -75,6 +75,7 @@ export class HealthMonitor {
         trouter: trouterConnected ? 'connected' : 'disconnected',
         has_token: Boolean(authStatus.hasToken),
         minutes_remaining: authStatus.minutesRemaining ?? 0,
+        ...(trouter?.getStats?.() ?? {}),
       },
       services: this.serviceStatus,
       errors,

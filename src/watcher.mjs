@@ -666,6 +666,11 @@ export class MergeRequestWatcher {
     }
     this.stateFile = path.join(stateDir, 'watcher-state.json');
     this.completedMessages = new Set();
+    // Message ids already taken up by push or a history scan in this process, so
+    // the history poll and trouter never handle the same message twice.
+    this.seenMessageIds = new Set();
+    this.historyPollTimer = null;
+    this.historyPollRunning = false;
     this.savedEntries = new Map();
     this.userInteractions = new Map();
     this.bannedUsers = new Map();
@@ -5038,6 +5043,11 @@ export class MergeRequestWatcher {
 
     if (event.kind !== 'NewMessage') return;
 
+    if (event.messageId) {
+      if (this.seenMessageIds.has(String(event.messageId))) return;
+      this.markSeen(event.messageId);
+    }
+
     // Ignore bot's own messages immediately to prevent self-trigger loops
     if (
       botSentMessageIds.has(String(event.messageId)) ||
@@ -5081,18 +5091,59 @@ export class MergeRequestWatcher {
     });
   }
 
-  async watchHistory() {
-    const auth = await this.authManager.ensureValidAuth();
+  markSeen(messageId) {
+    this.seenMessageIds.add(String(messageId));
+    if (this.seenMessageIds.size > 2000) {
+      // Sets iterate in insertion order: drop the oldest half.
+      const drop = [...this.seenMessageIds].slice(0, 1000);
+      for (const id of drop) this.seenMessageIds.delete(id);
+    }
+  }
+
+  // Periodic fallback for pushes that Teams silently stops delivering.
+  startHistoryPoll(intervalMs, { onMissedPush } = {}) {
+    if (this.historyPollTimer) clearInterval(this.historyPollTimer);
+    if (!intervalMs || intervalMs <= 0) return;
+    log(`Polling watched conversations every ${Math.round(intervalMs / 1000)}s as push fallback`);
+    this.historyPollTimer = setInterval(async () => {
+      try {
+        const missed = await this.pollHistory({ reason: 'poll', minAgeMs: 30_000 });
+        if (missed > 0) onMissedPush?.(missed);
+      } catch (err) {
+        log(`History poll failed: ${err.message}`);
+      }
+    }, intervalMs);
+    if (this.historyPollTimer.unref) this.historyPollTimer.unref();
+  }
+
+  // Returns the number of messages handled that had not been pushed.
+  async pollHistory({ reason = 'poll', minAgeMs = 0 } = {}) {
+    if (this.historyPollRunning) return 0;
+    this.historyPollRunning = true;
+    try {
+      return await this.watchHistory({ quiet: true, reason, minAgeMs });
+    } finally {
+      this.historyPollRunning = false;
+    }
+  }
+
+  async watchHistory({ quiet = false, reason = 'startup', minAgeMs = 0 } = {}) {
+    // Polls reuse the cached tokens; refreshing is the auth manager's job.
+    const auth = (quiet && this.authManager.getCachedAuth()) || (await this.authManager.ensureValidAuth());
     const self = auth.userMri;
     this.setSelfMri(self);
 
-    const cutoffTime = Date.now() - this.historyMaxAgeMinutes * 60 * 1000;
+    const now = Date.now();
+    const cutoffTime = now - this.historyMaxAgeMinutes * 60 * 1000;
     const processedHistoryCommands = new Set();
+    let missed = 0;
 
     for (const conversationId of this.watchedConversations) {
-      log(
-        `Scanning recent history of ${conversationId} (limit ${this.historyLimit}, max age ${this.historyMaxAgeMinutes}m)...`
-      );
+      if (!quiet) {
+        log(
+          `Scanning recent history of ${conversationId} (limit ${this.historyLimit}, max age ${this.historyMaxAgeMinutes}m)...`
+        );
+      }
       let result = await getThreadMessages(conversationId, {
         limit: this.historyLimit,
         startTime: cutoffTime,
@@ -5113,12 +5164,24 @@ export class MergeRequestWatcher {
       for (const msg of result.value.messages) {
         if (this.completedMessages.has(String(msg.id))) continue;
         if (botSentMessageIds.has(String(msg.id))) continue;
+        if (this.seenMessageIds.has(String(msg.id))) continue;
 
         const msgTime = msg.composeTime ? new Date(msg.composeTime).getTime() : Number(msg.id) || 0;
         if (msgTime && msgTime < cutoffTime) continue;
+        // Leave very recent messages to push, which may still be on its way.
+        if (minAgeMs > 0 && msgTime && now - msgTime < minAgeMs) continue;
+        // Push only delivers text messages; calls, cards and system events never arrive.
+        const type = msg.contentType ?? msg.messageType;
+        if (type && type !== 'Text' && !String(type).startsWith('RichText')) continue;
 
         const senderMri = msg.sender?.mri?.split('/contacts/').pop();
         if (this.isOwnMessage(senderMri, msg.content, msg.id, msg.clientMessageId, msg.content)) continue;
+
+        this.markSeen(msg.id);
+        if (reason !== 'startup') {
+          missed++;
+          log(`[${reason}] Message ${msg.id} in ${conversationId} was not pushed, handling it from history`);
+        }
 
         // If sender is banned, do not process and ensure ⛔ reaction is present
         if (this.isUserBanned(msg.sender?.displayName, senderMri)) {
@@ -5180,6 +5243,7 @@ export class MergeRequestWatcher {
         });
       }
     }
+    return missed;
   }
 
   scheduleNextPrecompute() {
@@ -5235,6 +5299,10 @@ export class MergeRequestWatcher {
   }
 
   stop() {
+    if (this.historyPollTimer) {
+      clearInterval(this.historyPollTimer);
+      this.historyPollTimer = null;
+    }
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;

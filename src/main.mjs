@@ -169,6 +169,9 @@ async function main() {
   trouter = new TrouterClient({
     verbose: VERBOSE,
     all: ALL,
+    getAuth: () => authManager.getCachedAuth() ?? currentAuth,
+    registrationIntervalMs: config.teams.registration_interval_minutes * 60 * 1000,
+    maxSessionMs: config.teams.max_session_minutes * 60 * 1000,
     onEvent: (event) => {
       if (JSON_MODE) {
         console.log(JSON.stringify(event));
@@ -191,12 +194,25 @@ async function main() {
     };
   });
 
+  // Fallback for pushes that Teams silently stops delivering: poll the watched
+  // conversations; a message found there but never pushed forces a reconnect.
+  watcher.startHistoryPoll(config.teams.history_poll_interval_seconds * 1000, {
+    onMissedPush: (count) => {
+      if (trouter?.isConnected()) trouter.reconnect(`history poll found ${count} message(s) that were never pushed`);
+    },
+  });
+
   // Main reconnect loop
+  let connectCount = 0;
   while (!stopping) {
     try {
       currentAuth = await authManager.ensureValidAuth();
       watcher.setSelfMri(currentAuth.userMri);
       systemd.ready('Connecting to Trouter...');
+      if (connectCount++ > 0) {
+        // Catch messages sent while the previous session was down.
+        watcher.pollHistory({ reason: 'reconnect' }).catch((err) => log(`Catch-up history scan failed: ${err.message}`));
+      }
       await trouter.connect(currentAuth);
     } catch (err) {
       log(`Connection error: ${err.message}`);

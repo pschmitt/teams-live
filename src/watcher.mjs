@@ -1680,7 +1680,7 @@ export class MergeRequestWatcher {
     const lines = [];
     if (mr.title) lines.push(`💬 **${mr.title}**`);
     lines.push(`${HEADSUP_PREFIX}${mrUrl} needs a new approval`);
-    const msg = lines.join('\n\n');
+    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
     log(`posting heads-up for ${mr.project}!${mr.iid} to ${entry.conversationId}`);
     const result = await sendReply(entry.conversationId, entry, msg);
     if (!result.ok) {
@@ -1768,7 +1768,7 @@ export class MergeRequestWatcher {
       lines.push(rebaseLine);
     }
 
-    const msg = lines.join('\n\n');
+    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message with status (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
@@ -1912,7 +1912,7 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
-    const msg = lines.join('\n\n');
+    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message to merged for ${mr.project}!${mr.iid}`);
@@ -1996,7 +1996,7 @@ export class MergeRequestWatcher {
       lines.push(`${pipeIcon} [Pipeline #${mr.lastReportedPipelineId}](${pipeUrl})`);
     }
 
-    const msg = lines.join('\n\n');
+    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message to closed for ${mr.project}!${mr.iid}`);
@@ -2063,7 +2063,7 @@ export class MergeRequestWatcher {
       lines.push(`[MR !${mr.iid}](${mr.web_url})`);
     }
 
-    return lines.join('\n\n');
+    return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
   formatPipelineStatusMessage(pipeData, project, mr = null) {
@@ -2088,7 +2088,7 @@ export class MergeRequestWatcher {
       lines.push(`[MR !${mr.iid}](${mr.web_url})`);
     }
 
-    return lines.join('\n\n');
+    return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
   async handleJobStatusComment(entry, job, jobData) {
@@ -2204,7 +2204,7 @@ export class MergeRequestWatcher {
       `👤 Assignee: ${issue.assignee || 'Unassigned'}`,
     ];
 
-    return lines.join('\n\n');
+    return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
   formatOpsGenieAlertMessage(alert) {
@@ -2237,7 +2237,7 @@ export class MergeRequestWatcher {
       `👤 Owner: ${ownerText}`,
     ];
 
-    return lines.join('\n\n');
+    return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
   async handleJiraIssueComment(entry, issue, issueData) {
@@ -2313,7 +2313,7 @@ export class MergeRequestWatcher {
     const pageUrl = page.url || '';
     const linkText = `[${escapeHtml(page.title)}](${pageUrl})`;
 
-    return `📄 **${escapeHtml(page.title)}**\n\n🔗 ${linkText}${spacePart}${authorPart}`;
+    return `📄 **${escapeHtml(page.title)}**\n\n🔗 ${linkText}${spacePart}${authorPart}`.trim();
   }
 
   async handleConfluencePageComment(entry, doc, pageData) {

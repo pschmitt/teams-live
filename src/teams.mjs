@@ -289,9 +289,10 @@ export function buildMentionsProperty(mentions) {
 }
 
 export function renderReplyContent(replyMarkdown) {
-  const parsed = parseContentWithMentionsAndLinks(replyMarkdown);
+  const cleanMarkdown = String(replyMarkdown || '').trim();
+  const parsed = parseContentWithMentionsAndLinks(cleanMarkdown);
   const mentions = parsed.mentions || [];
-  let html = parsed.html;
+  let html = (parsed.html || '').trim();
 
   for (let i = 0; i < mentions.length; i++) {
     const mention = mentions[i];
@@ -305,8 +306,16 @@ export function renderReplyContent(replyMarkdown) {
     }
   }
 
+  // Remove trailing paragraph margin to avoid extra blank space in cards
+  html = html.replace(/(<p)(?![\s\S]*<p)([^>]*>[\s\S]*?<\/p>)$/i, (_m, open, rest) => {
+    if (open.includes('style="')) {
+      return open.replace(/style="([^"]*)"/, 'style="$1;margin-bottom:0;"') + rest;
+    }
+    return `${open} style="margin-bottom:0;"${rest}`;
+  });
+
   return {
-    html: html + `<span style="display:none">${BOT_WATERMARK}</span>${BOT_WATERMARK}`,
+    html: `${html}<span style="display:none">${BOT_WATERMARK}</span>`,
     mentions,
   };
 }
@@ -592,7 +601,7 @@ export async function appendThumbnailToMessage(
 
   let baseHtml = (originalRawHtml || '').trim();
   if (!baseHtml) {
-    baseHtml = `<p>${escapeHtml(originalContent || '')}</p>`;
+    baseHtml = `<p>${escapeHtml((originalContent || '').trim())}</p>`;
   }
 
   const b64 = typeof thumbnailData === 'string' ? thumbnailData : thumbnailData?.b64;
@@ -600,22 +609,22 @@ export async function appendThumbnailToMessage(
     return { ok: false, error: new Error('No base64 thumbnail provided') };
   }
 
-  const cleanUrl = escapeHtml(url);
+  const cleanUrl = escapeHtml((url || '').trim());
 
   let thumbnailBlock;
   const amsRes = await retrySendWithRecovery(() => uploadImageToAms(b64, conversationId));
   if (amsRes.ok && amsRes.objectId && amsRes.url) {
-    thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="${amsRes.url}" itemscope="" itemtype="http://schema.skype.com/AMSImage" itemid="${amsRes.objectId}" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+    thumbnailBlock = `<p style="margin-top:6px;margin-bottom:0;"><a href="${cleanUrl}"><img src="${amsRes.url}" itemscope="" itemtype="http://schema.skype.com/AMSImage" itemid="${amsRes.objectId}" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
   } else {
     console.warn(
       new Date().toISOString(),
       `[teams] AMS upload failed (${amsRes.error?.message || amsRes.error}), falling back to data URI:`,
       amsRes.error
     );
-    thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+    thumbnailBlock = `<p style="margin-top:6px;margin-bottom:0;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
   }
 
-  const newHtml = `${baseHtml}\n${thumbnailBlock}`;
+  const newHtml = `${baseHtml}${thumbnailBlock}`;
 
   const options = {
     properties: {
@@ -644,10 +653,11 @@ export async function appendThumbnailToMessage(
  */
 export async function editOriginalMessage(conversationId, messageId, originalUrl, cardMarkdown) {
   recordBotMessageId(messageId);
-  const cleanUrl = originalUrl ? escapeHtml(originalUrl) : '';
-  const { html: cardHtml, mentions } = renderReplyContent(cardMarkdown);
-  const baseHtml = cleanUrl ? `<p><a href="${cleanUrl}">${cleanUrl}</a></p>` : '';
-  const fullHtml = `${baseHtml}\n<div style="margin-top:6px;">${cardHtml}</div><span style="display:none">${BOT_WATERMARK}</span>`;
+  const cleanUrl = String(originalUrl || '').trim();
+  const cleanMarkdown = String(cardMarkdown || '').trim();
+  const { html: cardHtml, mentions } = renderReplyContent(cleanMarkdown);
+  const baseHtml = cleanUrl ? `<p><a href="${escapeHtml(cleanUrl)}">${escapeHtml(cleanUrl)}</a></p>` : '';
+  const fullHtml = `${baseHtml}<div style="margin-top:6px;">${cardHtml}</div>`;
 
   const properties = {
     mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',

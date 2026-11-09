@@ -76,4 +76,13 @@ test('isAdmin and isSenderSelf enforce immutable user IDs and reject spoofed dis
   };
   assert.equal(watcher.isAdmin(trustedAdminEvent), true);
   assert.equal(watcher.isSenderSelf(trustedAdminEvent), false);
+
+  // 5. isSelfOrAdmin avoids hardcoded strings and relies on selfOid/adminOids/MRI
+  assert.equal(watcher.isSelfOrAdmin('me', legitSelfEvent), true);
+  assert.equal(watcher.isSelfOrAdmin('self', legitSelfEvent), true);
+  assert.equal(watcher.isSelfOrAdmin(selfOid, legitSelfEvent), true);
+  assert.equal(watcher.isSelfOrAdmin(trustedAdminOid, legitSelfEvent), true);
+  assert.equal(watcher.isSelfOrAdmin('random_user', legitSelfEvent), false);
+  // Without being configured as self/admin, generic names are not hardcoded
+  assert.equal(watcher.isSelfOrAdmin('philipp', legitSelfEvent), false);
 });

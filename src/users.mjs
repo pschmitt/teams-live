@@ -6,9 +6,9 @@
 /**
  * Extracts the raw Azure AD Object ID (UUID) from an MRI or user URL string.
  * Examples:
- *   '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
- *   'https://.../contacts/8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
- *   'f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
+ *   '8:orgid:00000000-0000-0000-0000-000000000000' -> '00000000-0000-0000-0000-000000000000'
+ *   'https://.../contacts/8:orgid:00000000-0000-0000-0000-000000000000' -> '00000000-0000-0000-0000-000000000000'
+ *   '00000000-0000-0000-0000-000000000000' -> '00000000-0000-0000-0000-000000000000'
  */
 export function extractUserOid(mriOrUrl) {
   if (!mriOrUrl) return null;
@@ -45,8 +45,8 @@ export function stripDiacritics(str) {
 
 /**
  * Derives common username patterns from a display name and optional email.
- * E.g. "Philipp Schmitt" -> ["pschmitt", "philipp.schmitt", "philipp-schmitt", "philipp", "schmitt"]
- * E.g. "Mark Eisenblätter" -> ["meisenblaetter", "meisenblatter", "mark.eisenblaetter", ...]
+ * E.g. "Jane Doe" -> ["jdoe", "jane.doe", "jane-doe", "jane", "doe"]
+ * E.g. "Märta Smith" -> ["maertasmith", "martasmith", "marta.smith", ...]
  */
 export function deriveCandidateUsernames(displayName, email = '') {
   const candidates = new Set();
@@ -75,64 +75,18 @@ export function deriveCandidateUsernames(displayName, email = '') {
     candidates.add(last);
 
     if (parts.length >= 2) {
-      candidates.add(`${first[0]}${last}`); // e.g. pschmitt, dnagy, nherzig
-      candidates.add(`${first}.${last}`); // e.g. philipp.schmitt
-      candidates.add(`${first}-${last}`); // e.g. philipp-schmitt
-      candidates.add(`${first}_${last}`); // e.g. philipp_schmitt
-      candidates.add(`${first}${last}`); // e.g. philippschmitt
+      candidates.add(`${first[0]}${last}`); // e.g. jdoe
+      candidates.add(`${first}.${last}`); // e.g. jane.doe
+      candidates.add(`${first}-${last}`); // e.g. jane-doe
+      candidates.add(`${first}_${last}`); // e.g. jane_doe
+      candidates.add(`${first}${last}`); // e.g. janedoe
     }
   }
 
   return Array.from(candidates);
 }
 
-export const SEED_USERS = [
-  {
-    displayName: 'Philipp Schmitt',
-    mri: '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11',
-    email: 'philipp.schmitt@wiit.cloud',
-    givenName: 'Philipp',
-    surname: 'Schmitt',
-    gitlabUsernames: ['pschmitt'],
-    jiraUsernames: ['pschmitt', 'Philipp Schmitt'],
-  },
-  {
-    displayName: 'Daniel Nagy',
-    mri: '8:orgid:09495d48-b26a-44f7-81b8-9d551fa73774',
-    email: 'daniel.nagy@wiit.cloud',
-    givenName: 'Daniel',
-    surname: 'Nagy',
-    gitlabUsernames: ['dnagy'],
-    jiraUsernames: ['dnagy', 'Daniel Nagy'],
-  },
-  {
-    displayName: 'Mark Eisenblätter',
-    mri: '8:orgid:c11e5dd1-477c-4d59-9634-bd492bf26f4a',
-    email: 'mark.eisenblaetter@wiit.cloud',
-    givenName: 'Mark',
-    surname: 'Eisenblätter',
-    gitlabUsernames: ['meisenblaetter', 'meisenblatter'],
-    jiraUsernames: ['meisenblaetter', 'Mark Eisenblätter'],
-  },
-  {
-    displayName: 'Nils Herzig',
-    mri: '8:orgid:c6ad3867-bfb5-4641-a3e8-b7a462d38b03',
-    email: 'nils.herzig@wiit.cloud',
-    givenName: 'Nils',
-    surname: 'Herzig',
-    gitlabUsernames: ['nherzig'],
-    jiraUsernames: ['nherzig', 'Nils Herzig'],
-  },
-  {
-    displayName: 'Florian Müller',
-    mri: '8:orgid:22f729f0-9d62-4afc-ad50-fd4215750b92',
-    email: 'florian.mueller@wiit.cloud',
-    givenName: 'Florian',
-    surname: 'Müller',
-    gitlabUsernames: ['fmueller', 'florian.mueller'],
-    jiraUsernames: ['fmueller', 'Florian Müller'],
-  },
-];
+export const SEED_USERS = [];
 
 export function levenshteinDistance(a, b) {
   const m = a.length;
@@ -410,7 +364,7 @@ export class UserDirectory {
     const stripped = stripDiacritics(q);
     if (stripped && this.byDisplayName.has(stripped)) return this.byDisplayName.get(stripped);
 
-    // 6. Partial name match across users (e.g. query "Daniel" matching "Daniel Nagy")
+    // 6. Partial name match across users (e.g. query "Jane" matching "Jane Doe")
     for (const user of this.users.values()) {
       const uNorm = normalizeName(user.displayName);
       if (norm && uNorm.includes(norm)) return user;

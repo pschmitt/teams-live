@@ -4444,23 +4444,44 @@ export class MergeRequestWatcher {
   isSelfOrAdmin(target, event) {
     if (!target) return true;
     const normalized = String(target).toLowerCase().trim().replace(/^@/, '');
-    if (['me', 'myself', 'self', 'philipp', 'philipp schmitt', 'pschmitt'].includes(normalized)) {
+    if (['me', 'myself', 'self'].includes(normalized)) {
       return true;
     }
-    const senderFrom = String(event?.from || event?.sender?.displayName || '').toLowerCase().trim();
-    if (senderFrom && (normalized === senderFrom || senderFrom.includes(normalized))) {
-      return true;
+
+    const targetOid = extractUserOid(target);
+    if (targetOid) {
+      if (this.selfOid && targetOid === this.selfOid) return true;
+      if (this.adminOids && this.adminOids.has(targetOid)) return true;
     }
+
     const senderMri = String(event?.fromMri || event?.sender?.mri || '').toLowerCase().trim();
+    const senderOid = extractUserOid(senderMri);
+    if (senderOid && targetOid && senderOid === targetOid) {
+      return true;
+    }
     if (senderMri && (normalized === senderMri || senderMri.includes(normalized) || normalized.includes(senderMri))) {
       return true;
     }
+
     if (this.selfMri) {
       const selfMriNorm = this.selfMri.toLowerCase().trim();
       if (normalized === selfMriNorm || selfMriNorm.includes(normalized) || normalized.includes(selfMriNorm)) {
         return true;
       }
     }
+
+    const resolved = this.userDirectory?.findUser(target);
+    if (resolved) {
+      const resOid = extractUserOid(resolved.mri || resolved.id);
+      if (resOid) {
+        if (this.selfOid && resOid === this.selfOid) return true;
+        if (this.adminOids && this.adminOids.has(resOid)) return true;
+      }
+      if (this.selfMri && resolved.mri && resolved.mri.toLowerCase() === this.selfMri.toLowerCase()) {
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -4526,7 +4547,7 @@ export class MergeRequestWatcher {
     const full = args.join(' ').trim();
     if (!full) return { target: '', resolved: null, reason: '' };
 
-    // 1. Try full string first (e.g. "@Philipp Schmitt" or "Philipp Schmitt" or "frank")
+    // 1. Try full string first (e.g. "@Jane Doe" or "Jane Doe" or "jane")
     const resolved = await this.resolveTargetUser(full);
     if (resolved) {
       return { target: full, resolved, reason: '' };
@@ -5670,7 +5691,7 @@ export class MergeRequestWatcher {
       return;
     }
 
-    // If message is from self (Philipp), check for unrecognized links to edit message with thumbnail
+    // If message is from self, check for unrecognized links to edit message with thumbnail
     if (this.isSenderSelf(event) && !event.isHistory) {
       this.maybeAttachLinkThumbnail(event).catch((err) => {
         log(`[thumbnail] Error attaching thumbnail to message ${event.messageId}: ${err.message}`);

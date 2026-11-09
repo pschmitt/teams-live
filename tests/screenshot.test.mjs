@@ -34,7 +34,7 @@ test('ScreenshotClient isConfigured and getSecret', () => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test('ScreenshotClient capture sends POST /api/run with secret and returns base64 image and title', async () => {
+test('ScreenshotClient capture sends POST /api/run with secret and returns base64 image', async () => {
   let receivedHeaders = null;
   let receivedBody = null;
 
@@ -46,7 +46,7 @@ test('ScreenshotClient capture sends POST /api/run with secret and returns base6
       req.on('end', () => {
         receivedBody = JSON.parse(body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, result: { b64: 'base64-image-data-xyz', title: 'Example Page' } }));
+        res.end(JSON.stringify({ ok: true, result: 'base64-image-data-xyz' }));
       });
       return;
     }
@@ -65,10 +65,11 @@ test('ScreenshotClient capture sends POST /api/run with secret and returns base6
     });
 
     const result = await client.capture('https://example.com/some/page');
-    assert.deepEqual(result, { b64: 'base64-image-data-xyz', title: 'Example Page' });
+    assert.equal(result, 'base64-image-data-xyz');
     assert.equal(receivedHeaders['x-browser-cluster-secret'], 'my-cluster-secret');
     assert.equal(receivedBody.url, 'https://example.com/some/page');
     assert.equal(receivedBody.profile, 'ha-msteams');
+    assert.ok(receivedBody.script.includes('width: 480, height: 200'));
     assert.ok(receivedBody.script.includes('page.screenshot'));
   } finally {
     server.close();

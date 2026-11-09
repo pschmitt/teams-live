@@ -58,7 +58,7 @@ export class ScreenshotClient {
     }
   }
 
-  async capture(targetUrl, { width = 640, height = 360, quality = 55, timeoutMs = 15000 } = {}) {
+  async capture(targetUrl, { width = 480, height = 200, quality = 55, timeoutMs = 15000 } = {}) {
     if (!this.isConfigured()) {
       return null;
     }
@@ -82,9 +82,8 @@ export class ScreenshotClient {
               await page.waitForLoadState('load', { timeout: 8000 });
             } catch {}
             await new Promise(r => setTimeout(r, 1200));
-            const title = await page.title().catch(() => '');
             const buf = await page.screenshot({ type: 'jpeg', quality: ${quality} });
-            return { b64: buf.toString('base64'), title };
+            return buf.toString('base64');
           }`,
         }),
         signal: AbortSignal.timeout(timeoutMs + 5000),
@@ -102,8 +101,8 @@ export class ScreenshotClient {
         return null;
       }
 
-      if (typeof data.result === 'string') {
-        return { b64: data.result, title: '' };
+      if (typeof data.result === 'object' && data.result.b64) {
+        return data.result.b64;
       }
       return data.result;
     } catch (err) {

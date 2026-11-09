@@ -501,8 +501,8 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
 }
 
 /**
- * Appends a thumbnail screenshot card to a user message by editing it.
- * Keeps original content and adds a compact preview card with domain, title, and image.
+ * Appends a thumbnail screenshot to a user message by editing it.
+ * Keeps original content and adds the thumbnail image link.
  */
 export async function appendThumbnailToMessage(
   conversationId,
@@ -523,33 +523,9 @@ export async function appendThumbnailToMessage(
   if (!b64) {
     return { ok: false, error: new Error('No base64 thumbnail provided') };
   }
-  const title = typeof thumbnailData === 'object' ? (thumbnailData.title || '').trim() : '';
-
-  let hostname = '';
-  try {
-    hostname = new URL(url).hostname;
-  } catch {}
 
   const cleanUrl = escapeHtml(url);
-  const cleanTitle = escapeHtml(title);
-  const cleanHostname = escapeHtml(hostname);
-
-  const domainBlock = cleanHostname
-    ? `<div style="font-size:11px;font-weight:500;color:#605e5c;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">${cleanHostname}</div>`
-    : '';
-  const titleBlock = cleanTitle
-    ? `<div style="font-size:13px;font-weight:600;color:#242424;margin-bottom:6px;line-height:1.3;">${cleanTitle}</div>`
-    : '';
-
-  const thumbnailBlock =
-    `<div style="margin-top:8px;border:1px solid #e1dfdd;border-radius:6px;padding:8px 10px;background-color:#faf9f8;max-width:280px;">` +
-    `<a href="${cleanUrl}" style="text-decoration:none;color:inherit;display:block;">` +
-    domainBlock +
-    titleBlock +
-    `<img src="data:image/jpeg;base64,${b64}" width="280" alt="${cleanTitle || 'Link preview'}" style="display:block;border-radius:4px;border:1px solid #edebe9;width:100%;max-width:280px;" />` +
-    `</a>` +
-    `</div>` +
-    `<span style="display:none">${BOT_WATERMARK}</span>`;
+  const thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
 
   const newHtml = `${baseHtml}\n${thumbnailBlock}`;
 

@@ -4,11 +4,12 @@ import path from 'node:path';
 const log = (...args) => console.error(new Date().toISOString(), '[health]', ...args);
 
 export class HealthMonitor {
-  constructor({ stateDir, gitlab, jira, opsgenie, hrworks, authManager, getTrouter }) {
+  constructor({ stateDir, gitlab, jira, confluence = null, opsgenie, hrworks, authManager, getTrouter }) {
     this.stateDir = stateDir || process.env.XDG_STATE_HOME || '/var/lib/teams-live/state';
     this.healthPath = path.join(this.stateDir, 'health.json');
     this.gitlab = gitlab;
     this.jira = jira;
+    this.confluence = confluence;
     this.opsgenie = opsgenie;
     this.hrworks = hrworks;
     this.authManager = authManager;
@@ -16,6 +17,7 @@ export class HealthMonitor {
     this.serviceStatus = {
       gitlab: { status: gitlab?.token ? 'ok' : 'unconfigured', error: null, last_check: null },
       jira: { status: jira?.isConfigured() ? 'ok' : 'unconfigured', error: null, last_check: null },
+      confluence: { status: confluence?.isConfigured?.() ? 'ok' : 'unconfigured', error: null, last_check: null },
       opsgenie: { status: opsgenie?.isConfigured() ? 'ok' : 'unconfigured', error: null, last_check: null },
       homeassistant: { status: hrworks?.isConfigured?.() ? 'ok' : 'unconfigured', error: null, last_check: null },
     };

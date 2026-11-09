@@ -70,7 +70,7 @@ service user (`teams-live` by default).
 the host can read. Never put a secret value there. Two ways keep it out:
 
 - **`*_file` keys** (`teams.credentials_file`, `gitlab.token_file`,
-  `jira.token_file`, `home_assistant.token_file`,
+  `jira.token_file`, `confluence.token_file`, `home_assistant.token_file`,
   `browser_daemon.secret_file`) take a path, and teams-live reads the file.
 - **`{ _secret = "/path"; }`** works for any other value. teams-live replaces
   the object with the trimmed contents of the file when it starts, and fails
@@ -141,6 +141,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `gitlab.notify.ci.{enable,on_failure,on_success}` | CI result messages. |
 | `gitlab.notify.{rebase,approval_lost,merged,closed}` | Other MR messages. |
 | `jira.url`, `.token_file`, `.board_id` | Jira for `/sprint`, `/issue` and `/standup`. |
+| `confluence.url`, `.token_file` | Confluence instance and API token for doc links and `/doc`. |
 | `opsgenie.on_call_key`, `.support_key`, `.edge_key` | OpsGenie API keys for `/alerts` and `/oncall`. |
 | `opsgenie.on_call_schedule_id`, `.support_schedule_id` | Schedules for `/oncall`. |
 | `opsgenie.base_url`, `.web_base_url` | OpsGenie API and web URLs. |

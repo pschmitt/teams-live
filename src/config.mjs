@@ -151,6 +151,22 @@ export function loadConfig(configPath) {
     jira.token = process.env.JIRA_TOKEN.trim();
   }
 
+  const confluence = {
+    url: (getString(fileConfig.confluence?.url) || process.env.CONFLUENCE_URL || 'https://wiki.wiit.one').replace(/\/+$/, ''),
+    token_file: getNullableString(fileConfig.confluence?.token_file) || process.env.CONFLUENCE_TOKEN_FILE || null,
+    token: null,
+  };
+
+  if (confluence.token_file && fs.existsSync(confluence.token_file)) {
+    try {
+      confluence.token = fs.readFileSync(confluence.token_file, 'utf8').trim();
+    } catch (e) {
+      console.warn(`Could not read Confluence token file ${confluence.token_file}: ${e.message}`);
+    }
+  } else if (process.env.CONFLUENCE_TOKEN) {
+    confluence.token = process.env.CONFLUENCE_TOKEN.trim();
+  }
+
   const teams = {
     reconnect_interval_seconds: Number(fileConfig.teams?.reconnect_interval_seconds ?? 5),
     token_refresh_interval_minutes: Number(fileConfig.teams?.token_refresh_interval_minutes ?? 60),
@@ -212,6 +228,7 @@ export function loadConfig(configPath) {
     },
     gitlab,
     jira,
+    confluence,
     opsgenie,
     home_assistant: homeAssistant,
     teams,

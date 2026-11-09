@@ -3,6 +3,7 @@ import { loadConfig } from './config.mjs';
 import { AuthManager } from './auth.mjs';
 import { GitLabClient } from './gitlab.mjs';
 import { JiraClient } from './jira.mjs';
+import { ConfluenceClient } from './confluence.mjs';
 import { OpsGenieClient } from './opsgenie.mjs';
 import { HRWorksClient } from './hrworks.mjs';
 import { TrouterClient } from './trouter.mjs';
@@ -102,6 +103,11 @@ async function main() {
     onAuthError: (err) => handleAuthError('Jira', err),
     onSuccess: () => handleServiceSuccess('Jira'),
   });
+  const confluence = new ConfluenceClient({
+    ...config.confluence,
+    onAuthError: (err) => handleAuthError('Confluence', err),
+    onSuccess: () => handleServiceSuccess('Confluence'),
+  });
   const opsgenie = new OpsGenieClient({
     ...config.opsgenie,
     onAuthError: (err) => handleAuthError('OpsGenie', err),
@@ -120,6 +126,7 @@ async function main() {
   health = new HealthMonitor({
     gitlab,
     jira,
+    confluence,
     opsgenie,
     hrworks,
     authManager,
@@ -127,7 +134,7 @@ async function main() {
   });
   health.start(15_000);
 
-  watcher = new MergeRequestWatcher({ config, gitlab, jira, opsgenie, hrworks, authManager, health });
+  watcher = new MergeRequestWatcher({ config, gitlab, jira, confluence, opsgenie, hrworks, authManager, health });
   const systemd = new SystemdWatchdog();
 
   const cleanup = async (signal = 'SIGTERM') => {

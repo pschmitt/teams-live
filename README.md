@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
 </p>
 
-Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, and OpsGenie.
+Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, Confluence, and OpsGenie.
 
 ## Features
 
@@ -17,6 +17,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
 - **GitLab MR Tracking**: Monitors merge requests linked in watched chats, automatically reflects status via reactions (👀 pending review, 👍 approved, ❌ CI failure, ✅ merged), and posts/updates in-place comments for CI results, rebase requirements, and merges.
 - **OpsGenie Integration**: Lists open alerts across CKS queues (On-Call & Support) sorted by priority with active on-duty personnel.
 - **Jira Integration**: Displays active sprint task breakdowns (To Do, In Progress, In Review).
+- **Confluence Integration**: Detects linked Confluence docs in watched chats and replies with page title, link, space, and author; includes `/doc` command lookup.
 - **Calendar & Meetings**: Queries Microsoft Teams EMEA MiddleTier calendar for remaining weekly meetings with clickable Teams join links.
 - **Slash Commands**:
   - **GitLab**:
@@ -30,6 +31,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, a
     - `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.
     - `/status [link]`: Checks CI, approvals, and rebase state for the target MR.
   - **Jira & Planning**:
+    - `/doc` (or `/wiki`, `/confluence`) `[link|id]`: Confluence document details, space, and author.
     - `/issue` (or `/ticket`) `[KEY]`: Jira issue details, type, status, and assignee.
     - `/sprint` (or `/jira`): Active Jira sprint tickets and assignees.
     - `/standup` (or `/today`): Summarizes your assigned Jira sprint tasks and open GitLab MRs.

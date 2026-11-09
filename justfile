@@ -13,6 +13,7 @@ check:
   node --check src/auth.mjs
   node --check src/gitlab.mjs
   node --check src/jira.mjs
+  node --check src/confluence.mjs
   node --check src/opsgenie.mjs
   node --check src/snake.mjs
   node --check src/config.mjs

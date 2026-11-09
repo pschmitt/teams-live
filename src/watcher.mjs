@@ -58,9 +58,10 @@ const COMMAND_CATEGORIES = [
   {
     id: 'jira',
     title: '🎫 **Jira & Planning**',
-    aliases: ['jira', 'planning', 'tickets', 'ticket', 'issue', 'issues', 'sprint'],
+    aliases: ['jira', 'planning', 'tickets', 'ticket', 'issue', 'issues', 'sprint', 'confluence', 'wiki', 'doc', 'docs'],
     commands: [
       '- `/issue` (or `/ticket`) [KEY]: Fetches details and status for a Jira issue.',
+      '- `/doc` (or `/wiki`, `/confluence`) [link|id]: Displays Confluence document details.',
       '- `/sprint` (or `/jira`): Summary of active sprint tasks (To Do, In Progress, In Review).',
       '- `/standup` (or `/today`): Summarizes your assigned Jira tasks and open GitLab MRs.',
     ],
@@ -161,7 +162,9 @@ const KNOWN_COMMANDS = [
   '/calendar',
   '/ci',
   '/close',
+  '/confluence',
   '/dice',
+  '/doc',
   '/exec',
   '/flip',
   '/help',
@@ -199,6 +202,7 @@ const KNOWN_COMMANDS = [
   '/who',
   '/whois',
   '/whoisoncall',
+  '/wiki',
 ];
 
 function levenshteinDistance(a, b) {
@@ -617,10 +621,11 @@ function formatAlertsText(data, mode = 'all') {
 }
 
 export class MergeRequestWatcher {
-  constructor({ config, gitlab, jira, opsgenie, hrworks = null, authManager, health = null }) {
+  constructor({ config, gitlab, jira, confluence = null, opsgenie, hrworks = null, authManager, health = null }) {
     this.config = config;
     this.gitlab = gitlab;
     this.jira = jira;
+    this.confluence = confluence;
     this.opsgenie = opsgenie;
     this.hrworks = hrworks;
     this.authManager = authManager;
@@ -831,6 +836,15 @@ export class MergeRequestWatcher {
             status: a.status,
             acknowledged: a.acknowledged,
             messageServerId: a.messageServerId,
+          })),
+          confluencePages: (v.confluencePages || []).map((c) => ({
+            key: c.key,
+            target: c.target,
+            url: c.url,
+            title: c.title,
+            spaceKey: c.spaceKey,
+            spaceName: c.spaceName,
+            messageServerId: c.messageServerId,
           })),
         };
       }
@@ -1123,10 +1137,26 @@ export class MergeRequestWatcher {
       error: haError,
     };
 
+    // 6. Confluence
+    let confUser = null;
+    if (this.confluence?.isConfigured()) {
+      confUser = await this.confluence.getCurrentUser().catch(() => null);
+    }
+    const confHealth = services.confluence || {};
+    const confluenceStatus = {
+      name: 'Confluence',
+      configured: Boolean(this.confluence?.isConfigured()),
+      status: !this.confluence?.isConfigured() ? 'unconfigured' : (confHealth.status || 'ok'),
+      url: this.confluence?.baseUrl || '',
+      user: confUser ? `${confUser.displayName || ''} (${confUser.username || confUser.name || ''})`.trim() : (confHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
+      error: confHealth.error,
+    };
+
     return {
       teams: teamsStatus,
       gitlab: gitlabStatus,
       jira: jiraStatus,
+      confluence: confluenceStatus,
       opsgenie: opsgenieStatus,
       homeassistant: homeAssistantStatus,
     };
@@ -1231,12 +1261,14 @@ export class MergeRequestWatcher {
     const pipelineLinks = this.gitlab.findPipelineLinks(text);
     const jiraLinks = this.jira?.findIssueLinks ? this.jira.findIssueLinks(text) : [];
     const opsgenieLinks = this.opsgenie?.findAlertLinks ? this.opsgenie.findAlertLinks(text) : [];
+    const confluenceLinks = this.confluence?.findPageLinks ? this.confluence.findPageLinks(text) : [];
     if (
       mrLinks.length === 0 &&
       jobLinks.length === 0 &&
       pipelineLinks.length === 0 &&
       jiraLinks.length === 0 &&
-      opsgenieLinks.length === 0
+      opsgenieLinks.length === 0 &&
+      confluenceLinks.length === 0
     ) {
       return;
     }
@@ -1337,6 +1369,23 @@ export class MergeRequestWatcher {
       }
     }
 
+    const confluenceMap = new Map();
+    for (const c of confluenceLinks) {
+      const cKey = c.key;
+      if (!confluenceMap.has(cKey)) {
+        const savedDoc = saved?.confluencePages?.find((sc) => sc.key === c.key);
+        confluenceMap.set(cKey, {
+          key: c.key,
+          target: c.target || c.id || c.url,
+          url: c.url,
+          title: savedDoc?.title ?? null,
+          spaceKey: savedDoc?.spaceKey ?? null,
+          spaceName: savedDoc?.spaceName ?? null,
+          messageServerId: savedDoc?.messageServerId ?? null,
+        });
+      }
+    }
+
     this.watched.set(key, {
       conversationId,
       messageId,
@@ -1348,6 +1397,7 @@ export class MergeRequestWatcher {
       pipelines: [...pipelinesMap.values()],
       jiraIssues: [...jiraMap.values()],
       opsgenieAlerts: [...opsgenieMap.values()],
+      confluencePages: [...confluenceMap.values()],
       status: saved?.status ?? initialStatus,
       isHistory,
       createdAt: saved?.createdAt ?? Date.now(),
@@ -1359,6 +1409,7 @@ export class MergeRequestWatcher {
     if (pipelinesMap.size > 0) watchedDesc.push(`Pipelines: ${[...pipelinesMap.keys()].join(', ')}`);
     if (jiraMap.size > 0) watchedDesc.push(`Jira: ${[...jiraMap.keys()].join(', ')}`);
     if (opsgenieMap.size > 0) watchedDesc.push(`OpsGenie: ${[...opsgenieMap.keys()].join(', ')}`);
+    if (confluenceMap.size > 0) watchedDesc.push(`Confluence: ${[...confluenceMap.keys()].join(', ')}`);
     log(`watching in ${conversationId}/${messageId}: ${watchedDesc.join('; ')}`);
     this.checkWatchedKey(key).catch((err) => log(`initial check failed for ${key}: ${err.message}`));
   }
@@ -1921,6 +1972,38 @@ export class MergeRequestWatcher {
     }
   }
 
+  formatConfluencePageMessage(page) {
+    const spaceInfo = page.spaceName
+      ? `${page.spaceName} (${page.spaceKey})`
+      : (page.spaceKey || '');
+    const spacePart = spaceInfo ? ` • 📚 **${escapeHtml(spaceInfo)}**` : '';
+    const authorPart = page.author ? `\n\n👤 Last edited by: ${escapeHtml(page.author)}` : '';
+    const pageUrl = page.url || '';
+    const linkText = `[${escapeHtml(page.title)}](${pageUrl})`;
+
+    return `📄 **${escapeHtml(page.title)}**\n\n🔗 ${linkText}${spacePart}${authorPart}`;
+  }
+
+  async handleConfluencePageComment(entry, doc, pageData) {
+    const msg = this.formatConfluencePageMessage(pageData);
+
+    if (doc.messageServerId) {
+      log(`updating Confluence page comment for ${doc.key} (msg ${doc.messageServerId})`);
+      const updateResult = await updateReply(entry.conversationId, doc.messageServerId, entry, msg);
+      if (updateResult.ok) return;
+      log(`updating Confluence page comment failed (${updateResult.error?.message}), falling back to new reply`);
+    }
+
+    log(`posting Confluence page comment for ${doc.key}`);
+    const result = await sendReply(entry.conversationId, entry, msg);
+    if (result.ok && result.value?.timestamp) {
+      doc.messageServerId = String(result.value.timestamp);
+      this.saveState();
+    } else if (!result.ok) {
+      log(`Confluence page reply failed: ${result.error?.message}`);
+    }
+  }
+
   async checkWatchedKey(key) {
     const entry = this.watched.get(key);
     if (!entry) return;
@@ -2187,6 +2270,29 @@ export class MergeRequestWatcher {
         }
       }
 
+      // Check watched Confluence pages
+      for (const doc of (entry.confluencePages || [])) {
+        try {
+          if (!this.confluence?.isConfigured()) continue;
+          const needsInitialComment = !entry.isHistory && !doc.messageServerId;
+          if (!needsInitialComment && doc.title) continue;
+
+          const pageData = await this.confluence.getPage(doc.target);
+          if (!pageData) continue;
+
+          const titleChanged = doc.title !== pageData.title;
+          if (titleChanged || needsInitialComment) {
+            await this.handleConfluencePageComment(entry, doc, pageData);
+            doc.title = pageData.title;
+            doc.spaceKey = pageData.spaceKey;
+            doc.spaceName = pageData.spaceName;
+            if (pageData.url) doc.url = pageData.url;
+          }
+        } catch (confErr) {
+          log(`Error checking Confluence page ${doc.key} for ${key}: ${confErr.message}`);
+        }
+      }
+
       entry.isHistory = false;
 
       // Overall status:
@@ -2240,9 +2346,12 @@ export class MergeRequestWatcher {
       const opsgenieDone =
         (entry.opsgenieAlerts || []).length === 0 ||
         (entry.opsgenieAlerts || []).every((a) => a.messageServerId && a.status === 'closed');
+      const confluenceDone =
+        (entry.confluencePages || []).length === 0 ||
+        (entry.confluencePages || []).every((c) => c.messageServerId && c.title);
 
-      if (mrsDone && jobsDone && pipesDone && jiraDone && opsgenieDone) {
-        log(`All watched items (MRs, jobs, pipelines, Jira, OpsGenie) completed for ${key}, unwatching`);
+      if (mrsDone && jobsDone && pipesDone && jiraDone && opsgenieDone && confluenceDone) {
+        log(`All watched items (MRs, jobs, pipelines, Jira, OpsGenie, Confluence) completed for ${key}, unwatching`);
         this.completedMessages.add(String(entry.messageId));
         this.watched.delete(key);
         this.saveState();
@@ -3008,6 +3117,9 @@ export class MergeRequestWatcher {
       }
       if (conn.jira.status === 'auth_expired' || conn.jira.status === 'error') {
         brokenConnectors.push(`- 📋 **Jira**: ❌ ${conn.jira.error || 'Authentication expired'}`);
+      }
+      if (conn.confluence && (conn.confluence.status === 'auth_expired' || conn.confluence.status === 'error')) {
+        brokenConnectors.push(`- 📄 **Confluence**: ❌ ${conn.confluence.error || 'Authentication expired'}`);
       }
       if (conn.opsgenie.status === 'auth_expired' || conn.opsgenie.status === 'error') {
         brokenConnectors.push(`- 🚨 **OpsGenie**: ❌ ${conn.opsgenie.error || 'Authentication expired'}`);
@@ -3882,6 +3994,7 @@ export class MergeRequestWatcher {
     const teamsIcon = conn.teams.status === 'ok' ? '🟢' : '❌';
     const glIcon = conn.gitlab.status === 'ok' ? '🟢' : (conn.gitlab.status === 'unconfigured' ? '⚪' : '❌');
     const jiraIcon = conn.jira.status === 'ok' ? '🟢' : (conn.jira.status === 'unconfigured' ? '⚪' : '❌');
+    const confIcon = conn.confluence?.status === 'ok' ? '🟢' : (conn.confluence?.status === 'unconfigured' ? '⚪' : '❌');
     const ogIcon = conn.opsgenie.status === 'ok' ? '🟢' : (conn.opsgenie.status === 'unconfigured' ? '⚪' : '❌');
     const haIcon = conn.homeassistant?.status === 'ok' ? '🟢' : (conn.homeassistant?.status === 'unconfigured' ? '⚪' : '❌');
 
@@ -3906,6 +4019,10 @@ export class MergeRequestWatcher {
       (conn.jira.configured ? `  - **URL**: \`${conn.jira.url}\` (project: \`${conn.jira.project}\`)\n` +
                               `  - **User**: ${conn.jira.user}\n` : '') +
       (conn.jira.error ? `  - **Error**: \`${conn.jira.error}\`\n` : '') +
+      `- 📄 **Confluence**: ${confIcon} ${conn.confluence?.status === 'ok' ? 'Connected' : (conn.confluence?.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
+      (conn.confluence?.configured ? `  - **URL**: \`${conn.confluence.url}\`\n` +
+                                     `  - **User**: ${conn.confluence.user}\n` : '') +
+      (conn.confluence?.error ? `  - **Error**: \`${conn.confluence.error}\`\n` : '') +
       `- 🚨 **OpsGenie**: ${ogIcon} ${conn.opsgenie.status === 'ok' ? 'Connected' : (conn.opsgenie.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.opsgenie.configured ? `  - **Endpoint**: ${conn.opsgenie.endpoint}\n` +
                                   `  - **Keys**: On-Call ${conn.opsgenie.onCall ? '✅' : '❌'} | Support ${conn.opsgenie.support ? '✅' : '❌'}\n` : '') +
@@ -4462,6 +4579,56 @@ export class MergeRequestWatcher {
     }
   }
 
+  async executeConfluenceCommand(event, args) {
+    if (!this.confluence || !this.confluence.isConfigured()) {
+      await sendReply(event.conversationId, event, '❌ Confluence is not configured.');
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    let target = (Array.isArray(args) ? args.join(' ') : String(args || '')).trim();
+    if (!target && event.replyToId) {
+      try {
+        const parentMsg = await this.fetchMessageContent(event.conversationId, event.replyToId);
+        if (parentMsg) {
+          const links = this.confluence.findPageLinks(parentMsg, { allowQuotes: true });
+          if (links.length > 0) {
+            target = links[0].target || links[0].url || links[0].id;
+          }
+        }
+      } catch (err) {
+        log(`Failed to search reply parent for Confluence doc: ${err.message}`);
+      }
+    }
+
+    if (!target) {
+      await sendReply(
+        event.conversationId,
+        event,
+        '❌ No Confluence link or page ID provided. Usage: `/doc <URL|ID>` (or reply to a message containing a Confluence link).'
+      );
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.warning).catch(() => {});
+      return;
+    }
+
+    try {
+      const page = await this.confluence.getPage(target);
+      if (!page) {
+        await sendReply(event.conversationId, event, `❌ Confluence page not found: ${typeof target === 'object' ? target.title || target.id : target}`);
+        this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+        return;
+      }
+
+      const text = this.formatConfluencePageMessage(page);
+      await sendReply(event.conversationId, event, text);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+    } catch (err) {
+      log(`Failed to fetch Confluence page ${typeof target === 'object' ? JSON.stringify(target) : target}: ${err.message}`);
+      await sendReply(event.conversationId, event, `❌ Failed to fetch Confluence page: ${err.message}`);
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
   async executeRetryCommand(event, args) {
     const mrs = await this.findTargetMrsForCommand(event, args);
     if (!mrs || mrs.length === 0) {
@@ -4871,6 +5038,8 @@ export class MergeRequestWatcher {
       await this.executeSprintCommand(event);
     } else if (command === '/issue' || command === '/ticket') {
       await this.executeIssueCommand(event, args);
+    } else if (command === '/doc' || command === '/wiki' || command === '/confluence') {
+      await this.executeConfluenceCommand(event, args);
     } else if (command === '/standup' || command === '/today') {
       await this.executeStandupCommand(event);
     } else if (command === '/meetings' || command === '/cal' || command === '/calendar') {

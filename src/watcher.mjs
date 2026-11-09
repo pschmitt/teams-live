@@ -1323,20 +1323,20 @@ export class MergeRequestWatcher {
     recordBotMessageId(msgId);
 
     log(`[thumbnail] Capturing screenshot for unrecognized link ${targetUrl} in message ${msgId}...`);
-    const b64 = await this.screenshot.capture(targetUrl);
-    if (!b64) {
+    const thumbData = await this.screenshot.capture(targetUrl);
+    if (!thumbData || (!thumbData.b64 && typeof thumbData !== 'string')) {
       log(`[thumbnail] Failed to capture screenshot for ${targetUrl}`);
       return;
     }
 
-    log(`[thumbnail] Editing message ${msgId} with thumbnail screenshot...`);
+    log(`[thumbnail] Editing message ${msgId} with thumbnail screenshot card...`);
     const result = await appendThumbnailToMessage(
       event.conversationId,
       event.messageId,
       event.content,
       event.rawHtml,
       targetUrl,
-      b64
+      thumbData
     );
 
     if (result?.ok) {

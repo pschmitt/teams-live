@@ -6,6 +6,7 @@ import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
 import { OpsGenieClient } from './opsgenie.mjs';
 import { HRWorksClient } from './hrworks.mjs';
+import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
 import { SystemdWatchdog } from './systemd.mjs';
@@ -123,18 +124,21 @@ async function main() {
     onSuccess: () => handleServiceSuccess('HomeAssistant'),
   });
 
+  const screenshot = new ScreenshotClient(config.browser_daemon);
+
   health = new HealthMonitor({
     gitlab,
     jira,
     confluence,
     opsgenie,
     hrworks,
+    screenshot,
     authManager,
     getTrouter: () => trouter,
   });
   health.start(15_000);
 
-  watcher = new MergeRequestWatcher({ config, gitlab, jira, confluence, opsgenie, hrworks, authManager, health });
+  watcher = new MergeRequestWatcher({ config, gitlab, jira, confluence, opsgenie, hrworks, screenshot, authManager, health });
   const systemd = new SystemdWatchdog();
 
   const cleanup = async (signal = 'SIGTERM') => {

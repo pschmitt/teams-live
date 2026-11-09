@@ -499,3 +499,47 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
   }
   return result;
 }
+
+/**
+ * Appends a thumbnail screenshot to a user message by editing it.
+ * Keeps original content and adds an inline image link.
+ */
+export async function appendThumbnailToMessage(
+  conversationId,
+  serverMessageId,
+  originalContent,
+  originalRawHtml,
+  url,
+  base64Jpeg
+) {
+  recordBotMessageId(serverMessageId);
+
+  let baseHtml = (originalRawHtml || '').trim();
+  if (!baseHtml) {
+    baseHtml = `<p>${escapeHtml(originalContent || '')}</p>`;
+  }
+
+  const cleanUrl = escapeHtml(url);
+  const thumbnailBlock = `<p><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${base64Jpeg}" alt="Preview of ${cleanUrl}" style="max-width:400px;border-radius:4px;border:1px solid #ddd;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+  const newHtml = `${baseHtml}\n${thumbnailBlock}`;
+
+  const options = {
+    properties: {
+      cards: '[]',
+      links: '[]',
+      files: '[]',
+    },
+  };
+
+  const result = await retrySendWithRecovery(() =>
+    editMessage(conversationId, String(serverMessageId), newHtml, 'html', options)
+  );
+  if (!result.ok) {
+    console.error(
+      new Date().toISOString(),
+      `[teams] appendThumbnailToMessage failed for ${serverMessageId} in ${conversationId}:`,
+      result.error?.message || result.error
+    );
+  }
+  return result;
+}

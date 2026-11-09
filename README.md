@@ -18,6 +18,7 @@ Real-time Microsoft Teams bot and watcher daemon integrated with GitLab, Jira, C
 - **OpsGenie Integration**: Lists open alerts across CKS queues (On-Call & Support) sorted by priority with active on-duty personnel.
 - **Jira Integration**: Displays active sprint task breakdowns (To Do, In Progress, In Review).
 - **Confluence Integration**: Detects linked Confluence docs in watched chats and replies with page title, link, space, and author; includes `/doc` command lookup.
+- **Link Preview Thumbnails**: Automatically captures a webpage screenshot via browser-daemon and edits the author's message with an inline preview whenever the user pastes an unrecognized link (excluding recognized GitLab, Jira, Confluence, and OpsGenie links).
 - **Calendar & Meetings**: Queries Microsoft Teams EMEA MiddleTier calendar for remaining weekly meetings with clickable Teams join links.
 - **Slash Commands**:
   - **GitLab**:

@@ -14,6 +14,7 @@ import {
   sendReply,
   sendDirectMessage,
   updateReply,
+  appendThumbnailToMessage,
   getThreadMessages,
   getMessage,
   getCalendarView,
@@ -36,6 +37,71 @@ const CI_JOB_PREFIX = 'CI job ';
 const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
+
+export function extractCandidateUrls(text, rawHtml = '', links = []) {
+  const urls = new Set();
+
+  if (Array.isArray(links)) {
+    for (const l of links) {
+      const u = typeof l === 'string' ? l : l?.url;
+      if (u) urls.add(u);
+    }
+  }
+
+  const cleanQuotes = (s) =>
+    String(s || '')
+      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+      .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+  if (rawHtml) {
+    const cleanHtml = cleanQuotes(rawHtml);
+    for (const match of cleanHtml.matchAll(/href="([^"]+)"/g)) {
+      urls.add(match[1]);
+    }
+  }
+
+  const cleanText = cleanQuotes(text);
+  const urlRegex = /https?:\/\/[^\s"'<>\`]+/g;
+  for (const match of cleanText.matchAll(urlRegex)) {
+    const cleaned = match[0].replace(/[.,!?:;)]+$/, '');
+    if (cleaned) urls.add(cleaned);
+  }
+
+  const valid = [];
+  for (const rawUrl of urls) {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1' ||
+        host === '0.0.0.0' ||
+        host.endsWith('.local') ||
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+      ) {
+        continue;
+      }
+
+      if (host === 'teams.microsoft.com' || host === 'teams.cloud.microsoft') {
+        continue;
+      }
+
+      const pathname = parsed.pathname.toLowerCase();
+      if (/\.(png|jpe?g|gif|svg|webp|ico|mp4|webm|avi|mov|mp3|wav|pdf|zip|tar|gz|tgz)$/i.test(pathname)) {
+        continue;
+      }
+
+      valid.push(parsed.toString());
+    } catch {}
+  }
+
+  return [...new Set(valid)];
+}
 
 const COMMAND_CATEGORIES = [
   {
@@ -621,13 +687,14 @@ function formatAlertsText(data, mode = 'all') {
 }
 
 export class MergeRequestWatcher {
-  constructor({ config, gitlab, jira, confluence = null, opsgenie, hrworks = null, authManager, health = null }) {
+  constructor({ config, gitlab, jira, confluence = null, opsgenie, hrworks = null, screenshot = null, authManager, health = null }) {
     this.config = config;
     this.gitlab = gitlab;
     this.jira = jira;
     this.confluence = confluence;
     this.opsgenie = opsgenie;
     this.hrworks = hrworks;
+    this.screenshot = screenshot;
     this.authManager = authManager;
     this.health = health;
     this.serviceAlertState = new Map();
@@ -685,6 +752,7 @@ export class MergeRequestWatcher {
     });
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
+    this.thumbnailEditedMessageIds = new Set();
     this.loadState();
   }
 
@@ -1152,6 +1220,17 @@ export class MergeRequestWatcher {
       error: confHealth.error,
     };
 
+    // 7. Screenshot / browser-daemon
+    const ssConfigured = Boolean(this.screenshot?.isConfigured?.());
+    const ssHealth = services.screenshot || {};
+    const screenshotStatus = {
+      name: 'browser-daemon (screenshot)',
+      configured: ssConfigured,
+      status: !ssConfigured ? 'unconfigured' : (ssHealth.status || 'ok'),
+      url: this.screenshot?.url || '',
+      error: ssHealth.error,
+    };
+
     return {
       teams: teamsStatus,
       gitlab: gitlabStatus,
@@ -1159,6 +1238,7 @@ export class MergeRequestWatcher {
       confluence: confluenceStatus,
       opsgenie: opsgenieStatus,
       homeassistant: homeAssistantStatus,
+      screenshot: screenshotStatus,
     };
   }
 
@@ -1186,6 +1266,84 @@ export class MergeRequestWatcher {
 
   setSelfMri(mri) {
     this.selfMri = mri;
+  }
+
+  isSenderSelf(event) {
+    if (!event) return false;
+    if (this.selfMri) {
+      const rawMri = String(event.fromMri || event.sender?.mri || '').trim().toLowerCase();
+      const selfMriNorm = this.selfMri.toLowerCase().trim();
+      const selfOid = selfMriNorm.split(':').pop();
+      if (rawMri && (rawMri === selfMriNorm || (selfOid && rawMri.includes(selfOid)))) {
+        return true;
+      }
+    }
+    const rawFrom = String(event.from || event.sender?.displayName || '').trim().toLowerCase();
+    if (rawFrom === 'philipp schmitt' || rawFrom.includes('philipp schmitt')) {
+      return true;
+    }
+    return false;
+  }
+
+  isRecognizedUrl(url) {
+    if (!url) return false;
+    if (this.gitlab?.findMrLinks && this.gitlab.findMrLinks(url).length > 0) return true;
+    if (this.gitlab?.findJobLinks && this.gitlab.findJobLinks(url).length > 0) return true;
+    if (this.gitlab?.findPipelineLinks && this.gitlab.findPipelineLinks(url).length > 0) return true;
+    if (this.jira?.findIssueLinks && this.jira.findIssueLinks(url).length > 0) return true;
+    if (this.confluence?.findPageLinks && this.confluence.findPageLinks(url).length > 0) return true;
+    if (this.opsgenie?.findAlertLinks && this.opsgenie.findAlertLinks(url).length > 0) return true;
+    return false;
+  }
+
+  findUnrecognizedLinks(text, rawHtml = '', links = []) {
+    const candidates = extractCandidateUrls(text, rawHtml, links);
+    return candidates.filter((u) => !this.isRecognizedUrl(u));
+  }
+
+  async maybeAttachLinkThumbnail(event) {
+    if (!this.screenshot?.isConfigured?.()) return;
+    if (!event.conversationId || !event.messageId) return;
+    if (!this.isSenderSelf(event)) return;
+
+    const msgId = String(event.messageId);
+    if (this.thumbnailEditedMessageIds.has(msgId)) return;
+    if (botSentMessageIds.has(msgId)) return;
+    if (event.content?.includes(BOT_WATERMARK) || event.rawHtml?.includes(BOT_WATERMARK)) return;
+
+    const unrecognized = this.findUnrecognizedLinks(event.content, event.rawHtml, event.links);
+    if (unrecognized.length === 0) return;
+
+    const targetUrl = unrecognized[0];
+    this.thumbnailEditedMessageIds.add(msgId);
+    if (this.thumbnailEditedMessageIds.size > 2000) {
+      const iter = this.thumbnailEditedMessageIds.values();
+      this.thumbnailEditedMessageIds.delete(iter.next().value);
+    }
+    recordBotMessageId(msgId);
+
+    log(`[thumbnail] Capturing screenshot for unrecognized link ${targetUrl} in message ${msgId}...`);
+    const b64 = await this.screenshot.capture(targetUrl);
+    if (!b64) {
+      log(`[thumbnail] Failed to capture screenshot for ${targetUrl}`);
+      return;
+    }
+
+    log(`[thumbnail] Editing message ${msgId} with thumbnail screenshot...`);
+    const result = await appendThumbnailToMessage(
+      event.conversationId,
+      event.messageId,
+      event.content,
+      event.rawHtml,
+      targetUrl,
+      b64
+    );
+
+    if (result?.ok) {
+      log(`[thumbnail] Successfully attached thumbnail to message ${msgId}`);
+    } else {
+      log(`[thumbnail] Failed to edit message ${msgId}: ${result?.error?.message || result?.error || 'unknown error'}`);
+    }
   }
 
   isOwnMessage(fromMri, text, messageId = null, clientMessageId = null, rawHtml = null) {
@@ -3997,6 +4155,7 @@ export class MergeRequestWatcher {
     const confIcon = conn.confluence?.status === 'ok' ? '🟢' : (conn.confluence?.status === 'unconfigured' ? '⚪' : '❌');
     const ogIcon = conn.opsgenie.status === 'ok' ? '🟢' : (conn.opsgenie.status === 'unconfigured' ? '⚪' : '❌');
     const haIcon = conn.homeassistant?.status === 'ok' ? '🟢' : (conn.homeassistant?.status === 'unconfigured' ? '⚪' : '❌');
+    const ssIcon = conn.screenshot?.status === 'ok' ? '🟢' : (conn.screenshot?.status === 'unconfigured' ? '⚪' : '❌');
 
     const text =
       '🔧 **teams-live status (sudo)**:\n\n' +
@@ -4030,7 +4189,10 @@ export class MergeRequestWatcher {
       `- 🏠 **Home Assistant (HR works)**: ${haIcon} ${conn.homeassistant?.status === 'ok' ? 'Connected' : (conn.homeassistant?.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.homeassistant?.configured ? `  - **URL**: \`${conn.homeassistant.url}\`\n` +
                                         `  - **Cache**: ${conn.homeassistant.details}\n` : '') +
-      (conn.homeassistant?.error ? `  - **Error**: \`${conn.homeassistant.error}\`\n` : '');
+      (conn.homeassistant?.error ? `  - **Error**: \`${conn.homeassistant.error}\`\n` : '') +
+      `- 📸 **browser-daemon (screenshot)**: ${ssIcon} ${conn.screenshot?.status === 'ok' ? 'Connected' : (conn.screenshot?.status === 'unconfigured' ? 'Not configured' : 'Error')}\n` +
+      (conn.screenshot?.configured ? `  - **URL**: \`${conn.screenshot.url}\`\n` : '') +
+      (conn.screenshot?.error ? `  - **Error**: \`${conn.screenshot.error}\`\n` : '');
 
     await sendReply(event.conversationId, event, text);
     this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -5311,6 +5473,13 @@ export class MergeRequestWatcher {
         log(`Error executing slash command: ${err.message}`);
       }
       return;
+    }
+
+    // If message is from self (Philipp), check for unrecognized links to edit message with thumbnail
+    if (this.isSenderSelf(event) && !event.isHistory) {
+      this.maybeAttachLinkThumbnail(event).catch((err) => {
+        log(`[thumbnail] Error attaching thumbnail to message ${event.messageId}: ${err.message}`);
+      });
     }
 
     if (this.isOwnMessage(event.fromMri, event.content, event.messageId, event.clientMessageId, event.rawHtml)) return;

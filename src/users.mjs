@@ -3,6 +3,20 @@
  * Maps usernames and display names across platforms to enable native Teams @mentions.
  */
 
+/**
+ * Extracts the raw Azure AD Object ID (UUID) from an MRI or user URL string.
+ * Examples:
+ *   '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
+ *   'https://.../contacts/8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
+ *   'f94ccd0d-d140-4d1d-9fee-b00e642b9c11' -> 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11'
+ */
+export function extractUserOid(mriOrUrl) {
+  if (!mriOrUrl) return null;
+  const str = String(mriOrUrl).trim().toLowerCase();
+  const match = str.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 export function normalizeName(str) {
   if (!str) return '';
   return String(str)

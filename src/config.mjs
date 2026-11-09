@@ -175,6 +175,10 @@ export function loadConfig(configPath) {
     history_poll_interval_seconds: Number(fileConfig.teams?.history_poll_interval_seconds ?? 120),
     credentials_file: getNullableString(fileConfig.teams?.credentials_file) || process.env.TEAMS_CREDENTIALS_FILE || null,
     troll_user: (getString(fileConfig.teams?.troll_user) || process.env.TEAMS_TROLL_USER || '').trim(),
+    edit_own_url_messages: Boolean(fileConfig.teams?.edit_own_url_messages ?? false),
+    admin_ids: Array.isArray(fileConfig.teams?.admin_ids)
+      ? fileConfig.teams.admin_ids.map(String)
+      : [],
   };
 
   const opsgenie = {

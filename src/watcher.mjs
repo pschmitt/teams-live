@@ -14,6 +14,7 @@ import {
   sendReply,
   sendDirectMessage,
   updateReply,
+  editOriginalMessage,
   appendThumbnailToMessage,
   getThreadMessages,
   getMessage,
@@ -23,7 +24,14 @@ import {
   resolveProfiles,
   escapeHtml,
 } from './teams.mjs';
-import { UserDirectory, normalizeName, formatContactCard, formatSearchResultsList, formatWhereisCard } from './users.mjs';
+import {
+  UserDirectory,
+  normalizeName,
+  extractUserOid,
+  formatContactCard,
+  formatSearchResultsList,
+  formatWhereisCard,
+} from './users.mjs';
 import { SnakeGame } from './snake.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -101,6 +109,48 @@ export function extractCandidateUrls(text, rawHtml = '', links = []) {
   }
 
   return [...new Set(valid)];
+}
+
+function escapeRegExp(string) {
+  return String(string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function isSameUrl(url1, url2) {
+  if (!url1 || !url2) return false;
+  if (url1 === url2) return true;
+  try {
+    const u1 = new URL(url1);
+    const u2 = new URL(url2);
+    const path1 = u1.pathname.replace(/\/$/, '');
+    const path2 = u2.pathname.replace(/\/$/, '');
+    return u1.origin.toLowerCase() === u2.origin.toLowerCase() && path1 === path2 && u1.search === u2.search;
+  } catch {
+    return String(url1).replace(/\/$/, '') === String(url2).replace(/\/$/, '');
+  }
+}
+
+export function isMessageOnlyUrl(text, rawHtml = '') {
+  if (!text && !rawHtml) return false;
+
+  const cleanQuotes = (s) =>
+    String(s || '')
+      .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '')
+      .replace(/<div[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[\s\S]*?<\/div>/gi, '');
+
+  const cleanedRaw = cleanQuotes(rawHtml || text);
+  const urls = extractCandidateUrls(text, rawHtml);
+  if (urls.length !== 1) return false;
+  const targetUrl = urls[0];
+
+  let stripped = cleanedRaw
+    .replace(new RegExp(`href=["']?${escapeRegExp(targetUrl)}["']?`, 'gi'), '')
+    .replace(new RegExp(escapeRegExp(targetUrl), 'gi'), '')
+    .replace(new RegExp(escapeRegExp(targetUrl.replace(/\/$/, '')), 'gi'), '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z0-9#]+;/gi, ' ')
+    .trim();
+
+  return stripped.length === 0;
 }
 
 const COMMAND_CATEGORIES = [
@@ -720,6 +770,11 @@ export class MergeRequestWatcher {
     this.pollTimer = null;
     this.precomputeTimer = null;
     this.selfMri = null;
+    this.selfOid = null;
+    this.editOwnUrlMessages = Boolean(config.teams?.edit_own_url_messages ?? false);
+    this.adminOids = new Set(
+      (config.teams?.admin_ids || []).map(extractUserOid).filter(Boolean)
+    );
 
     this.cacheTtlMs = 15 * 60 * 1000; // 15 minutes
     this.precomputeIntervalMs = 10 * 60 * 1000; // 10 minutes
@@ -788,6 +843,10 @@ export class MergeRequestWatcher {
               content: saved.content ?? '',
               createdAt,
               status: saved.status ?? null,
+              isSelf: saved.isSelf ?? (this.isSenderSelf({ from: saved.from, fromMri: saved.fromMri })),
+              isOnlyUrl: saved.isOnlyUrl ?? isMessageOnlyUrl(saved.content ?? ''),
+              targetUrl: saved.targetUrl ?? null,
+              editedOriginal: saved.editedOriginal ?? false,
               mrs: (saved.mrs ?? []).map((m) => ({
                 project: m.project,
                 iid: m.iid,
@@ -855,6 +914,10 @@ export class MergeRequestWatcher {
           content: v.content,
           status: v.status,
           createdAt: v.createdAt,
+          isSelf: v.isSelf ?? false,
+          isOnlyUrl: v.isOnlyUrl ?? false,
+          targetUrl: v.targetUrl ?? null,
+          editedOriginal: v.editedOriginal ?? false,
           mrs: (v.mrs || []).map((m) => ({
             project: m.project,
             iid: m.iid,
@@ -1266,23 +1329,33 @@ export class MergeRequestWatcher {
 
   setSelfMri(mri) {
     this.selfMri = mri;
+    this.selfOid = extractUserOid(mri);
   }
 
   isSenderSelf(event) {
     if (!event) return false;
+    const senderOid = extractUserOid(event.fromMri || event.sender?.mri);
+    if (this.selfOid && senderOid && senderOid === this.selfOid) {
+      return true;
+    }
     if (this.selfMri) {
       const rawMri = String(event.fromMri || event.sender?.mri || '').trim().toLowerCase();
       const selfMriNorm = this.selfMri.toLowerCase().trim();
-      const selfOid = selfMriNorm.split(':').pop();
-      if (rawMri && (rawMri === selfMriNorm || (selfOid && rawMri.includes(selfOid)))) {
+      if (rawMri && rawMri === selfMriNorm) {
         return true;
       }
     }
-    const rawFrom = String(event.from || event.sender?.displayName || '').trim().toLowerCase();
-    if (rawFrom === 'philipp schmitt' || rawFrom.includes('philipp schmitt')) {
-      return true;
-    }
     return false;
+  }
+
+  shouldEditOriginalMessage(entry, targetUrl = null) {
+    if (!this.editOwnUrlMessages) return false;
+    if (!entry?.isSelf) return false;
+    if (!entry?.isOnlyUrl) return false;
+    if (targetUrl && entry.targetUrl && !isSameUrl(targetUrl, entry.targetUrl)) {
+      return false;
+    }
+    return true;
   }
 
   isRecognizedUrl(url) {
@@ -1413,7 +1486,12 @@ export class MergeRequestWatcher {
     return false;
   }
 
-  watch(conversationId, messageId, text, { from = '', fromMri = '', content = null, initialStatus = null, isHistory = false } = {}) {
+  watch(
+    conversationId,
+    messageId,
+    text,
+    { from = '', fromMri = '', content = null, rawHtml = '', initialStatus = null, isHistory = false } = {}
+  ) {
     const mrLinks = this.gitlab.findMrLinks(text);
     const jobLinks = this.gitlab.findJobLinks(text);
     const pipelineLinks = this.gitlab.findPipelineLinks(text);
@@ -1433,6 +1511,11 @@ export class MergeRequestWatcher {
 
     const key = `${conversationId}/${messageId}`;
     const saved = this.savedEntries.get(key);
+
+    const candidateUrls = extractCandidateUrls(content || text, rawHtml);
+    const isOnlyUrl = isMessageOnlyUrl(content || text, rawHtml);
+    const targetUrl = isOnlyUrl && candidateUrls.length === 1 ? candidateUrls[0] : null;
+    const isSelf = this.isSenderSelf({ from, fromMri });
 
     const mrsMap = new Map();
     const initialMrStatus = initialStatus === 'approved' ? 'approved' : null;
@@ -1550,6 +1633,10 @@ export class MergeRequestWatcher {
       from,
       fromMri,
       content: content || text,
+      isSelf: saved?.isSelf ?? isSelf,
+      isOnlyUrl: saved?.isOnlyUrl ?? isOnlyUrl,
+      targetUrl: saved?.targetUrl ?? targetUrl,
+      editedOriginal: saved?.editedOriginal ?? false,
       mrs: [...mrsMap.values()],
       jobs: [...jobsMap.values()],
       pipelines: [...pipelinesMap.values()],
@@ -1683,6 +1770,17 @@ export class MergeRequestWatcher {
 
     const msg = lines.join('\n\n');
 
+    if (this.shouldEditOriginalMessage(entry, mrUrl)) {
+      log(`editing original message with status (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
+
     if (mr.ciMessageServerId) {
       log(`updating status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
@@ -1710,6 +1808,12 @@ export class MergeRequestWatcher {
 
     if (mrDetails.needsRebase) {
       if (mr.lastReportedNeedsRebase === true) return; // already reported
+
+      if (entry.editedOriginal && this.shouldEditOriginalMessage(entry, mrUrl)) {
+        mr.lastReportedNeedsRebase = true;
+        this.saveState();
+        return;
+      }
 
       const reason = mrDetails.hasConflicts ? 'merge conflicts' : 'behind target branch';
       const lines = [];
@@ -1810,6 +1914,17 @@ export class MergeRequestWatcher {
 
     const msg = lines.join('\n\n');
 
+    if (this.shouldEditOriginalMessage(entry, mrUrl)) {
+      log(`editing original message to merged for ${mr.project}!${mr.iid}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to other comment or reply`);
+    }
+
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to merged for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
@@ -1882,6 +1997,17 @@ export class MergeRequestWatcher {
     }
 
     const msg = lines.join('\n\n');
+
+    if (this.shouldEditOriginalMessage(entry, mrUrl)) {
+      log(`editing original message to closed for ${mr.project}!${mr.iid}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to other comment or reply`);
+    }
 
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to closed for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
@@ -1970,6 +2096,18 @@ export class MergeRequestWatcher {
       job.mr = await this.gitlab.getMrForJob(job.project, jobData).catch(() => null);
     }
     const msg = this.formatJobStatusMessage(jobData, job.project, job.mr);
+    const jobUrl = jobData?.web_url || (job.project && job.jobId ? this.gitlab.jobLink?.(job.project, job.jobId) : null);
+
+    if (this.shouldEditOriginalMessage(entry, jobUrl)) {
+      log(`editing original message with job status (${jobData.status}) for ${job.project}#job-${job.jobId}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, jobUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
 
     if (job.ciMessageServerId) {
       log(
@@ -1995,6 +2133,18 @@ export class MergeRequestWatcher {
       pipe.mr = await this.gitlab.getMrForPipeline(pipe.project, pipeData).catch(() => null);
     }
     const msg = this.formatPipelineStatusMessage(pipeData, pipe.project, pipe.mr);
+    const pipeUrl = pipeData?.web_url || (pipe.project && pipe.pipelineId ? this.gitlab.pipelineLink?.(pipe.project, pipe.pipelineId) : null);
+
+    if (this.shouldEditOriginalMessage(entry, pipeUrl)) {
+      log(`editing original message with pipeline status (${pipeData.status}) for ${pipe.project}#pipeline-${pipe.pipelineId}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pipeUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
 
     if (pipe.ciMessageServerId) {
       log(
@@ -2092,6 +2242,18 @@ export class MergeRequestWatcher {
 
   async handleJiraIssueComment(entry, issue, issueData) {
     const msg = this.formatJiraIssueMessage(issueData);
+    const issueUrl = issueData?.url || issue?.url;
+
+    if (this.shouldEditOriginalMessage(entry, issueUrl)) {
+      log(`editing original message with Jira issue for ${issue.key}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, issueUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
 
     if (issue.messageServerId) {
       log(`updating Jira issue comment for ${issue.key} (msg ${issue.messageServerId})`);
@@ -2112,6 +2274,18 @@ export class MergeRequestWatcher {
 
   async handleOpsGenieAlertComment(entry, alert, alertData) {
     const msg = this.formatOpsGenieAlertMessage(alertData);
+    const alertUrl = alertData?.url || alert?.url;
+
+    if (this.shouldEditOriginalMessage(entry, alertUrl)) {
+      log(`editing original message with OpsGenie alert for ${alert.id}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, alertUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
 
     if (alert.messageServerId) {
       log(`updating OpsGenie alert comment for ${alert.id} (msg ${alert.messageServerId})`);
@@ -2144,6 +2318,18 @@ export class MergeRequestWatcher {
 
   async handleConfluencePageComment(entry, doc, pageData) {
     const msg = this.formatConfluencePageMessage(pageData);
+    const pageUrl = pageData?.url || doc?.url;
+
+    if (this.shouldEditOriginalMessage(entry, pageUrl)) {
+      log(`editing original message with Confluence page for ${doc.key}`);
+      const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pageUrl, msg);
+      if (editResult.ok) {
+        entry.editedOriginal = true;
+        this.saveState();
+        return;
+      }
+      log(`editing original message failed (${editResult.error?.message}), falling back to reply`);
+    }
 
     if (doc.messageServerId) {
       log(`updating Confluence page comment for ${doc.key} (msg ${doc.messageServerId})`);
@@ -4078,13 +4264,22 @@ export class MergeRequestWatcher {
   }
 
   isAdmin(event) {
-    const rawFrom = String(event.from || event.sender?.displayName || '').trim().toLowerCase();
-    const rawMri = String(event.fromMri || event.sender?.mri || '').trim().toLowerCase();
-    if (rawFrom === 'philipp schmitt' || rawFrom.includes('philipp schmitt')) {
-      return true;
+    if (!event) return false;
+    const senderOid = extractUserOid(event.fromMri || event.sender?.mri);
+    if (senderOid) {
+      if (this.selfOid && senderOid === this.selfOid) {
+        return true;
+      }
+      if (this.adminOids && this.adminOids.has(senderOid)) {
+        return true;
+      }
     }
-    if (this.selfMri && rawMri && rawMri === this.selfMri.toLowerCase()) {
-      return true;
+    if (this.selfMri) {
+      const rawMri = String(event.fromMri || event.sender?.mri || '').trim().toLowerCase();
+      const selfMriNorm = this.selfMri.toLowerCase().trim();
+      if (rawMri && rawMri === selfMriNorm) {
+        return true;
+      }
     }
     return false;
   }
@@ -5490,6 +5685,7 @@ export class MergeRequestWatcher {
       from: event.from,
       fromMri: event.fromMri,
       content: event.content || '',
+      rawHtml: event.rawHtml || '',
     });
   }
 
@@ -5640,6 +5836,7 @@ export class MergeRequestWatcher {
           from: msg.sender?.displayName || '',
           fromMri: senderMri || '',
           content: msg.content || '',
+          rawHtml: msg.content || '',
           initialStatus: currentStatus,
           isHistory: true,
         });

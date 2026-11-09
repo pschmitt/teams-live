@@ -549,3 +549,34 @@ export async function appendThumbnailToMessage(
   }
   return result;
 }
+
+/**
+ * Edits the original message sent by self to include the card markdown.
+ * Preserves the original URL link and appends the rendered card HTML.
+ */
+export async function editOriginalMessage(conversationId, messageId, originalUrl, cardMarkdown) {
+  recordBotMessageId(messageId);
+  const cleanUrl = originalUrl ? escapeHtml(originalUrl) : '';
+  const { html: cardHtml, mentions } = renderReplyContent(cardMarkdown);
+  const baseHtml = cleanUrl ? `<p><a href="${cleanUrl}">${cleanUrl}</a></p>` : '';
+  const fullHtml = `${baseHtml}\n<div style="margin-top:6px;">${cardHtml}</div><span style="display:none">${BOT_WATERMARK}</span>`;
+
+  const properties = {
+    mentions: mentions.length > 0 ? buildMentionsProperty(mentions) : '[]',
+    cards: '[]',
+    links: '[]',
+    files: '[]',
+  };
+
+  const result = await retrySendWithRecovery(() =>
+    editMessage(conversationId, String(messageId), fullHtml, 'html', { properties })
+  );
+  if (!result.ok) {
+    console.error(
+      new Date().toISOString(),
+      `[teams] editOriginalMessage failed for ${messageId} in ${conversationId}:`,
+      result.error?.message || result.error
+    );
+  }
+  return result;
+}

@@ -100,7 +100,7 @@ export function extractCandidateUrls(text, rawHtml = '', links = []) {
       }
 
       const pathname = parsed.pathname.toLowerCase();
-      if (/\.(png|jpe?g|gif|svg|webp|ico|mp4|webm|avi|mov|mp3|wav|pdf|zip|tar|gz|tgz)$/i.test(pathname)) {
+      if (/\.(mp4|webm|avi|mov|mp3|wav|ogg|flac|pdf|zip|tar|gz|tgz|bz2|xz|7z|rar|iso|dmg|exe|bin|apk|deb|rpm)$/i.test(pathname)) {
         continue;
       }
 

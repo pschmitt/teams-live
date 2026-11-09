@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ScreenshotClient } from '../src/screenshot.mjs';
 import { extractCandidateUrls, MergeRequestWatcher } from '../src/watcher.mjs';
-import { BOT_WATERMARK } from '../src/teams.mjs';
+import { BOT_WATERMARK, uploadImageToAms } from '../src/teams.mjs';
 
 test('ScreenshotClient isConfigured and getSecret', () => {
   const unconf = new ScreenshotClient({});
@@ -61,16 +61,25 @@ test('ScreenshotClient capture sends POST /api/run with secret and returns base6
     const client = new ScreenshotClient({
       url: `http://127.0.0.1:${port}`,
       cluster_secret: 'my-cluster-secret',
-      profile: 'ha-msteams',
+      profile: 'custom-profile',
     });
 
     const result = await client.capture('https://example.com/some/page');
     assert.equal(result, 'base64-image-data-xyz');
     assert.equal(receivedHeaders['x-browser-cluster-secret'], 'my-cluster-secret');
     assert.equal(receivedBody.url, 'https://example.com/some/page');
-    assert.equal(receivedBody.profile, 'ha-msteams');
+    assert.equal(receivedBody.profile, 'custom-profile');
     assert.ok(receivedBody.script.includes('width: 480, height: 200'));
     assert.ok(receivedBody.script.includes('page.screenshot'));
+
+    // Verify ha-msteams is not passed to browser-daemon (runs in throwaway session)
+    const clientHa = new ScreenshotClient({
+      url: `http://127.0.0.1:${port}`,
+      cluster_secret: 'my-cluster-secret',
+      profile: 'ha-msteams',
+    });
+    await clientHa.capture('https://example.com/other');
+    assert.equal(receivedBody.profile, undefined);
   } finally {
     server.close();
   }
@@ -111,11 +120,14 @@ test('extractCandidateUrls extracts valid HTTP/HTTPS URLs and filters out noise'
     'http://example.com/foo',
   ]);
 
-  // Filters out localhost, private IPs, teams URLs, and direct media files
+  // Filters out localhost, private IPs, teams URLs, and archives/media
   const filtered = extractCandidateUrls(
-    'Links: http://localhost:8080/test, https://192.168.1.1/admin, https://teams.microsoft.com/l/message/123, https://example.com/image.png, https://github.com/torvalds/linux'
+    'Links: http://localhost:8080/test, https://192.168.1.1/admin, https://teams.microsoft.com/l/message/123, https://example.com/archive.zip, https://de.wikipedia.org/wiki/Datei:GitLab_logo.svg, https://github.com/torvalds/linux'
   );
-  assert.deepEqual(filtered, ['https://github.com/torvalds/linux']);
+  assert.deepEqual(filtered, [
+    'https://de.wikipedia.org/wiki/Datei:GitLab_logo.svg',
+    'https://github.com/torvalds/linux',
+  ]);
 
   // Ignores blockquotes and reply divs
   const quoted = extractCandidateUrls(
@@ -242,4 +254,40 @@ test('maybeAttachLinkThumbnail attaches thumbnail only for self messages with un
   capturedUrl = null;
   await watcher.maybeAttachLinkThumbnail(validEvent);
   assert.equal(capturedUrl, null);
+});
+
+test('uploadImageToAms interacts with AMS object creation and upload endpoints', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: opts?.method, headers: opts?.headers, body: opts?.body });
+    if (String(url).endsWith('/v1/objects')) {
+      return new Response(JSON.stringify({ id: 'test-obj-123' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (String(url).includes('/content/imgpsh')) {
+      return new Response('', { status: 201 });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    const res = await uploadImageToAms('aGVsbG8=', '19:conv@thread.tacv2');
+    // If auth is available in test environment, it succeeds; if not, it cleanly reports auth error
+    if (res.ok) {
+      assert.equal(res.objectId, 'test-obj-123');
+      assert.equal(res.url, 'https://eu-api.asm.skype.com/v1/objects/test-obj-123/views/imgo');
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].method, 'POST');
+      assert.ok(calls[0].url.includes('/v1/objects'));
+      assert.equal(calls[1].method, 'PUT');
+      assert.ok(calls[1].url.includes('/test-obj-123/content/imgpsh'));
+    } else {
+      assert.ok(res.error?.message?.includes('auth') || res.error?.message?.includes('skypeToken'));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

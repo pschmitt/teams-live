@@ -7,7 +7,7 @@ import {
 } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
 import { addReaction as mcpAddReaction, removeReaction as mcpRemoveReaction } from 'msteams-mcp/dist/api/chatsvc-reactions.js';
 import { getCalendarView as mcpGetCalendarView } from 'msteams-mcp/dist/api/calendar-api.js';
-import { requireSkypeSpacesAuth } from 'msteams-mcp/dist/utils/auth-guards.js';
+import { requireSkypeSpacesAuth, requireMessageAuthWithConfig } from 'msteams-mcp/dist/utils/auth-guards.js';
 import { httpRequest } from 'msteams-mcp/dist/utils/http.js';
 import { markdownToTeamsHtml } from 'msteams-mcp/dist/utils/parsers-markdown.js';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
@@ -501,6 +501,82 @@ export async function updateReply(conversationId, serverMessageId, originalMessa
 }
 
 /**
+ * Uploads an image Buffer or Base64 string to Skype/Teams AMS (Attachment Management Service).
+ * Returns { ok: true, objectId, url } or { ok: false, error }
+ */
+export async function uploadImageToAms(imageBufferOrB64, conversationId) {
+  try {
+    const authRes = requireMessageAuthWithConfig();
+    if (!authRes.ok) {
+      return { ok: false, error: authRes.error || new Error('No messaging auth available') };
+    }
+    const { auth } = authRes.value;
+    const { skypeToken, userMri } = auth;
+    if (!skypeToken) {
+      return { ok: false, error: new Error('No skypeToken available for AMS upload') };
+    }
+
+    const imgBuf = Buffer.isBuffer(imageBufferOrB64)
+      ? imageBufferOrB64
+      : Buffer.from(imageBufferOrB64, 'base64');
+
+    const permissions = {};
+    if (conversationId) permissions[conversationId] = ['read'];
+    if (userMri) permissions[userMri] = ['read'];
+
+    const createRes = await fetch('https://api.asm.skype.com/v1/objects', {
+      method: 'POST',
+      headers: {
+        Authorization: `skype_token ${skypeToken}`,
+        'User-Agent': '1415/1.0.0.2025010401',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        type: 'pish/image',
+        permissions,
+        filename: 'preview.jpg',
+      }),
+    });
+
+    if (!createRes.ok) {
+      const errBody = await createRes.text().catch(() => '');
+      return {
+        ok: false,
+        error: new Error(`AMS object creation failed (${createRes.status}): ${errBody.slice(0, 200)}`),
+      };
+    }
+
+    const { id: objectId } = await createRes.json();
+    if (!objectId) {
+      return { ok: false, error: new Error('AMS returned no object ID') };
+    }
+
+    const uploadRes = await fetch(`https://api.asm.skype.com/v1/objects/${objectId}/content/imgpsh`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `skype_token ${skypeToken}`,
+        'User-Agent': '1415/1.0.0.2025010401',
+        'Content-Type': 'image/jpeg',
+      },
+      body: imgBuf,
+    });
+
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.text().catch(() => '');
+      return {
+        ok: false,
+        error: new Error(`AMS content upload failed (${uploadRes.status}): ${errBody.slice(0, 200)}`),
+      };
+    }
+
+    const url = `https://eu-api.asm.skype.com/v1/objects/${objectId}/views/imgo`;
+    return { ok: true, objectId, url };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
+}
+
+/**
  * Appends a thumbnail screenshot to a user message by editing it.
  * Keeps original content and adds the thumbnail image link.
  */
@@ -525,7 +601,19 @@ export async function appendThumbnailToMessage(
   }
 
   const cleanUrl = escapeHtml(url);
-  const thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+
+  let thumbnailBlock;
+  const amsRes = await retrySendWithRecovery(() => uploadImageToAms(b64, conversationId));
+  if (amsRes.ok && amsRes.objectId && amsRes.url) {
+    thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="${amsRes.url}" itemscope="" itemtype="http://schema.skype.com/AMSImage" itemid="${amsRes.objectId}" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+  } else {
+    console.warn(
+      new Date().toISOString(),
+      `[teams] AMS upload failed (${amsRes.error?.message || amsRes.error}), falling back to data URI:`,
+      amsRes.error
+    );
+    thumbnailBlock = `<p style="margin-top:6px;"><a href="${cleanUrl}"><img src="data:image/jpeg;base64,${b64}" width="280" alt="Preview" style="display:block;border-radius:6px;border:1px solid #d1d1d1;max-width:320px;" /></a></p><span style="display:none">${BOT_WATERMARK}</span>`;
+  }
 
   const newHtml = `${baseHtml}\n${thumbnailBlock}`;
 

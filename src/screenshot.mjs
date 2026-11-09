@@ -5,7 +5,12 @@ const log = (...args) => console.error(new Date().toISOString(), '[screenshot]',
 export class ScreenshotClient {
   constructor(config = {}) {
     this.url = (config.url || '').replace(/\/+$/, '');
-    this.profile = config.profile || 'work';
+    this.profile = config.screenshot_profile || config.profile || null;
+    // ha-msteams is a specialized authenticated Teams profile on rofl-13;
+    // general web screenshots should run in a clean throwaway browser on residential fnuc.
+    if (this.profile === 'ha-msteams') {
+      this.profile = null;
+    }
     this.clusterSecret = config.cluster_secret || null;
     this.secretFile = config.secret_file || null;
   }
@@ -66,26 +71,30 @@ export class ScreenshotClient {
     const endpoint = `${this.url}/api/run`;
 
     try {
+      const payload = {
+        url: targetUrl,
+        timeout_ms: timeoutMs,
+        script: `async ({ page }) => {
+          await page.setViewportSize({ width: ${width}, height: ${height} });
+          try {
+            await page.waitForLoadState('load', { timeout: 8000 });
+          } catch {}
+          await new Promise(r => setTimeout(r, 1200));
+          const buf = await page.screenshot({ type: 'jpeg', quality: ${quality} });
+          return buf.toString('base64');
+        }`,
+      };
+      if (this.profile) {
+        payload.profile = this.profile;
+      }
+
       const resp = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'X-Browser-Cluster-Secret': secret,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          url: targetUrl,
-          profile: this.profile,
-          timeout_ms: timeoutMs,
-          script: `async ({ page }) => {
-            await page.setViewportSize({ width: ${width}, height: ${height} });
-            try {
-              await page.waitForLoadState('load', { timeout: 8000 });
-            } catch {}
-            await new Promise(r => setTimeout(r, 1200));
-            const buf = await page.screenshot({ type: 'jpeg', quality: ${quality} });
-            return buf.toString('base64');
-          }`,
-        }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(timeoutMs + 5000),
       });
 

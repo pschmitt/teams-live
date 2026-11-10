@@ -1,7 +1,7 @@
 import {
   sendMessage,
   getThreadMessages,
-  getMessage,
+  getMessage as mcpGetMessage,
   editMessage,
   parseContentWithMentionsAndLinks,
 } from 'msteams-mcp/dist/api/chatsvc-messaging.js';
@@ -17,11 +17,18 @@ import { resolveProfiles as mcpResolveProfiles } from 'msteams-mcp/dist/api/prof
 export {
   sendMessage,
   getThreadMessages,
-  getMessage,
   editMessage,
   markdownToTeamsHtml,
   parseContentWithMentionsAndLinks,
 };
+
+export async function getMessage(conversationId, messageId) {
+  let res = await mcpGetMessage(conversationId, messageId);
+  if (!res.ok && (await attemptTokenRefreshOnAuthError(res))) {
+    res = await mcpGetMessage(conversationId, messageId);
+  }
+  return res;
+}
 
 async function attemptTokenRefreshOnAuthError(res) {
   if (!res || res.ok) return false;

@@ -737,7 +737,18 @@ function formatAlertsText(data, mode = 'all') {
 }
 
 export class MergeRequestWatcher {
-  constructor({ config, gitlab, jira, confluence = null, opsgenie, hrworks = null, screenshot = null, authManager, health = null }) {
+  constructor({
+    config,
+    gitlab,
+    jira,
+    confluence = null,
+    opsgenie,
+    hrworks = null,
+    screenshot = null,
+    authManager,
+    health = null,
+    getMessage: customGetMessage = null,
+  }) {
     this.config = config;
     this.gitlab = gitlab;
     this.jira = jira;
@@ -747,6 +758,8 @@ export class MergeRequestWatcher {
     this.screenshot = screenshot;
     this.authManager = authManager;
     this.health = health;
+    this.getMessage = customGetMessage || getMessage;
+    this.approvingMrs = new Set();
     this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
     this.historyLimit = config.gitlab.history_limit || 50;
@@ -5560,15 +5573,31 @@ export class MergeRequestWatcher {
     return false;
   }
 
-  async handleMessageUpdate(event) {
-    const msgId = String(event.messageId);
-    let suggestion = this.pendingSuggestions.get(msgId);
-    if (!suggestion && this.typoMessageToSuggestion.has(msgId)) {
-      const replyId = this.typoMessageToSuggestion.get(msgId);
-      suggestion = this.pendingSuggestions.get(replyId);
+  isReactorSelf(user) {
+    if (!user) return false;
+    const userOid = extractUserOid(user.mri);
+    if (this.selfOid && userOid && userOid.toLowerCase() === this.selfOid.toLowerCase()) {
+      return true;
     }
-    if (!suggestion) return;
+    if (this.adminOids && userOid && this.adminOids.has(userOid)) {
+      return true;
+    }
+    const selfMri = this.selfMri || this.authManager?.getCachedAuth?.()?.userMri;
+    if (selfMri) {
+      const rawMri = String(user.mri || '').trim().toLowerCase();
+      const selfMriNorm = selfMri.toLowerCase().trim();
+      if (rawMri && rawMri === selfMriNorm) return true;
+      const norm1 = this.normalizeUserMri(rawMri);
+      const norm2 = this.normalizeUserMri(selfMriNorm);
+      if (norm1 && norm2 && norm1 === norm2) return true;
+    }
+    if (user.mri && this.isSelfOrAdmin(user.mri)) {
+      return true;
+    }
+    return false;
+  }
 
+  async handleSuggestionReaction(event, suggestion) {
     if (Date.now() - suggestion.createdAt > 15 * 60 * 1000) {
       this.pendingSuggestions.delete(suggestion.replyMessageId);
       if (suggestion.originalMessageId) {
@@ -5579,7 +5608,7 @@ export class MergeRequestWatcher {
 
     const checkReactions = async (convId, mId) => {
       try {
-        const res = await getMessage(convId, mId);
+        const res = await this.getMessage(convId, mId);
         if (!res.ok || !res.value?.reactions) return null;
         for (const r of res.value.reactions) {
           const key = (r.key || '').toLowerCase();
@@ -5636,6 +5665,150 @@ export class MergeRequestWatcher {
     } catch (err) {
       log(`Error executing suggested command "${suggestion.suggestedCommand}": ${err.message}`);
     }
+  }
+
+  async handleMrReactionApproval(event) {
+    if (!this.gitlab?.approveMr) return;
+    const msgId = String(event.messageId || '');
+    const convId = event.conversationId;
+    if (!msgId || !convId) return;
+
+    let targetMrs = [];
+    let matchedWatchedKey = null;
+    let isConfirmedBotMessage = botSentMessageIds.has(msgId);
+
+    for (const [key, entry] of this.watched.entries()) {
+      if (entry.conversationId !== convId) continue;
+      const isCiMsg = entry.mrs?.some((m) => String(m.ciMessageServerId) === msgId);
+      const isRebaseMsg = entry.mrs?.some((m) => String(m.rebaseMessageServerId) === msgId);
+      const isEditedOriginal = entry.editedOriginal && String(entry.messageId) === msgId;
+      if (isCiMsg || isRebaseMsg || isEditedOriginal) {
+        if (entry.mrs && entry.mrs.length > 0) {
+          targetMrs = entry.mrs.map((m) => ({ project: m.project, iid: m.iid, title: m.title }));
+          matchedWatchedKey = key;
+          isConfirmedBotMessage = true;
+          break;
+        }
+      }
+    }
+
+    const fetchMessageData = async () => {
+      try {
+        const res = await this.getMessage(convId, msgId);
+        if (!res?.ok || !res.value) return null;
+        return res.value;
+      } catch (err) {
+        log(`Failed to fetch message ${msgId} for MR reaction check: ${err.message}`);
+        return null;
+      }
+    };
+
+    let msgData = await fetchMessageData();
+    if (!msgData) return;
+
+    if (!isConfirmedBotMessage) {
+      const isBot =
+        botSentMessageIds.has(msgId) ||
+        this.isOwnMessage(
+          msgData.sender?.mri,
+          msgData.content,
+          msgId,
+          msgData.clientMessageId,
+          msgData.content
+        );
+      if (!isBot) return;
+      isConfirmedBotMessage = true;
+    }
+
+    if (targetMrs.length === 0 && msgData.content) {
+      const fullText = [msgData.content, ...(msgData.links || [])].filter(Boolean).join(' ');
+      targetMrs = this.gitlab.findMrLinks(fullText, { allowQuotes: true });
+    }
+
+    if (targetMrs.length === 0) return;
+
+    const findSelfThumbUp = (reactions) => {
+      if (!reactions || !Array.isArray(reactions)) return null;
+      for (const r of reactions) {
+        const key = (r.key || '').toLowerCase();
+        const isThumbUp = key === 'like' || key === '👍' || key.includes('thumb');
+        if (isThumbUp && this.isReactorSelf(r.user)) {
+          return r;
+        }
+      }
+      return null;
+    };
+
+    let selfThumb = findSelfThumbUp(msgData.reactions);
+    if (!selfThumb) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const retryData = await fetchMessageData();
+      if (retryData?.reactions) {
+        msgData = retryData;
+        selfThumb = findSelfThumbUp(msgData.reactions);
+      }
+    }
+
+    if (!selfThumb) return;
+
+    const reactorName = selfThumb.user?.displayName || 'self';
+    let anyApproved = false;
+
+    for (const mr of targetMrs) {
+      const dedupKey = `${mr.project}!${mr.iid}`.toLowerCase();
+      if (this.approvingMrs.has(dedupKey)) {
+        log(`Approval for ${mr.project}!${mr.iid} already in progress, skipping duplicate`);
+        continue;
+      }
+      this.approvingMrs.add(dedupKey);
+
+      try {
+        const mrState = await this.gitlab.getMrStatus(mr.project, mr.iid);
+        if (mrState.status === 'approved' || mrState.approved) {
+          log(`MR ${mr.project}!${mr.iid} is already approved, ignoring reaction approval`);
+          continue;
+        }
+        if (mrState.status === 'merged' || mrState.status === 'closed') {
+          log(`MR ${mr.project}!${mr.iid} is already ${mrState.status}, cannot approve`);
+          continue;
+        }
+
+        log(`👍 Thumb-up approval: approving ${mr.project}!${mr.iid} via GitLab API (reactor: ${reactorName})...`);
+        await this.gitlab.approveMr(mr.project, mr.iid);
+        log(`Approved ${mr.project}!${mr.iid} successfully via thumbs-up reaction`);
+        anyApproved = true;
+      } catch (err) {
+        log(`Failed to approve ${mr.project}!${mr.iid} on thumbs-up: ${err.message}`);
+      } finally {
+        setTimeout(() => this.approvingMrs.delete(dedupKey), 10000);
+      }
+    }
+
+    if (anyApproved) {
+      if (matchedWatchedKey) {
+        this.checkWatchedKey(matchedWatchedKey).catch((err) =>
+          log(`Post-approval check failed for ${matchedWatchedKey}: ${err.message}`)
+        );
+      }
+      this.checkAllWatched().catch((err) =>
+        log(`Post-approval check failed: ${err.message}`)
+      );
+    }
+  }
+
+  async handleMessageUpdate(event) {
+    const msgId = String(event.messageId);
+    let suggestion = this.pendingSuggestions.get(msgId);
+    if (!suggestion && this.typoMessageToSuggestion.has(msgId)) {
+      const replyId = this.typoMessageToSuggestion.get(msgId);
+      suggestion = this.pendingSuggestions.get(replyId);
+    }
+    if (suggestion) {
+      await this.handleSuggestionReaction(event, suggestion);
+      return;
+    }
+
+    await this.handleMrReactionApproval(event);
   }
 
   async handleIncomingEvent(event) {

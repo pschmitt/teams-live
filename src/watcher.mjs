@@ -1721,7 +1721,10 @@ export class MergeRequestWatcher {
     const isApproved = Boolean(mrDetails?.approved || mrDetails?.status === 'approved');
     if (
       isApproved ||
+      mrDetails?.approvalChanged ||
+      mrDetails?.approversChanged ||
       mrDetails?.needsRebase ||
+      mrDetails?.rebaseChanged ||
       mrDetails?.titleChanged ||
       mrDetails?.draftChanged ||
       mrDetails?.jiraChanged ||
@@ -2487,6 +2490,9 @@ export class MergeRequestWatcher {
           ) {
             await this.handleCiStatusComment(entry, mr, pipe, {
               ...mrState,
+              approvalChanged,
+              approversChanged,
+              rebaseChanged,
               titleChanged,
               draftChanged,
               jiraChanged,

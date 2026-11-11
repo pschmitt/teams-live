@@ -44,7 +44,12 @@ function setup({ registrarStatus = 202 } = {}) {
     }
     if (u.includes('socket.io/1/?')) return new Response('sid:60:60:websocket');
     if (u.includes('registrar')) {
-      registrations.push(JSON.parse(opts.body).clientDescription.appId);
+      const payload = JSON.parse(opts.body);
+      registrations.push({
+        appId: payload.clientDescription.appId,
+        registrationId: payload.registrationId,
+        ttl: payload.transports.TROUTER[0].ttl,
+      });
       return new Response('', { status: registrarStatus });
     }
     throw new Error(`unexpected fetch ${u}`);
@@ -64,8 +69,21 @@ test('registers, reports connected and delivers events', async () => {
   FakeWebSocket.last.receive('1::');
   await tick();
   assert.equal(client.isConnected(), true);
-  assert.deepEqual(registrations.sort(), ['NextGenCalling', 'SkypeSpacesWeb', 'TeamsCDLWebWorker']);
+  assert.equal(registrations.length, 1);
+  assert.equal(registrations[0].appId, 'TeamsCDLWebWorker');
+  assert.equal(registrations[0].ttl, 3600);
   assert.ok(client.getStats().last_registration_at);
+
+  // Immediate message_loss after connect is acknowledged without re-registering.
+  FakeWebSocket.last.receive(
+    `5:::${JSON.stringify({
+      name: 'trouter.message_loss',
+      args: [{ droppedIndicators: [{ tag: 'TeamsCDLWebWorker', etag: '1' }] }],
+    })}`
+  );
+  await tick();
+  assert.equal(registrations.length, 1);
+  assert.ok(FakeWebSocket.last.sent.some((f) => f.includes('trouter.processed_message_loss')));
 
   const body = JSON.stringify({
     type: 'EventMessage',
@@ -80,6 +98,16 @@ test('registers, reports connected and delivers events', async () => {
   client.reconnect('test');
   await done;
   assert.equal(client.isConnected(), false);
+
+  // Reconnecting reuses the same deterministic registrationId rather than leaking a new binding.
+  const done2 = client.connect(auth);
+  await tick();
+  FakeWebSocket.last.receive('1::');
+  await tick();
+  assert.equal(registrations.length, 2);
+  assert.equal(registrations[1].registrationId, registrations[0].registrationId);
+  client.reconnect('test');
+  await done2;
 });
 
 test('reconnect() resolves connect() even when the socket never closes', async () => {

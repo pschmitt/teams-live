@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 
 const TROUTER = 'https://go.trouter.teams.microsoft.com';
@@ -7,7 +7,9 @@ const CLIENT_VERSION = '49/25113001312';
 const TC = JSON.stringify({ cv: '2024.23.01.2', ua: 'TeamsCDL', hr: '', v: CLIENT_VERSION });
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0 Teams/24165.1410.2974.6689/49';
-const REGISTRATION_TTL = 86400;
+// Match the 1h TTL used by the Teams web client so we never outlive interactive
+// browser bindings in Registrar's eviction order.
+const REGISTRATION_TTL = 3600;
 // Teams may drop a registration long before its TTL while the socket stays up,
 // so renew well before that. A fresh session also picks up refreshed tokens.
 const DEFAULT_REGISTRATION_INTERVAL_MS = 15 * 60 * 1000;
@@ -20,6 +22,14 @@ const isContentType = (t) => t === 'Text' || t?.startsWith('RichText');
 
 const log = (...args) => console.error(new Date().toISOString(), '[trouter]', ...args);
 
+function deterministicUuid(seed) {
+  const bytes = Buffer.from(createHash('sha256').update(seed).digest().subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 function connectQuery(info, epid) {
   const params = new URLSearchParams({ v: 'v4', ...info.connectparams, tc: TC, con_num: `${Date.now()}_1`, epid });
   if (info.ccid) params.set('ccid', info.ccid);
@@ -28,7 +38,7 @@ function connectQuery(info, epid) {
   return params.toString();
 }
 
-async function register(auth, epid, appId, templateKey, path) {
+async function register(auth, registrationId, appId, templateKey, path) {
   if (!auth) throw new Error(`no auth for ${appId} registration`);
   const res = await fetch(REGISTRAR, {
     method: 'POST',
@@ -46,7 +56,7 @@ async function register(auth, epid, appId, templateKey, path) {
         templateKey,
         platformUIVersion: CLIENT_VERSION,
       },
-      registrationId: appId === 'TeamsCDLWebWorker' ? epid : randomUUID(),
+      registrationId,
       nodeId: '',
       transports: { TROUTER: [{ context: '', path, ttl: REGISTRATION_TTL }] },
     }),
@@ -191,8 +201,15 @@ export class TrouterClient {
     }, 5_000).unref?.();
   }
 
+  endpointId(auth) {
+    const seed = auth?.userMri || auth?.userEmail;
+    if (seed) return deterministicUuid(`teams-live:${seed}:TeamsCDLWebWorker`);
+    this.fallbackEpid ??= randomUUID();
+    return this.fallbackEpid;
+  }
+
   async connect(auth) {
-    const epid = randomUUID();
+    const epid = this.endpointId(auth);
 
     const infoRes = await fetch(`${TROUTER}/v4/a?epid=${epid}`, {
       method: 'POST',
@@ -269,11 +286,7 @@ export class TrouterClient {
           const registerAll = async () => {
             const a = latestAuth();
             try {
-              await Promise.all([
-                register(a, epid, 'NextGenCalling', 'DesktopNgc_2.3:SkypeNgc', `${info.surl}NGCallManagerWin`),
-                register(a, epid, 'SkypeSpacesWeb', 'SkypeSpacesWeb_2.3', `${info.surl}SkypeSpacesWeb`),
-                register(a, epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl),
-              ]);
+              await register(a, epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl);
               this.lastRegistrationAt = Date.now();
               return true;
             } catch (err) {
@@ -335,8 +348,15 @@ export class TrouterClient {
         if (type === '5') {
           const obj = JSON.parse(frame.split(':').slice(3).join(':') || '{}');
           if (obj.name === 'trouter.message_loss') {
-            if (Date.now() - lastLossRegistration < 30_000) return;
-            lastLossRegistration = Date.now();
+            const droppedIndicators = obj.args?.[0]?.droppedIndicators;
+            if (Array.isArray(droppedIndicators) && droppedIndicators.length > 0) {
+              try {
+                sendCommand({ name: 'trouter.processed_message_loss', args: [{ droppedIndicators }] });
+              } catch {}
+            }
+            const now = Date.now();
+            if (now - (this.lastRegistrationAt ?? 0) < 30_000 || now - lastLossRegistration < 30_000) return;
+            lastLossRegistration = now;
             log('server reported message loss, re-registering');
             try {
               await register(latestAuth(), epid, 'TeamsCDLWebWorker', 'TeamsCDLWebWorker_2.1', info.surl);

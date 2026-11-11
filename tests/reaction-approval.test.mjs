@@ -278,3 +278,47 @@ test('does NOT approve MR when MR is already approved', async () => {
 
   assert.equal(approvedCalls.length, 0);
 });
+
+test('/rebase when MR is already up to date only sets checkmark reaction and triggers watched check without replying', async () => {
+  const convId = '19:k8s@thread.v2';
+  const cmdMsgId = '1770000006000';
+  const reactions = [];
+  let checkedWatched = false;
+
+  const { watcher } = createWatcher({
+    mrStates: {
+      'kubernetes/capi!55': {
+        status: 'pending',
+        approved: false,
+        needsRebase: false,
+        title: 'Already rebased MR',
+      },
+    },
+  });
+
+  watcher.setCommandReaction = async (cId, mId, key) => {
+    reactions.push({ cId, mId, key });
+  };
+  watcher.checkAllWatched = async () => {
+    checkedWatched = true;
+  };
+
+  await watcher.executeRebaseCommand(
+    {
+      conversationId: convId,
+      messageId: cmdMsgId,
+      from: 'Philipp Schmitt',
+      fromMri: TEST_SELF_MRI,
+      rawHtml: '<p>https://git.wiit.one/kubernetes/capi/-/merge_requests/55</p>',
+    },
+    []
+  );
+
+  assert.equal(reactions.length, 1);
+  assert.deepEqual(reactions[0], {
+    cId: convId,
+    mId: cmdMsgId,
+    key: '2705_whiteheavycheckmark',
+  });
+  assert.equal(checkedWatched, true);
+});

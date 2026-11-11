@@ -3412,12 +3412,8 @@ export class MergeRequestWatcher {
         }
 
         if (!mrState.needsRebase) {
-          await sendReply(
-            event.conversationId,
-            event,
-            `ℹ️ [${mrRef}](${mrUrl})${titleLine}\n\nis already up to date with target branch.`
-          );
           this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+          this.checkAllWatched().catch((err) => log(`Post-rebase check failed: ${err.message}`));
           continue;
         }
 

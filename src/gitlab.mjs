@@ -498,6 +498,9 @@ export class GitLabClient {
       hasConflicts,
       needsRebase,
       pipeline: latestPipeline,
+      autoMerge: Boolean(mr.merge_when_pipeline_succeeds),
+      autoMergeUser: mr.merge_user ? (mr.merge_user.name || mr.merge_user.username) : null,
+      autoMergeStrategy: mr.auto_merge_strategy || null,
     };
   }
 }

@@ -875,6 +875,8 @@ export class MergeRequestWatcher {
                 lastReportedApprovedBy: m.lastReportedApprovedBy ?? null,
                 rebaseMessageServerId: m.rebaseMessageServerId ?? null,
                 lastReportedNeedsRebase: m.lastReportedNeedsRebase ?? null,
+                lastReportedAutoMerge: m.lastReportedAutoMerge ?? null,
+                lastReportedAutoMergeUser: m.lastReportedAutoMergeUser ?? null,
               })),
               jobs: (saved.jobs ?? []).map((j) => ({
                 project: j.project,
@@ -946,6 +948,8 @@ export class MergeRequestWatcher {
             lastReportedApprovedBy: m.lastReportedApprovedBy,
             rebaseMessageServerId: m.rebaseMessageServerId,
             lastReportedNeedsRebase: m.lastReportedNeedsRebase,
+            lastReportedAutoMerge: m.lastReportedAutoMerge ?? null,
+            lastReportedAutoMergeUser: m.lastReportedAutoMergeUser ?? null,
           })),
           jobs: (v.jobs || []).map((j) => ({
             project: j.project,
@@ -1551,6 +1555,8 @@ export class MergeRequestWatcher {
           lastReportedApprovedBy: savedMr?.lastReportedApprovedBy ?? null,
           rebaseMessageServerId: savedMr?.rebaseMessageServerId ?? null,
           lastReportedNeedsRebase: savedMr?.lastReportedNeedsRebase ?? null,
+          lastReportedAutoMerge: savedMr?.lastReportedAutoMerge ?? null,
+          lastReportedAutoMergeUser: savedMr?.lastReportedAutoMergeUser ?? null,
         });
       }
     }
@@ -1725,6 +1731,9 @@ export class MergeRequestWatcher {
       mrDetails?.approversChanged ||
       mrDetails?.needsRebase ||
       mrDetails?.rebaseChanged ||
+      mrDetails?.autoMerge ||
+      mrDetails?.autoMergeChanged ||
+      mrDetails?.autoMergeUserChanged ||
       mrDetails?.titleChanged ||
       mrDetails?.draftChanged ||
       mrDetails?.jiraChanged ||
@@ -1735,56 +1744,9 @@ export class MergeRequestWatcher {
 
     if (!shouldNotify) return;
 
-    const mrRef = `!${mr.iid} (${mr.project})`;
+    const msg = this.formatMrStatusMessage(mr, pipeline, mrDetails);
+
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
-    const title = mrDetails?.title || mr.title;
-    const titleLine = title ? `💬 **${title}**` : '';
-    const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
-
-    const jiraTicket =
-      mrDetails?.jiraTicket ||
-      (this.jira?.findAssociatedIssue
-        ? this.jira.findAssociatedIssue({
-            title,
-            description: mrDetails?.description,
-            source_branch: mrDetails?.source_branch,
-          })
-        : null);
-
-    let approvalLine = '';
-    if (isApproved) {
-      const byText = approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : '';
-      approvalLine = `👍 **Approved**${byText}`;
-    } else {
-      approvalLine = '⏳ **Not approved yet**';
-    }
-
-    const rebaseLine = mrDetails?.needsRebase
-      ? (mrDetails.hasConflicts ? '⚠️ **Rebase required** (merge conflicts)' : '⚠️ **Rebase required**')
-      : '';
-
-    const lines = [];
-    lines.push(`🦊 [${mrRef}](${mrUrl})`);
-    if (titleLine) {
-      lines.push(titleLine);
-    }
-    if (jiraTicket) {
-      lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
-    }
-    if (pipeline) {
-      const pipeUrl = pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null);
-      lines.push(
-        pipeUrl
-          ? `${icon} [${CI_PREFIX}](${pipeUrl}) **${statusText}**`
-          : `${icon} ${CI_PREFIX} **${statusText}**`
-      );
-    }
-    lines.push(approvalLine);
-    if (rebaseLine) {
-      lines.push(rebaseLine);
-    }
-
-    const msg = lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
 
     if (this.shouldEditOriginalMessage(entry, mrUrl)) {
       log(`editing original message with status (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
@@ -2045,6 +2007,76 @@ export class MergeRequestWatcher {
       mr.ciMessageServerId = String(result.value.timestamp);
       this.saveState();
     }
+  }
+
+  formatMrStatusMessage(mr, pipeline, mrDetails) {
+    let icon = getCiStatusEmoji(pipeline?.status);
+    let statusText = pipeline?.status || 'unknown';
+
+    if (pipeline?.status === 'success') {
+      statusText = 'passed';
+    } else if (pipeline?.status === 'failed') {
+      statusText = 'failed';
+    }
+
+    const isApproved = Boolean(mrDetails?.approved || mrDetails?.status === 'approved');
+    const mrRef = `!${mr.iid} (${mr.project})`;
+    const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
+    const title = mrDetails?.title || mr.title;
+    const titleLine = title ? `💬 **${title}**` : '';
+    const approverNames = (mrDetails?.approvedBy || []).filter(Boolean);
+
+    const jiraTicket =
+      mrDetails?.jiraTicket ||
+      (this.jira?.findAssociatedIssue
+        ? this.jira.findAssociatedIssue({
+            title,
+            description: mrDetails?.description,
+            source_branch: mrDetails?.source_branch,
+          })
+        : null);
+
+    let approvalLine = '';
+    if (isApproved) {
+      const byText = approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : '';
+      approvalLine = `👍 **Approved**${byText}`;
+    } else {
+      approvalLine = '⏳ **Not approved yet**';
+    }
+
+    const rebaseLine = mrDetails?.needsRebase
+      ? (mrDetails.hasConflicts ? '⚠️ **Rebase required** (merge conflicts)' : '⚠️ **Rebase required**')
+      : '';
+
+    const autoMergeLine = mrDetails?.autoMerge
+      ? `🔀 **Auto-merge enabled**${mrDetails.autoMergeUser ? ` by ${mrDetails.autoMergeUser}` : ''}`
+      : '';
+
+    const lines = [];
+    lines.push(`🦊 [${mrRef}](${mrUrl})`);
+    if (titleLine) {
+      lines.push(titleLine);
+    }
+    if (jiraTicket) {
+      lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
+    }
+    if (pipeline) {
+      const pipeUrl = pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null);
+      lines.push(
+        pipeUrl
+          ? `${icon} [${CI_PREFIX}](${pipeUrl}) **${statusText}**`
+          : `${icon} ${CI_PREFIX} **${statusText}**`
+      );
+    }
+    lines.push(approvalLine);
+    if (rebaseLine) {
+      lines.push(rebaseLine);
+    }
+    if (autoMergeLine) {
+      lines.push(autoMergeLine);
+    }
+
+    return lines.map((l) => (l || '').trim()).filter(Boolean).join('\n\n').trim();
   }
 
   formatJobStatusMessage(jobData, project, mr = null) {
@@ -2467,6 +2499,10 @@ export class MergeRequestWatcher {
         const approversChanged = mr.lastReportedApprovedBy !== approversKey;
         const needsRebase = Boolean(mrState.needsRebase);
         const rebaseChanged = mr.lastReportedNeedsRebase !== needsRebase;
+        const isAutoMerge = Boolean(mrState.autoMerge);
+        const autoMergeChanged = mr.lastReportedAutoMerge !== isAutoMerge;
+        const autoMergeUser = mrState.autoMergeUser || null;
+        const autoMergeUserChanged = mr.lastReportedAutoMergeUser !== autoMergeUser;
         const needsInitialComment = !entry.isHistory && !mr.ciMessageServerId;
 
         if (
@@ -2475,6 +2511,8 @@ export class MergeRequestWatcher {
             approvalChanged ||
             approversChanged ||
             rebaseChanged ||
+            autoMergeChanged ||
+            autoMergeUserChanged ||
             titleChanged ||
             draftChanged ||
             jiraChanged ||
@@ -2485,6 +2523,7 @@ export class MergeRequestWatcher {
             mr.lastReportedPipelineStatus !== null ||
             mr.lastReportedApprovalStatus !== null ||
             mr.lastReportedNeedsRebase !== null ||
+            mr.lastReportedAutoMerge !== null ||
             mr.lastReportedTitle !== null ||
             mr.lastReportedJiraKey !== null
           ) {
@@ -2493,6 +2532,8 @@ export class MergeRequestWatcher {
               approvalChanged,
               approversChanged,
               rebaseChanged,
+              autoMergeChanged,
+              autoMergeUserChanged,
               titleChanged,
               draftChanged,
               jiraChanged,
@@ -2506,6 +2547,8 @@ export class MergeRequestWatcher {
           mr.lastReportedApprovalStatus = isApproved;
           mr.lastReportedApprovedBy = approversKey;
           mr.lastReportedNeedsRebase = needsRebase;
+          mr.lastReportedAutoMerge = isAutoMerge;
+          mr.lastReportedAutoMergeUser = autoMergeUser;
           if (currentTitle) {
             mr.lastReportedTitle = currentTitle;
           }
@@ -3543,7 +3586,10 @@ export class MergeRequestWatcher {
           mrState.approved || mrState.status === 'approved'
             ? `👍 **Approved**${approverNames.length > 0 ? ` by ${approverNames.join(', ')}` : ''}`
             : '⏳ **Not approved yet**';
-        const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}`;
+        const autoMergeText = mrState.autoMerge
+          ? `🔀 **Enabled**${mrState.autoMergeUser ? ` by ${mrState.autoMergeUser}` : ''}`
+          : 'disabled';
+        const statusText = `Status: **${mrState.status}**\n\nApproval: ${approvalText}\n\nPipeline: ${pipeText}\n\nBranch: ${rebaseText}\n\nAuto-merge: ${autoMergeText}`;
 
         await sendReply(event.conversationId, event, `📊 [${mrRef}](${mrUrl})\n\n${titleLine}${jiraLine}${statusText}`);
         this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
@@ -3866,7 +3912,9 @@ export class MergeRequestWatcher {
         rebaseBadge = ' ⚠️ _rebase!_';
       }
 
-      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${rebaseBadge}`;
+      const autoMergeBadge = mr.merge_when_pipeline_succeeds ? ' 🔀 _auto-merge_' : '';
+
+      return `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${rebaseBadge}${autoMergeBadge}`;
     };
 
     if (mode === 'user' && userFilter) {

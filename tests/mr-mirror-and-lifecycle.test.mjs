@@ -16,12 +16,22 @@ test('teamsReactionToGitLabEmoji maps reaction keys and reserves thumbs up', () 
 
   // Standard reaction keys
   assert.equal(teamsReactionToGitLabEmoji('laugh'), 'laughing');
-  assert.equal(teamsReactionToGitLabEmoji('heart'), 'heart');
+  assert.equal(teamsReactionToGitLabEmoji('heart'), 'hearts');
   assert.equal(teamsReactionToGitLabEmoji('surprised'), 'open_mouth');
   assert.equal(teamsReactionToGitLabEmoji('sad'), 'cry');
   assert.equal(teamsReactionToGitLabEmoji('angry'), 'angry');
   assert.equal(teamsReactionToGitLabEmoji('1f44e_thumbsdown'), 'thumbsdown');
   assert.equal(teamsReactionToGitLabEmoji('👎'), 'thumbsdown');
+
+  // Translation table checks (Teams slug -> TanukiEmoji)
+  assert.equal(teamsReactionToGitLabEmoji('loudlycrying'), 'sob');
+  assert.equal(teamsReactionToGitLabEmoji('loudly_crying'), 'sob');
+  assert.equal(teamsReactionToGitLabEmoji('😭'), 'sob');
+  assert.equal(teamsReactionToGitLabEmoji('1f62d_loudly_crying_face'), 'sob');
+  assert.equal(teamsReactionToGitLabEmoji('tears_of_joy'), 'joy');
+  assert.equal(teamsReactionToGitLabEmoji('rofl'), 'rofl');
+  assert.equal(teamsReactionToGitLabEmoji('check'), 'white_check_mark');
+  assert.equal(teamsReactionToGitLabEmoji('checkmark'), 'white_check_mark');
 
   // Unicode emojis
   assert.equal(teamsReactionToGitLabEmoji('😆'), 'laughing');
@@ -175,6 +185,19 @@ test('mirrors user non-thumbsup reaction to GitLab award emoji and removes when 
   assert.equal(deleted[0].awardId, 3); // The laughing award id
   assert.ok(awards.some((a) => a.name === 'thumbsup'), 'thumbsup award should not be removed');
   assert.ok(awards.some((a) => a.name === 'rocket'), 'other user award should not be touched');
+
+  // 3. Bot status reaction (1f440_eyes) placed on the message must NOT be mirrored as user award
+  currentReactions = [
+    { key: '1f440_eyes', user: { mri: TEST_SELF_MRI, displayName: 'Me' } },
+  ];
+  watcher.recordBotReaction(botReplyId, '1f440_eyes');
+  await watcher.handleIncomingEvent({
+    kind: 'MessageUpdate',
+    conversationId: convId,
+    messageId: botReplyId,
+  });
+  // No new award should have been added
+  assert.equal(awarded.length, 1, 'Bot-placed status reaction should not be awarded on GitLab');
 });
 
 test('checkWatchedKey keeps closed MRs watched until merged and handles reopen', async () => {

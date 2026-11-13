@@ -46,6 +46,211 @@ const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
 
+const GITLAB_EMOJI_TRANSLATIONS = {
+  // Common Teams reaction names / slugs
+  laugh: 'laughing',
+  heart: 'hearts',
+  hearts: 'hearts',
+  red_heart: 'hearts',
+  surprised: 'open_mouth',
+  sad: 'cry',
+  angry: 'angry',
+  dislike: 'thumbsdown',
+  thumbsdown: 'thumbsdown',
+  thumbs_down: 'thumbsdown',
+  '1f44e_thumbsdown': 'thumbsdown',
+
+  // Crying & emotion
+  loudlycrying: 'sob',
+  loudly_crying: 'sob',
+  loudly_crying_face: 'sob',
+  sob: 'sob',
+  cry: 'cry',
+  crying: 'cry',
+  crying_face: 'cry',
+  joy: 'joy',
+  tears_of_joy: 'joy',
+  face_with_tears_of_joy: 'joy',
+  rofl: 'rofl',
+  rolling_on_the_floor_laughing: 'rofl',
+  sweat_smile: 'sweat_smile',
+  grinning_face_with_sweat: 'sweat_smile',
+  smile: 'smile',
+  smiling_face: 'smile',
+  smiley: 'smiley',
+  grinning: 'grinning',
+  grinning_face: 'grinning',
+  grin: 'grin',
+  beaming_face_with_smiling_eyes: 'grin',
+  wink: 'wink',
+  winking_face: 'wink',
+  blush: 'blush',
+  smiling_face_with_smiling_eyes: 'blush',
+  heart_eyes: 'heart_eyes',
+  smiling_face_with_heart_eyes: 'heart_eyes',
+  kissing_heart: 'kissing_heart',
+  face_blowing_a_kiss: 'kissing_heart',
+  sunglasses: 'sunglasses',
+  smiling_face_with_sunglasses: 'sunglasses',
+  smirk: 'smirk',
+  smirking_face: 'smirk',
+  unamused: 'unamused',
+  unamused_face: 'unamused',
+  grimacing: 'grimacing',
+  grimacing_face: 'grimacing',
+  pleading: 'pleading_face',
+  pleading_face: 'pleading_face',
+  face_with_raised_eyebrow: 'face_with_raised_eyebrow',
+  raised_eyebrow: 'face_with_raised_eyebrow',
+  thinking: 'thinking',
+  thinking_face: 'thinking',
+  exploding_head: 'exploding_head',
+  shocked_face_with_exploding_head: 'exploding_head',
+  scream: 'scream',
+  screaming: 'scream',
+  face_screaming_in_fear: 'scream',
+  rage: 'rage',
+  pouting_face: 'rage',
+  saluting_face: 'saluting_face',
+  salute: 'saluting_face',
+  melting_face: 'melting_face',
+  melting: 'melting_face',
+  partying_face: 'partying_face',
+  partying: 'partying_face',
+  hot_face: 'hot_face',
+  hot: 'hot_face',
+  cold_face: 'cold_face',
+  cold: 'cold_face',
+  face_with_rolling_eyes: 'face_with_rolling_eyes',
+  rolling_eyes: 'rolling_eyes',
+  face_with_monocle: 'face_with_monocle',
+  monocle: 'face_with_monocle',
+  zipper_mouth_face: 'zipper_mouth_face',
+  zipper_mouth: 'zipper_mouth_face',
+  clown_face: 'clown_face',
+  clown: 'clown_face',
+  skull: 'skull',
+  poop: 'poop',
+  pile_of_poo: 'poop',
+  shit: 'poop',
+  robot: 'robot',
+  robot_face: 'robot',
+  ghost: 'ghost',
+  alien: 'alien',
+
+  // Gestures & symbols
+  eyes: 'eyes',
+  tada: 'tada',
+  party_popper: 'tada',
+  party: 'tada',
+  celebrate: 'tada',
+  rocket: 'rocket',
+  fire: 'fire',
+  flame: 'fire',
+  '100': '100',
+  hundred_points: '100',
+  clap: 'clap',
+  clapping_hands: 'clap',
+  applause: 'clap',
+  raised_hands: 'raised_hands',
+  raising_hands: 'raised_hands',
+  praise: 'raised_hands',
+  pray: 'pray',
+  folded_hands: 'pray',
+  handshake: 'handshake',
+  muscle: 'muscle',
+  flexed_biceps: 'muscle',
+  biceps: 'muscle',
+  wave: 'wave',
+  waving_hand: 'wave',
+  sparkles: 'sparkles',
+  sparkling_heart: 'sparkling_heart',
+  broken_heart: 'broken_heart',
+  white_check_mark: 'white_check_mark',
+  heavy_check_mark: 'heavy_check_mark',
+  check: 'white_check_mark',
+  checkmark: 'white_check_mark',
+  x: 'x',
+  cross_mark: 'x',
+  warning: 'warning',
+  bulb: 'bulb',
+  light_bulb: 'bulb',
+  coffee: 'coffee',
+  hot_beverage: 'coffee',
+  beer: 'beer',
+  beer_mug: 'beer',
+  beers: 'beers',
+  clinking_beer_mugs: 'beers',
+  cheers: 'beers',
+};
+
+const UNICODE_EMOJI_TO_GITLAB = {
+  '❤️': 'hearts',
+  '♥️': 'hearts',
+  '💖': 'sparkling_heart',
+  '💔': 'broken_heart',
+  '😆': 'laughing',
+  '😂': 'joy',
+  '🤣': 'rofl',
+  '😀': 'grinning',
+  '😃': 'smiley',
+  '😄': 'smile',
+  '😁': 'grin',
+  '😅': 'sweat_smile',
+  '😉': 'wink',
+  '😊': 'blush',
+  '😍': 'heart_eyes',
+  '😘': 'kissing_heart',
+  '😎': 'sunglasses',
+  '😏': 'smirk',
+  '😒': 'unamused',
+  '😮': 'open_mouth',
+  '😲': 'astonished',
+  '😢': 'cry',
+  '😭': 'sob',
+  '😡': 'angry',
+  '🤬': 'rage',
+  '🤯': 'exploding_head',
+  '😱': 'scream',
+  '😬': 'grimacing',
+  '🥺': 'pleading_face',
+  '🫡': 'saluting_face',
+  '🫠': 'melting_face',
+  '🥳': 'partying_face',
+  '🥵': 'hot_face',
+  '🥶': 'cold_face',
+  '🙄': 'rolling_eyes',
+  '🤨': 'face_with_raised_eyebrow',
+  '🧐': 'face_with_monocle',
+  '🤐': 'zipper_mouth_face',
+  '🤡': 'clown_face',
+  '💀': 'skull',
+  '💩': 'poop',
+  '👻': 'ghost',
+  '🤖': 'robot',
+  '🎉': 'tada',
+  '🚀': 'rocket',
+  '🔥': 'fire',
+  '🤔': 'thinking',
+  '👀': 'eyes',
+  '👏': 'clap',
+  '🙌': 'raised_hands',
+  '🙏': 'pray',
+  '🤝': 'handshake',
+  '💪': 'muscle',
+  '👋': 'wave',
+  '💯': '100',
+  '✨': 'sparkles',
+  '👎': 'thumbsdown',
+  '✅': 'white_check_mark',
+  '❌': 'x',
+  '⚠️': 'warning',
+  '💡': 'bulb',
+  '☕': 'coffee',
+  '🍺': 'beer',
+  '🍻': 'beers',
+};
+
 export function teamsReactionToGitLabEmoji(reactionKey) {
   if (!reactionKey) return null;
   const raw = String(reactionKey).trim();
@@ -63,72 +268,29 @@ export function teamsReactionToGitLabEmoji(reactionKey) {
     return null;
   }
 
-  // Standard Teams reaction keys
-  const standardMap = {
-    laugh: 'laughing',
-    heart: 'heart',
-    surprised: 'open_mouth',
-    sad: 'cry',
-    angry: 'angry',
-    '1f44e_thumbsdown': 'thumbsdown',
-    thumbsdown: 'thumbsdown',
-    thumbs_down: 'thumbsdown',
-    '👎': 'thumbsdown',
-  };
-
-  if (standardMap[lower]) {
-    return standardMap[lower];
+  // 1. Direct Unicode match
+  if (UNICODE_EMOJI_TO_GITLAB[raw]) {
+    return UNICODE_EMOJI_TO_GITLAB[raw];
   }
 
-  // Common Unicode emojis to GitLab names
-  const unicodeMap = {
-    '❤️': 'heart',
-    '♥️': 'heart',
-    '💖': 'sparkling_heart',
-    '😆': 'laughing',
-    '😂': 'joy',
-    '🤣': 'rofl',
-    '😀': 'grinning',
-    '😃': 'smiley',
-    '😄': 'smile',
-    '😊': 'blush',
-    '😮': 'open_mouth',
-    '😲': 'astonished',
-    '😢': 'cry',
-    '😭': 'sob',
-    '😡': 'angry',
-    '🤬': 'rage',
-    '🎉': 'tada',
-    '🚀': 'rocket',
-    '🔥': 'fire',
-    '🤔': 'thinking',
-    '👀': 'eyes',
-    '👏': 'clap',
-    '🙌': 'raised_hands',
-    '💯': '100',
-    '✨': 'sparkles',
-    '💩': 'poop',
-  };
-
-  if (unicodeMap[raw]) {
-    return unicodeMap[raw];
+  // 2. Check translation table directly
+  if (GITLAB_EMOJI_TRANSLATIONS[lower]) {
+    return GITLAB_EMOJI_TRANSLATIONS[lower];
   }
 
-  // Hex encoded keys like 1f600_grinning or 1f389_party_popper
-  const match = lower.match(/^[0-9a-f]+_(.+)$/);
-  if (match) {
-    const slug = match[1].replace(/-/g, '_');
-    if (slug === 'party_popper') return 'tada';
-    if (slug === 'thinking_face') return 'thinking';
-    if (slug === 'grinning_face') return 'grinning';
-    if (slug === 'face_with_tears_of_joy') return 'joy';
-    if (slug === 'red_heart') return 'heart';
-    return slug;
+  // 3. Hex-prefixed keys like 1f62d_loudly_crying_face or 1f389_party_popper
+  const hexMatch = lower.match(/^[0-9a-f]+_(.+)$/);
+  if (hexMatch) {
+    const slug = hexMatch[1].replace(/-/g, '_');
+    if (GITLAB_EMOJI_TRANSLATIONS[slug]) {
+      return GITLAB_EMOJI_TRANSLATIONS[slug];
+    }
   }
 
-  // If already alphanumeric/underscore, try as-is
-  if (/^[a-z0-9_+-]+$/.test(lower)) {
-    return lower;
+  // 4. Normalized slug check (remove non-alphanumeric except underscores)
+  const normalized = lower.replace(/[^a-z0-9_]/g, '');
+  if (GITLAB_EMOJI_TRANSLATIONS[normalized]) {
+    return GITLAB_EMOJI_TRANSLATIONS[normalized];
   }
 
   return null;
@@ -850,7 +1012,7 @@ export class MergeRequestWatcher {
     this.webhookServer = webhookServer;
     this.getMessage = customGetMessage || getMessage;
     this.approvingMrs = new Set();
-    this.botPlacedLikeMessageIds = new Set();
+    this.botPlacedReactions = new Map();
     this.syncingAwardEmojis = new Set();
     this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
@@ -940,8 +1102,8 @@ export class MergeRequestWatcher {
             const conversationId = saved.conversationId || key.slice(0, slashIndex);
             const messageId = saved.messageId || key.slice(slashIndex + 1);
             if (this.completedMessages.has(String(messageId))) continue;
-            if (saved.status === 'approved') {
-              this.botPlacedLikeMessageIds.add(String(messageId));
+            if (saved.status && STATUS_REACTIONS[saved.status]) {
+              this.recordBotReaction(messageId, STATUS_REACTIONS[saved.status]);
             }
             this.watched.set(key, {
               conversationId,
@@ -1452,6 +1614,48 @@ export class MergeRequestWatcher {
     this.selfOid = extractUserOid(mri);
   }
 
+  recordBotReaction(messageId, key) {
+    if (!messageId || !key) return;
+    const msgId = String(messageId);
+    if (!this.botPlacedReactions.has(msgId)) {
+      this.botPlacedReactions.set(msgId, new Set());
+    }
+    this.botPlacedReactions.get(msgId).add(String(key).toLowerCase());
+  }
+
+  unrecordBotReaction(messageId, key) {
+    if (!messageId || !key) return;
+    const msgId = String(messageId);
+    const set = this.botPlacedReactions.get(msgId);
+    if (set) {
+      set.delete(String(key).toLowerCase());
+      if (set.size === 0) this.botPlacedReactions.delete(msgId);
+    }
+  }
+
+  isBotReaction(messageId, key) {
+    if (!messageId || !key) return false;
+    const msgId = String(messageId);
+    const k = String(key).toLowerCase();
+    if (this.botPlacedReactions.get(msgId)?.has(k)) return true;
+    for (const entry of this.watched.values()) {
+      if (String(entry.messageId) === msgId) {
+        for (const statusKey of Object.values(STATUS_REACTIONS)) {
+          if (statusKey.toLowerCase() === k) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  get botPlacedLikeMessageIds() {
+    return {
+      has: (msgId) => this.isBotReaction(msgId, 'like'),
+      add: (msgId) => this.recordBotReaction(msgId, 'like'),
+      delete: (msgId) => this.unrecordBotReaction(msgId, 'like'),
+    };
+  }
+
   setWebhookServer(server) {
     this.webhookServer = server;
   }
@@ -1855,16 +2059,16 @@ export class MergeRequestWatcher {
   async setReactionStatus(entry, newStatus) {
     const { conversationId, messageId } = entry;
     if (newStatus && newStatus !== entry.status) {
-      if (STATUS_REACTIONS[newStatus] === 'like') {
-        this.botPlacedLikeMessageIds.add(String(messageId));
+      if (STATUS_REACTIONS[newStatus]) {
+        this.recordBotReaction(messageId, STATUS_REACTIONS[newStatus]);
       }
       const result = await addReaction(conversationId, messageId, STATUS_REACTIONS[newStatus]);
       if (!result.ok) log(`adding ${newStatus} reaction failed: ${result.error?.message}`);
     }
 
     if (entry.status && entry.status !== newStatus) {
-      if (STATUS_REACTIONS[entry.status] === 'like') {
-        this.botPlacedLikeMessageIds.delete(String(messageId));
+      if (STATUS_REACTIONS[entry.status]) {
+        this.unrecordBotReaction(messageId, STATUS_REACTIONS[entry.status]);
       }
       const result = await removeReaction(conversationId, messageId, STATUS_REACTIONS[entry.status]);
       if (!result.ok) log(`removing ${entry.status} reaction failed: ${result.error?.message}`);
@@ -6129,8 +6333,10 @@ export class MergeRequestWatcher {
 
     if (targetMrs.length === 0) return;
 
-    // Collect desired emoji names from user's own reactions
-    const selfReactions = (msgData.reactions || []).filter((r) => this.isReactorSelf(r.user));
+    // Collect desired emoji names from user's own reactions (excluding reactions placed by the bot)
+    const selfReactions = (msgData.reactions || []).filter(
+      (r) => this.isReactorSelf(r.user) && !this.isBotReaction(msgId, r.key)
+    );
     const desiredEmojiNames = new Set();
     for (const r of selfReactions) {
       const emojiName = teamsReactionToGitLabEmoji(r.key);

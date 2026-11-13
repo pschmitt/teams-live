@@ -9,6 +9,7 @@ import { HRWorksClient } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
+import { GitLabWebhookServer } from './webhook.mjs';
 import { SystemdWatchdog } from './systemd.mjs';
 import { HealthMonitor } from './health.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
@@ -116,6 +117,7 @@ async function main() {
   });
 
   let trouter = null;
+  let webhookServer = null;
   let stopping = false;
 
   const hrworks = new HRWorksClient({
@@ -155,12 +157,53 @@ async function main() {
     }
     watcher.stop();
     authManager.stop();
+    if (webhookServer) {
+      await webhookServer.stop().catch((e) => log(`Error stopping webhook server: ${e.message}`));
+    }
     if (trouter) trouter.close();
     process.exit(0);
   };
 
   process.on('SIGINT', () => cleanup('SIGINT'));
   process.on('SIGTERM', () => cleanup('SIGTERM'));
+
+  // Start GitLab webhook server and ensure group webhook if enabled
+  if (config.gitlab?.webhook?.enable) {
+    const whCfg = config.gitlab.webhook;
+    webhookServer = new GitLabWebhookServer({
+      port: whCfg.port,
+      host: whCfg.host,
+      path: whCfg.path,
+      secret: whCfg.secret,
+      onEvent: (eventType, payload) => {
+        watcher.handleWebhookEvent(eventType, payload);
+      },
+    });
+    watcher.setWebhookServer(webhookServer);
+
+    try {
+      await webhookServer.start();
+    } catch (err) {
+      log(`Failed to start GitLab webhook server: ${err.message}`);
+    }
+
+    if (whCfg.auto_setup && whCfg.url && gitlab.token) {
+      try {
+        log(`Ensuring GitLab group webhook is configured for ${whCfg.url}...`);
+        const result = await gitlab.ensureGroupWebhook({
+          url: whCfg.url,
+          secretToken: whCfg.secret,
+          events: {
+            merge_requests: true,
+            pipeline: true,
+          },
+        });
+        log(`GitLab group webhook status: ${result.action} (id: ${result.hook?.id ?? 'existing'})`);
+      } catch (err) {
+        log(`GitLab group webhook auto-setup failed: ${err.message}`);
+      }
+    }
+  }
 
   // Initial auth check / self-heal
   let currentAuth = await authManager.ensureValidAuth();

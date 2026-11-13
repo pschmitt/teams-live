@@ -19,6 +19,7 @@ check:
   node --check src/snake.mjs
   node --check src/config.mjs
   node --check src/trouter.mjs
+  node --check src/webhook.mjs
   shellcheck scripts/*.sh
   nix flake check
 

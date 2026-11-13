@@ -124,6 +124,42 @@ export function loadConfig(configPath) {
     ),
   };
 
+  const rawWebhook = fileConfig.gitlab?.webhook ?? {};
+  const webhook = {
+    enable: Boolean(
+      rawWebhook.enable ??
+        (process.env.TEAMS_GITLAB_WEBHOOK_ENABLE
+          ? process.env.TEAMS_GITLAB_WEBHOOK_ENABLE === 'true' || process.env.TEAMS_GITLAB_WEBHOOK_ENABLE === '1'
+          : false)
+    ),
+    port: Number(rawWebhook.port ?? process.env.TEAMS_GITLAB_WEBHOOK_PORT ?? 3000),
+    host: getString(rawWebhook.host) || process.env.TEAMS_GITLAB_WEBHOOK_HOST || '0.0.0.0',
+    path: getString(rawWebhook.path) || process.env.TEAMS_GITLAB_WEBHOOK_PATH || '/webhook/gitlab',
+    url: (getString(rawWebhook.url) || process.env.TEAMS_GITLAB_WEBHOOK_URL || '').trim(),
+    secret_file: getNullableString(rawWebhook.secret_file) || process.env.TEAMS_GITLAB_WEBHOOK_SECRET_FILE || null,
+    secret: null,
+    auto_setup: Boolean(
+      rawWebhook.auto_setup ??
+        (process.env.TEAMS_GITLAB_WEBHOOK_AUTO_SETUP !== undefined
+          ? process.env.TEAMS_GITLAB_WEBHOOK_AUTO_SETUP === 'true' || process.env.TEAMS_GITLAB_WEBHOOK_AUTO_SETUP === '1'
+          : true)
+    ),
+  };
+
+  if (webhook.secret_file && fs.existsSync(webhook.secret_file)) {
+    try {
+      webhook.secret = fs.readFileSync(webhook.secret_file, 'utf8').trim();
+    } catch (e) {
+      console.warn(`Could not read GitLab webhook secret file ${webhook.secret_file}: ${e.message}`);
+    }
+  } else if (process.env.TEAMS_GITLAB_WEBHOOK_SECRET) {
+    webhook.secret = process.env.TEAMS_GITLAB_WEBHOOK_SECRET.trim();
+  } else if (typeof rawWebhook.secret === 'string' && rawWebhook.secret) {
+    webhook.secret = rawWebhook.secret.trim();
+  }
+
+  gitlab.webhook = webhook;
+
   if (gitlab.token_file && fs.existsSync(gitlab.token_file)) {
     try {
       gitlab.token = fs.readFileSync(gitlab.token_file, 'utf8').trim();

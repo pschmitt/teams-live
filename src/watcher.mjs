@@ -748,6 +748,7 @@ export class MergeRequestWatcher {
     authManager,
     health = null,
     getMessage: customGetMessage = null,
+    webhookServer = null,
   }) {
     this.config = config;
     this.gitlab = gitlab;
@@ -758,6 +759,7 @@ export class MergeRequestWatcher {
     this.screenshot = screenshot;
     this.authManager = authManager;
     this.health = health;
+    this.webhookServer = webhookServer;
     this.getMessage = customGetMessage || getMessage;
     this.approvingMrs = new Set();
     this.serviceAlertState = new Map();
@@ -1211,6 +1213,13 @@ export class MergeRequestWatcher {
       glUser = await this.gitlab.getCurrentUser().catch(() => null);
     }
     const glHealth = services.gitlab || {};
+    let webhookStatusStr = null;
+    if (this.webhookServer?.listening) {
+      webhookStatusStr = `listening on :${this.webhookServer.port}`;
+    } else if (this.config.gitlab?.webhook?.enable) {
+      webhookStatusStr = 'enabled (inactive)';
+    }
+
     const gitlabStatus = {
       name: 'GitLab',
       configured: Boolean(this.gitlab?.token),
@@ -1218,6 +1227,7 @@ export class MergeRequestWatcher {
       host: this.gitlab?.host || 'git.wiit.one',
       group: this.gitlab?.group || '',
       user: glUser ? `${glUser.name || ''} (@${glUser.username})`.trim() : (glHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
+      webhook: webhookStatusStr,
       error: glHealth.error,
     };
 
@@ -1347,6 +1357,75 @@ export class MergeRequestWatcher {
   setSelfMri(mri) {
     this.selfMri = mri;
     this.selfOid = extractUserOid(mri);
+  }
+
+  setWebhookServer(server) {
+    this.webhookServer = server;
+  }
+
+  async handleWebhookEvent(eventType, payload) {
+    if (!payload) return;
+    const kind = payload.object_kind || (eventType || '').toLowerCase();
+
+    if (kind === 'merge_request' || eventType === 'Merge Request Hook') {
+      const project = payload.project?.path_with_namespace || payload.project?.name;
+      const iid = payload.object_attributes?.iid;
+      const action = payload.object_attributes?.action || payload.object_attributes?.state;
+      log(`GitLab webhook: MR ${project}!${iid} (action: ${action})`);
+
+      if (project && iid) {
+        let matched = false;
+        const projLower = project.toLowerCase();
+        const projBase = projLower.split('/').pop();
+
+        for (const [key, entry] of this.watched.entries()) {
+          const hasMr = (entry.mrs || []).some((m) => {
+            if (String(m.iid) !== String(iid)) return false;
+            const mProj = (m.project || '').toLowerCase();
+            return mProj === projLower || mProj.split('/').pop() === projBase;
+          });
+          if (hasMr) {
+            matched = true;
+            this.checkWatchedKey(key).catch((err) =>
+              log(`Webhook check failed for ${key}: ${err.message}`)
+            );
+          }
+        }
+
+        if (!matched) {
+          this.checkAllWatched().catch((err) =>
+            log(`Webhook checkAllWatched failed: ${err.message}`)
+          );
+        }
+      }
+    } else if (kind === 'pipeline' || eventType === 'Pipeline Hook') {
+      const project = payload.project?.path_with_namespace || payload.project?.name;
+      const pipeId = payload.object_attributes?.id;
+      const status = payload.object_attributes?.status;
+      const mrIid = payload.merge_request?.iid;
+      log(`GitLab webhook: pipeline #${pipeId} for ${project} (status: ${status}${mrIid ? `, MR: !${mrIid}` : ''})`);
+
+      if (mrIid && project) {
+        const projLower = project.toLowerCase();
+        const projBase = projLower.split('/').pop();
+        for (const [key, entry] of this.watched.entries()) {
+          const hasMr = (entry.mrs || []).some((m) => {
+            if (String(m.iid) !== String(mrIid)) return false;
+            const mProj = (m.project || '').toLowerCase();
+            return mProj === projLower || mProj.split('/').pop() === projBase;
+          });
+          if (hasMr) {
+            this.checkWatchedKey(key).catch((err) =>
+              log(`Webhook pipeline check failed for ${key}: ${err.message}`)
+            );
+          }
+        }
+      } else {
+        this.checkAllWatched().catch((err) =>
+          log(`Webhook pipeline checkAllWatched failed: ${err.message}`)
+        );
+      }
+    }
   }
 
   isSenderSelf(event) {
@@ -4433,6 +4512,7 @@ export class MergeRequestWatcher {
       `  - **Status**: ${conn.teams.details}\n` +
       `- 🦊 **GitLab**: ${glIcon} ${conn.gitlab.status === 'ok' ? 'Connected' : (conn.gitlab.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       `  - **Host**: \`${conn.gitlab.host}\`${conn.gitlab.group ? ` (group: \`${conn.gitlab.group}\`)` : ''}\n` +
+      (conn.gitlab.webhook ? `  - **Webhook**: ${conn.gitlab.webhook}\n` : '') +
       (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
       (conn.gitlab.error ? `  - **Error**: \`${conn.gitlab.error}\`\n` : '') +
       `- 📋 **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +

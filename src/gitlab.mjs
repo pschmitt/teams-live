@@ -503,4 +503,84 @@ export class GitLabClient {
       autoMergeStrategy: mr.auto_merge_strategy || null,
     };
   }
+
+  async getGroupHooks(group = null) {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks`);
+  }
+
+  async addGroupHook(group = null, hookData) {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks`, {
+      method: 'POST',
+      body: hookData,
+    });
+  }
+
+  async editGroupHook(group = null, hookId, hookData) {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, {
+      method: 'PUT',
+      body: hookData,
+    });
+  }
+
+  async deleteGroupHook(group = null, hookId) {
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+    return await this.request(`groups/${encodeURIComponent(targetGroup)}/hooks/${hookId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Ensures a group webhook exists with the specified URL and events.
+   * If an existing hook with the same URL is found, updates it if needed.
+   * Otherwise creates a new group webhook.
+   */
+  async ensureGroupWebhook({
+    group = null,
+    url,
+    secretToken = null,
+    events = {},
+  } = {}) {
+    if (!url) throw new Error('Webhook URL is required');
+    const targetGroup = group || this.group;
+    if (!targetGroup) throw new Error('No GitLab group configured');
+
+    const hookData = {
+      url,
+      merge_requests_events: events.merge_requests ?? true,
+      pipeline_events: events.pipeline ?? true,
+      job_events: events.job ?? false,
+      note_events: events.note ?? false,
+      enable_ssl_verification: events.enable_ssl_verification ?? true,
+    };
+    if (secretToken) {
+      hookData.token = secretToken;
+    }
+
+    const hooks = await this.getGroupHooks(targetGroup);
+    const existing = Array.isArray(hooks) ? hooks.find((h) => h.url === url) : null;
+
+    if (existing) {
+      const needsUpdate =
+        existing.merge_requests_events !== hookData.merge_requests_events ||
+        existing.pipeline_events !== hookData.pipeline_events ||
+        existing.enable_ssl_verification !== hookData.enable_ssl_verification ||
+        Boolean(secretToken);
+
+      if (needsUpdate) {
+        const updated = await this.editGroupHook(targetGroup, existing.id, hookData);
+        return { action: 'updated', hook: updated };
+      }
+      return { action: 'unchanged', hook: existing };
+    }
+
+    const created = await this.addGroupHook(targetGroup, hookData);
+    return { action: 'created', hook: created };
+  }
 }

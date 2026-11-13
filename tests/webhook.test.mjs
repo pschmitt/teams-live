@@ -274,3 +274,19 @@ test('MergeRequestWatcher.handleWebhookEvent triggers checkWatchedKey on matchin
   });
   assert.equal(allWatchedCalled, true);
 });
+
+test('MergeRequestWatcher.isOwnMessage does not false-positive on messages mentioning teams-live repo', () => {
+  const watcher = new MergeRequestWatcher({
+    config: { gitlab: {}, teams: {}, conversations: [] },
+    gitlab: null,
+    jira: null,
+    opsgenie: null,
+    authManager: { getCachedAuth: () => ({ userMri: '8:orgid:me' }) },
+  });
+
+  const mrLink = 'https://git.example.com/my-group/test-teams-live-webhook/-/merge_requests/1';
+  assert.equal(watcher.isOwnMessage('8:orgid:other', mrLink), false);
+  assert.equal(watcher.isOwnMessage('8:orgid:other', 'check out the teams-live project'), false);
+  assert.equal(watcher.isOwnMessage('8:orgid:other', 'teams-live status: running'), true);
+  assert.equal(watcher.isOwnMessage('8:orgid:other', '🟢 **teams-live started**'), true);
+});

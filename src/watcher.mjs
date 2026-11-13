@@ -1541,7 +1541,9 @@ export class MergeRequestWatcher {
       t.includes('by humans found') ||
       t.includes('teams-live slash commands') ||
       t.includes('teams-live status') ||
-      t.includes('teams-live') ||
+      t.includes('teams-live started') ||
+      t.includes('teams-live shutting down') ||
+      t.includes('teams-live sudo') ||
       t.includes('POLO!') ||
       t.includes('was kicked from the conversation') ||
       t.includes('was banned from the conversation') ||

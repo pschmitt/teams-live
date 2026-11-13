@@ -1125,6 +1125,7 @@ export class MergeRequestWatcher {
                 lastReportedDraft: m.lastReportedDraft ?? null,
                 lastReportedJiraKey: m.lastReportedJiraKey ?? null,
                 status: m.status ?? null,
+                lastReportedClosed: m.lastReportedClosed ?? false,
                 ciMessageServerId: m.ciMessageServerId ?? null,
                 lastReportedPipelineId: m.lastReportedPipelineId ?? null,
                 lastReportedPipelineStatus: m.lastReportedPipelineStatus ?? null,
@@ -1639,9 +1640,11 @@ export class MergeRequestWatcher {
     const k = String(key).toLowerCase();
     if (this.botPlacedReactions.get(msgId)?.has(k)) return true;
     for (const entry of this.watched.values()) {
-      if (String(entry.messageId) === msgId) {
-        for (const statusKey of Object.values(STATUS_REACTIONS)) {
-          if (statusKey.toLowerCase() === k) return true;
+      if (String(entry.messageId) === msgId && entry.status) {
+        const expectedBotReaction = STATUS_REACTIONS[entry.status];
+        if (expectedBotReaction && expectedBotReaction.toLowerCase() === k) {
+          if (entry.editedOriginal && entry.status === 'pending') continue;
+          return true;
         }
       }
     }
@@ -1926,6 +1929,7 @@ export class MergeRequestWatcher {
           lastReportedDraft: savedMr?.lastReportedDraft ?? null,
           lastReportedJiraKey: savedMr?.lastReportedJiraKey ?? null,
           status: savedMr?.status ?? initialMrStatus,
+          lastReportedClosed: savedMr?.lastReportedClosed ?? false,
           ciMessageServerId: savedMr?.ciMessageServerId ?? null,
           lastReportedPipelineId: savedMr?.lastReportedPipelineId ?? null,
           lastReportedPipelineStatus: savedMr?.lastReportedPipelineStatus ?? null,
@@ -2058,7 +2062,10 @@ export class MergeRequestWatcher {
 
   async setReactionStatus(entry, newStatus) {
     const { conversationId, messageId } = entry;
-    if (newStatus && newStatus !== entry.status) {
+    // When the original message is directly edited, don't place the pending (eyes) reaction
+    const skipPending = entry.editedOriginal && newStatus === 'pending';
+
+    if (newStatus && newStatus !== entry.status && !skipPending) {
       if (STATUS_REACTIONS[newStatus]) {
         this.recordBotReaction(messageId, STATUS_REACTIONS[newStatus]);
       }
@@ -2072,6 +2079,14 @@ export class MergeRequestWatcher {
       }
       const result = await removeReaction(conversationId, messageId, STATUS_REACTIONS[entry.status]);
       if (!result.ok) log(`removing ${entry.status} reaction failed: ${result.error?.message}`);
+    }
+
+    if (skipPending && entry.status === 'pending') {
+      if (STATUS_REACTIONS.pending) {
+        this.unrecordBotReaction(messageId, STATUS_REACTIONS.pending);
+      }
+      const result = await removeReaction(conversationId, messageId, STATUS_REACTIONS.pending);
+      if (!result.ok) log(`removing pending reaction failed: ${result.error?.message}`);
     }
 
     entry.status = newStatus;
@@ -2111,6 +2126,7 @@ export class MergeRequestWatcher {
     const isApproved = Boolean(mrDetails?.approved || mrDetails?.status === 'approved');
     if (
       isApproved ||
+      mrDetails?.statusReopened ||
       mrDetails?.approvalChanged ||
       mrDetails?.approversChanged ||
       mrDetails?.needsRebase ||
@@ -2137,6 +2153,9 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        mr.lastReportedClosed = false;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2146,7 +2165,11 @@ export class MergeRequestWatcher {
     if (mr.ciMessageServerId) {
       log(`updating status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
-      if (updateResult.ok) return;
+      if (updateResult.ok) {
+        mr.lastReportedClosed = false;
+        this.saveState();
+        return;
+      }
       log(`updating status comment failed (${updateResult.error?.message}), falling back to new reply`);
     }
 
@@ -2154,6 +2177,7 @@ export class MergeRequestWatcher {
     const result = await sendReply(entry.conversationId, entry, msg);
     if (result.ok && result.value?.timestamp) {
       mr.ciMessageServerId = String(result.value.timestamp);
+      mr.lastReportedClosed = false;
       this.saveState();
     } else if (!result.ok) {
       log(`CI status reply failed: ${result.error?.message}`);
@@ -2281,6 +2305,9 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        mr.lastReportedClosed = false;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2290,14 +2317,22 @@ export class MergeRequestWatcher {
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to merged for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
-      if (updateResult.ok) return;
+      if (updateResult.ok) {
+        mr.lastReportedClosed = false;
+        this.saveState();
+        return;
+      }
       log(`updating CI comment to merged failed (${updateResult.error?.message}), falling back to other comment or reply`);
     }
 
     if (mr.rebaseMessageServerId) {
       log(`updating rebase comment to merged for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.rebaseMessageServerId, entry, msg);
-      if (updateResult.ok) return;
+      if (updateResult.ok) {
+        mr.lastReportedClosed = false;
+        this.saveState();
+        return;
+      }
       log(`updating rebase comment to merged failed (${updateResult.error?.message}), falling back to new reply`);
     }
 
@@ -2305,6 +2340,7 @@ export class MergeRequestWatcher {
     const result = await sendReply(entry.conversationId, entry, msg);
     if (result.ok && result.value?.timestamp) {
       mr.ciMessageServerId = String(result.value.timestamp);
+      mr.lastReportedClosed = false;
       this.saveState();
     }
   }
@@ -2365,6 +2401,9 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        mr.lastReportedClosed = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2374,14 +2413,22 @@ export class MergeRequestWatcher {
     if (mr.ciMessageServerId) {
       log(`updating CI status comment to closed for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg);
-      if (updateResult.ok) return;
+      if (updateResult.ok) {
+        mr.lastReportedClosed = true;
+        this.saveState();
+        return;
+      }
       log(`updating CI comment to closed failed (${updateResult.error?.message}), falling back to other comment or reply`);
     }
 
     if (mr.rebaseMessageServerId) {
       log(`updating rebase comment to closed for ${mr.project}!${mr.iid} (msg ${mr.rebaseMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.rebaseMessageServerId, entry, msg);
-      if (updateResult.ok) return;
+      if (updateResult.ok) {
+        mr.lastReportedClosed = true;
+        this.saveState();
+        return;
+      }
       log(`updating rebase comment to closed failed (${updateResult.error?.message}), falling back to new reply`);
     }
 
@@ -2389,6 +2436,7 @@ export class MergeRequestWatcher {
     const result = await sendReply(entry.conversationId, entry, msg);
     if (result.ok && result.value?.timestamp) {
       mr.ciMessageServerId = String(result.value.timestamp);
+      mr.lastReportedClosed = true;
       this.saveState();
     }
   }
@@ -2538,6 +2586,8 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, jobUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2575,6 +2625,8 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pipeUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2684,6 +2736,8 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, issueUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2716,6 +2770,8 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, alertUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2760,6 +2816,8 @@ export class MergeRequestWatcher {
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, pageUrl, msg);
       if (editResult.ok) {
         entry.editedOriginal = true;
+        await removeReaction(entry.conversationId, entry.messageId, STATUS_REACTIONS.pending).catch(() => {});
+        this.unrecordBotReaction(entry.messageId, STATUS_REACTIONS.pending);
         this.saveState();
         return;
       }
@@ -2890,7 +2948,9 @@ export class MergeRequestWatcher {
         const autoMergeChanged = mr.lastReportedAutoMerge !== isAutoMerge;
         const autoMergeUser = mrState.autoMergeUser || null;
         const autoMergeUserChanged = mr.lastReportedAutoMergeUser !== autoMergeUser;
-        const statusReopened = mr.status === 'closed' && mrState.status !== 'closed';
+        const statusReopened = Boolean(
+          (mr.status === 'closed' || mr.lastReportedClosed) && mrState.status !== 'closed'
+        );
         const needsInitialComment = !entry.isHistory && !mr.ciMessageServerId;
 
         if (

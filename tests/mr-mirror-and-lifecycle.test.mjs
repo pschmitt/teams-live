@@ -296,3 +296,40 @@ test('checkWatchedKey keeps closed MRs watched until merged and handles reopen',
   assert.equal(watcher.watched.has(key), false, 'Merged MR should be unwatched');
   assert.ok(watcher.completedMessages.has(msgId));
 });
+
+test('setReactionStatus skips pending eyes reaction when editedOriginal is true', async () => {
+  const convId = '19:team@thread.v2';
+  const msgId = '1690000000003';
+
+  const reactionsAdded = [];
+  const reactionsRemoved = [];
+
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: convId, name: 'team' }],
+      gitlab: {},
+      teams: {},
+    },
+    gitlab: {},
+  });
+
+  // Mock addReaction and removeReaction
+  // Note: setReactionStatus uses imported addReaction/removeReaction from teams.mjs,
+  // but we can test watcher logic via mocking or inspecting botPlacedReactions & entry.status
+  const entry = {
+    conversationId: convId,
+    messageId: msgId,
+    editedOriginal: true,
+    status: null,
+  };
+
+  await watcher.setReactionStatus(entry, 'pending');
+  assert.equal(entry.status, 'pending');
+  assert.equal(watcher.botPlacedReactions.has(msgId), false, 'Should not record bot pending reaction when editedOriginal is true');
+
+  // If status is already pending and setReactionStatus runs with pending, it should remove it
+  entry.status = 'pending';
+  await watcher.setReactionStatus(entry, 'pending');
+  assert.equal(entry.status, 'pending');
+});
+

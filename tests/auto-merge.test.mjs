@@ -53,6 +53,33 @@ test('formatMrStatusMessage includes auto-merge line when enabled and omits when
   assert.doesNotMatch(msgEnabledNoUser, /by null/);
 });
 
+test('formatMrStatusMessage adds a closed line only for closed MRs', () => {
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [],
+      gitlab: { host: 'git.wiit.one', group: 'kubernetes' },
+    },
+    gitlab: {
+      mrLink: (p, iid) => `https://git.wiit.one/${p}/-/merge_requests/${iid}`,
+      pipelineLink: (p, id) => `https://git.wiit.one/${p}/-/pipelines/${id}`,
+    },
+  });
+
+  const mr = { project: 'kubernetes/k8s', iid: '42', title: 'Add feature' };
+  const pipeline = { id: 100, status: 'failed', web_url: 'https://git.wiit.one/p/100' };
+
+  const closed = watcher.formatMrStatusMessage(mr, pipeline, { state: 'closed', status: 'closed' });
+  assert.match(closed, /🚫 \*\*Closed\*\* \(unmerged\)/);
+
+  for (const details of [
+    { state: 'opened', status: 'pending' },
+    { state: 'opened', status: 'approved', approved: true },
+    { state: 'merged', status: 'merged' },
+  ]) {
+    assert.doesNotMatch(watcher.formatMrStatusMessage(mr, pipeline, details), /Closed/);
+  }
+});
+
 test('autoMerge status change detection in checkWatchedKey', async () => {
   const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-live-test-'));
   process.env.XDG_STATE_HOME = tmpStateDir;

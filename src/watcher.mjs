@@ -2060,6 +2060,9 @@ export class MergeRequestWatcher {
     if (jiraTicket) {
       lines.push(`🎫 [${jiraTicket.key}](${jiraTicket.url})`);
     }
+    if (mrDetails?.state === 'closed' || mrDetails?.status === 'closed') {
+      lines.push('🚫 **Closed** (unmerged)');
+    }
     if (pipeline) {
       const pipeUrl = pipeline.web_url || (pipeline.id ? this.gitlab.pipelineLink(mr.project, pipeline.id) : null);
       lines.push(

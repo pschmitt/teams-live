@@ -535,7 +535,9 @@ test('renewGitLabToken falls back to override file when configured secret is rea
     gitlab: mockGitLab,
   });
 
+  const oldHome = process.env.HOME;
   try {
+    process.env.HOME = tmpStateDir;
     const result = await watcher.renewGitLabToken({ reason: 'unit_test' });
     assert.equal(rotateCalled, true);
     assert.equal(result.isReadOnlySecret, true);
@@ -547,6 +549,11 @@ test('renewGitLabToken falls back to override file when configured secret is rea
     const savedContent = fs.readFileSync(result.savedPath, 'utf8');
     assert.equal(savedContent, rotatedTokenValue);
   } finally {
+    if (oldHome !== undefined) {
+      process.env.HOME = oldHome;
+    } else {
+      delete process.env.HOME;
+    }
     fs.rmSync(tmpStateDir, { recursive: true, force: true });
   }
 });

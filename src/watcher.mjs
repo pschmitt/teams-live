@@ -5069,11 +5069,13 @@ export class MergeRequestWatcher {
       throw new Error('GitLab token rotation response did not include a new token');
     }
 
-    const stateDir =
+    const homeDir = process.env.HOME;
+    const baseDir =
+      (homeDir && homeDir !== '/' && homeDir !== '/root' ? homeDir : null) ||
       this.config.gitlab?.state_dir ||
       process.env.XDG_STATE_HOME ||
       path.join(process.cwd(), 'state');
-    const overrideDir = path.join(stateDir, 'overrides');
+    const overrideDir = path.join(baseDir, 'overrides');
     const overridePath = path.join(overrideDir, 'gitlab-token');
     const configuredPath = this.config.gitlab?.token_file;
 

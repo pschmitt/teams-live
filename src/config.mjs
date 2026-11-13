@@ -162,10 +162,14 @@ export function loadConfig(configPath) {
   gitlab.webhook = webhook;
 
   const stateDir = process.env.XDG_STATE_HOME || path.join(process.cwd(), 'state');
-  const overridePaths = [
-    path.join(stateDir, 'overrides', 'gitlab-token'),
-    path.join(stateDir, 'gitlab-token'),
-  ];
+  const homeDir = process.env.HOME;
+  const overridePaths = [];
+  if (homeDir && homeDir !== '/' && homeDir !== '/root') {
+    overridePaths.push(path.join(homeDir, 'overrides', 'gitlab-token'));
+    overridePaths.push(path.join(homeDir, 'gitlab-token'));
+  }
+  overridePaths.push(path.join(stateDir, 'overrides', 'gitlab-token'));
+  overridePaths.push(path.join(stateDir, 'gitlab-token'));
   let overrideToken = null;
   let overrideTokenPath = null;
   for (const p of overridePaths) {

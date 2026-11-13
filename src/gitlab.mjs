@@ -41,7 +41,7 @@ export class GitLabClient {
       fetch(url, {
         method,
         headers,
-        body: body ? JSON.stringify(body) : undefined,
+        body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
         signal: AbortSignal.timeout(timeoutMs),
       });
 
@@ -72,6 +72,9 @@ export class GitLabClient {
       throw new Error(errStr);
     }
     this.onSuccess?.('GitLab');
+    if (res.status === 204) {
+      return {};
+    }
     return await res.json();
   }
 
@@ -603,7 +606,7 @@ export class GitLabClient {
       `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji`,
       {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: { name },
       }
     );
   }

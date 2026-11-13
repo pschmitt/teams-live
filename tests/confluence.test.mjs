@@ -5,20 +5,20 @@ import { ConfluenceClient } from '../src/confluence.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 
 test('ConfluenceClient.findPageLinks extracts various Confluence URL formats', () => {
-  const client = new ConfluenceClient({ url: 'https://wiki.wiit.one', token: 'dummy-token' });
+  const client = new ConfluenceClient({ url: 'https://wiki.example.com', token: 'dummy-token' });
 
   const text = `
-    Check out this doc: https://wiki.wiit.one/display/CKS/Cluster+Architecture
-    Also this one: https://wiki.wiit.one/pages/viewpage.action?pageId=12345
-    And spaces link: https://wiki.wiit.one/spaces/IS/pages/753793/WIIT+Fortress
-    Tiny link: https://wiki.wiit.one/x/gYAL
+    Check out this doc: https://wiki.example.com/display/DOCS/Cluster+Architecture
+    Also this one: https://wiki.example.com/pages/viewpage.action?pageId=12345
+    And spaces link: https://wiki.example.com/spaces/IS/pages/753793/Example+Handbook
+    Tiny link: https://wiki.example.com/x/gYAL
     Unrelated link: https://google.com/search?q=confluence
   `;
 
   const links = client.findPageLinks(text);
   assert.equal(links.length, 4);
 
-  assert.equal(links[0].spaceKey, 'CKS');
+  assert.equal(links[0].spaceKey, 'DOCS');
   assert.equal(links[0].title, 'Cluster Architecture');
 
   assert.equal(links[1].id, '12345');
@@ -29,12 +29,12 @@ test('ConfluenceClient.findPageLinks extracts various Confluence URL formats', (
 });
 
 test('ConfluenceClient.findPageLinks ignores quotes and replies by default', () => {
-  const client = new ConfluenceClient({ url: 'https://wiki.wiit.one', token: 'dummy-token' });
+  const client = new ConfluenceClient({ url: 'https://wiki.example.com', token: 'dummy-token' });
 
   const text = `
-    <blockquote>https://wiki.wiit.one/display/CKS/Quoted+Page</blockquote>
-    <div itemtype="http://schema.skype.com/Reply">https://wiki.wiit.one/display/CKS/Reply+Page</div>
-    Direct link: https://wiki.wiit.one/display/CKS/Direct+Page
+    <blockquote>https://wiki.example.com/display/DOCS/Quoted+Page</blockquote>
+    <div itemtype="http://schema.skype.com/Reply">https://wiki.example.com/display/DOCS/Reply+Page</div>
+    Direct link: https://wiki.example.com/display/DOCS/Direct+Page
   `;
 
   const links = client.findPageLinks(text);
@@ -57,13 +57,13 @@ test('ConfluenceClient.getPage retrieves page by ID or space+title', async () =>
           json: async () => ({
             id: '12345',
             title: 'Sample Page Title',
-            space: { key: 'CKS', name: 'Cloud Kubernetes Service' },
+            space: { key: 'DOCS', name: 'Documentation Space' },
             version: { number: 3, by: { displayName: 'Max Mustermann' } },
-            _links: { webui: '/display/CKS/Sample+Page+Title' },
+            _links: { webui: '/display/DOCS/Sample+Page+Title' },
           }),
         };
       }
-      if (urlStr.includes('/rest/api/content?') && urlStr.includes('spaceKey=CKS')) {
+      if (urlStr.includes('/rest/api/content?') && urlStr.includes('spaceKey=DOCS')) {
         return {
           ok: true,
           status: 200,
@@ -72,9 +72,9 @@ test('ConfluenceClient.getPage retrieves page by ID or space+title', async () =>
               {
                 id: '67890',
                 title: 'Space Title Doc',
-                space: { key: 'CKS', name: 'Cloud Kubernetes Service' },
+                space: { key: 'DOCS', name: 'Documentation Space' },
                 version: { number: 1, by: { displayName: 'Erika Mustermann' } },
-                _links: { webui: '/display/CKS/Space+Title+Doc' },
+                _links: { webui: '/display/DOCS/Space+Title+Doc' },
               },
             ],
           }),
@@ -83,29 +83,29 @@ test('ConfluenceClient.getPage retrieves page by ID or space+title', async () =>
       return { ok: false, status: 404, text: async () => 'Not found' };
     };
 
-    const client = new ConfluenceClient({ url: 'https://wiki.wiit.one', token: 'dummy-token' });
+    const client = new ConfluenceClient({ url: 'https://wiki.example.com', token: 'dummy-token' });
 
     // By ID
     const pageById = await client.getPage('12345');
     assert.equal(pageById.id, '12345');
     assert.equal(pageById.title, 'Sample Page Title');
-    assert.equal(pageById.spaceKey, 'CKS');
-    assert.equal(pageById.spaceName, 'Cloud Kubernetes Service');
+    assert.equal(pageById.spaceKey, 'DOCS');
+    assert.equal(pageById.spaceName, 'Documentation Space');
     assert.equal(pageById.author, 'Max Mustermann');
-    assert.equal(pageById.url, 'https://wiki.wiit.one/display/CKS/Sample+Page+Title');
+    assert.equal(pageById.url, 'https://wiki.example.com/display/DOCS/Sample+Page+Title');
 
     // By URL with pageId
-    const pageByUrl = await client.getPage('https://wiki.wiit.one/pages/viewpage.action?pageId=12345');
+    const pageByUrl = await client.getPage('https://wiki.example.com/pages/viewpage.action?pageId=12345');
     assert.equal(pageByUrl.title, 'Sample Page Title');
 
     // By space + title object
-    const pageBySpaceTitle = await client.getPage({ spaceKey: 'CKS', title: 'Space Title Doc' });
+    const pageBySpaceTitle = await client.getPage({ spaceKey: 'DOCS', title: 'Space Title Doc' });
     assert.equal(pageBySpaceTitle.id, '67890');
     assert.equal(pageBySpaceTitle.title, 'Space Title Doc');
     assert.equal(pageBySpaceTitle.author, 'Erika Mustermann');
 
     // By display URL
-    const pageByDisplayUrl = await client.getPage('https://wiki.wiit.one/display/CKS/Space+Title+Doc');
+    const pageByDisplayUrl = await client.getPage('https://wiki.example.com/display/DOCS/Space+Title+Doc');
     assert.equal(pageByDisplayUrl.id, '67890');
     assert.equal(pageByDisplayUrl.title, 'Space Title Doc');
   } finally {
@@ -124,7 +124,7 @@ test('ConfluenceClient reports auth errors on 401', async () => {
     });
 
     const client = new ConfluenceClient({
-      url: 'https://wiki.wiit.one',
+      url: 'https://wiki.example.com',
       token: 'bad-token',
       onAuthError: (err) => {
         authErrorReported = err;
@@ -143,7 +143,7 @@ test('MergeRequestWatcher formats Confluence message and watches Confluence link
     config: { gitlab: {}, conversations: [] },
     gitlab: { findMrLinks: () => [], findJobLinks: () => [], findPipelineLinks: () => [] },
     jira: { findIssueLinks: () => [] },
-    confluence: new ConfluenceClient({ url: 'https://wiki.wiit.one', token: 'test' }),
+    confluence: new ConfluenceClient({ url: 'https://wiki.example.com', token: 'test' }),
     opsgenie: { findAlertLinks: () => [] },
     authManager: null,
   });
@@ -151,24 +151,24 @@ test('MergeRequestWatcher formats Confluence message and watches Confluence link
   const page = {
     id: '12345',
     title: 'Cluster Networking Guide',
-    spaceKey: 'CKS',
-    spaceName: 'Cloud Kubernetes Service',
-    author: 'Philipp Schmitt',
-    url: 'https://wiki.wiit.one/display/CKS/Cluster+Networking+Guide',
+    spaceKey: 'DOCS',
+    spaceName: 'Documentation Space',
+    author: 'Alice Example',
+    url: 'https://wiki.example.com/display/DOCS/Cluster+Networking+Guide',
   };
 
   const formatted = watcher.formatConfluencePageMessage(page);
   assert.match(formatted, /📄 \*\*Cluster Networking Guide\*\*/);
-  assert.match(formatted, /🔗 \[Cluster Networking Guide\]\(https:\/\/wiki\.wiit\.one\/display\/CKS\/Cluster\+Networking\+Guide\)/);
-  assert.match(formatted, /Cloud Kubernetes Service \(CKS\)/);
-  assert.match(formatted, /👤 Last edited by: Philipp Schmitt/);
+  assert.match(formatted, /🔗 \[Cluster Networking Guide\]\(https:\/\/wiki\.example\.com\/display\/DOCS\/Cluster\+Networking\+Guide\)/);
+  assert.match(formatted, /Documentation Space \(DOCS\)/);
+  assert.match(formatted, /👤 Last edited by: Alice Example/);
 
   // Watch call
-  const text = 'Here is the documentation: https://wiki.wiit.one/display/CKS/Cluster+Networking+Guide';
+  const text = 'Here is the documentation: https://wiki.example.com/display/DOCS/Cluster+Networking+Guide';
   watcher.watch('19:channel@thread.v2', '1234567890', text);
 
   const entry = watcher.watched.get('19:channel@thread.v2/1234567890');
   assert.ok(entry);
   assert.equal(entry.confluencePages.length, 1);
-  assert.equal(entry.confluencePages[0].key, 'doc:CKS:Cluster Networking Guide');
+  assert.equal(entry.confluencePages[0].key, 'doc:DOCS:Cluster Networking Guide');
 });

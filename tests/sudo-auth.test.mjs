@@ -38,10 +38,10 @@ test('isAdmin and isSenderSelf enforce immutable user IDs and reject spoofed dis
 
   // 1. Spoofed display name from attacker MUST BE REJECTED
   const spoofedEvent = {
-    from: 'Philipp Schmitt',
+    from: 'Alice Example',
     fromMri: attackerMri,
     sender: {
-      displayName: 'Philipp Schmitt',
+      displayName: 'Alice Example',
       mri: attackerMri,
     },
   };
@@ -50,9 +50,9 @@ test('isAdmin and isSenderSelf enforce immutable user IDs and reject spoofed dis
 
   // 2. Spoofed display name without MRI MUST BE REJECTED
   const anonymousSpoof = {
-    from: 'Philipp Schmitt',
+    from: 'Alice Example',
     sender: {
-      displayName: 'Philipp Schmitt',
+      displayName: 'Alice Example',
     },
   };
   assert.equal(watcher.isSenderSelf(anonymousSpoof), false);

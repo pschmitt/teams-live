@@ -144,7 +144,7 @@ test('findUnrecognizedLinks separates recognized links from arbitrary web links'
     findPipelineLinks: (t) => (t.includes('/-/pipelines/') ? [{ project: 'p', pipelineId: 3 }] : []),
   };
   const fakeJira = {
-    findIssueLinks: (t) => (t.includes('/browse/') ? [{ issueKey: 'CKS-123' }] : []),
+    findIssueLinks: (t) => (t.includes('/browse/') ? [{ issueKey: 'DOCS-123' }] : []),
   };
   const fakeConfluence = {
     findPageLinks: (t) => (t.includes('/pages/') ? [{ target: 'doc' }] : []),
@@ -162,9 +162,9 @@ test('findUnrecognizedLinks separates recognized links from arbitrary web links'
   });
 
   const text = [
-    'GitLab MR: https://git.wiit.one/k8s/app/-/merge_requests/42',
-    'Jira: https://jira.wiit.one/browse/CKS-999',
-    'Confluence: https://wiki.wiit.one/pages/viewpage.action?pageId=555',
+    'GitLab MR: https://gitlab.example.com/group/app/-/merge_requests/42',
+    'Jira: https://jira.example.com/browse/DOCS-999',
+    'Confluence: https://wiki.example.com/pages/viewpage.action?pageId=555',
     'OpsGenie: https://app.opsgenie.com/alert/detail/xyz/details',
     'Arbitrary 1: https://news.ycombinator.com',
     'Arbitrary 2: https://github.com/nodejs/node',
@@ -214,7 +214,7 @@ test('maybeAttachLinkThumbnail attaches thumbnail only for self messages with un
   const recognizedEvent = {
     conversationId: 'c1',
     messageId: '1002',
-    from: 'Philipp Schmitt',
+    from: 'Alice Example',
     fromMri: '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11',
     content: 'MR is here',
   };
@@ -228,7 +228,7 @@ test('maybeAttachLinkThumbnail attaches thumbnail only for self messages with un
   const watermarkedEvent = {
     conversationId: 'c1',
     messageId: '1003',
-    from: 'Philipp Schmitt',
+    from: 'Alice Example',
     fromMri: '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11',
     content: `Already edited ${BOT_WATERMARK} https://xkcd.com/327/`,
   };
@@ -239,7 +239,7 @@ test('maybeAttachLinkThumbnail attaches thumbnail only for self messages with un
   const validEvent = {
     conversationId: 'c1',
     messageId: '1004',
-    from: 'Philipp Schmitt',
+    from: 'Alice Example',
     fromMri: '8:orgid:f94ccd0d-d140-4d1d-9fee-b00e642b9c11',
     content: 'Cool comic: https://xkcd.com/327/',
     rawHtml: '<p>Cool comic: <a href="https://xkcd.com/327/">https://xkcd.com/327/</a></p>',

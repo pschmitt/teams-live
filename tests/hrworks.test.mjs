@@ -40,13 +40,13 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
         changed_states: [],
         service_response: {
           employees: [
-            { id: '0-1', rawName: 'Schmitt, Philipp', displayName: 'Philipp Schmitt' },
-            { id: '0-2', rawName: 'Herzig, Nils', displayName: 'Nils Herzig' },
+            { id: '0-1', rawName: 'Example, Alice', displayName: 'Alice Example' },
+            { id: '0-2', rawName: 'Example, Bob', displayName: 'Bob Example' },
           ],
           absences: [
             {
               resourceId: '0-1',
-              rawName: 'Schmitt, Philipp',
+              rawName: 'Example, Alice',
               category: 'Ausgleich Ü',
               start: '2026-11-06T00:00:00.0+01:00',
               end: '2026-11-07T00:00:00.0+01:00',
@@ -58,26 +58,26 @@ test('HRWorksClient unwraps service_response and matches employee absence', asyn
     };
   };
 
-  const person = { displayName: 'Philipp Schmitt', email: 'philipp.schmitt@wiit.cloud' };
+  const person = { displayName: 'Alice Example', email: 'alice@example.com' };
   const res = await mockClient.findPersonAbsence(person);
 
   assert.ok(res);
-  assert.equal(res.employee.displayName, 'Philipp Schmitt');
+  assert.equal(res.employee.displayName, 'Alice Example');
   assert.ok(res.absence);
   assert.equal(res.absence.category, 'Ausgleich Ü');
   assert.equal(res.absence.startDate, '2026-11-06');
   assert.equal(res.absence.endDate, '2026-11-06');
 
   // Test employee with no absence
-  const person2 = { displayName: 'Nils Herzig', email: 'nils.herzig@wiit.cloud' };
+  const person2 = { displayName: 'Bob Example', email: 'bob@example.com' };
   const res2 = await mockClient.findPersonAbsence(person2);
   assert.ok(res2);
-  assert.equal(res2.employee.displayName, 'Nils Herzig');
+  assert.equal(res2.employee.displayName, 'Bob Example');
   assert.equal(res2.absence, null);
   assert.equal(res2.upcomingAbsence, null);
 
   // Test employee not in team calendar
-  const person3 = { displayName: 'Jane Doe', email: 'jane.doe@wiit.cloud' };
+  const person3 = { displayName: 'Jane Doe', email: 'jane.doe@example.com' };
   const res3 = await mockClient.findPersonAbsence(person3);
   assert.ok(res3);
   assert.equal(res3.employee, null);
@@ -98,7 +98,7 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
         ok: true,
         json: async () => ({
           service_response: {
-            employees: [{ id: 'Schmitt, Philipp', rawName: 'Schmitt, Philipp', displayName: 'Philipp Schmitt' }],
+            employees: [{ id: 'Example, Alice', rawName: 'Example, Alice', displayName: 'Alice Example' }],
             absences: [],
           },
         }),
@@ -111,39 +111,39 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
           ok: true,
           json: async () => ({
             service_response: {
-              available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+              available_organizational_units: ['Team A', 'Team B', 'Team C'],
               employees: [],
               absences: [],
             },
           }),
         };
       }
-      if (body.units.includes('OpenStack')) {
+      if (body.units.includes('Team A')) {
         return {
           ok: true,
           json: async () => ({
             service_response: {
-              available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+              available_organizational_units: ['Team A', 'Team B', 'Team C'],
               employees: [
                 {
-                  id: 'Seelbach, David',
-                  rawName: 'Seelbach, David',
-                  displayName: 'David Seelbach',
+                  id: 'Example, Carol',
+                  rawName: 'Example, Carol',
+                  displayName: 'Carol Example',
                   firstName: 'David',
-                  lastName: 'Seelbach',
-                  unit: 'OpenStack',
+                  lastName: 'Example',
+                  unit: 'Team A',
                 },
               ],
               absences: [
                 {
-                  employee: 'David Seelbach',
-                  rawName: 'Seelbach, David',
-                  resourceId: 'Seelbach, David',
+                  employee: 'Carol Example',
+                  rawName: 'Example, Carol',
+                  resourceId: 'Example, Carol',
                   category: 'Absent',
                   start: '2026-09-27T00:00:00.0+02:00',
                   end: '2026-11-07T00:00:00.0+01:00',
                   status: '',
-                  unit: 'OpenStack',
+                  unit: 'Team A',
                 },
               ],
             },
@@ -154,7 +154,7 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
         ok: true,
         json: async () => ({
           service_response: {
-            available_organizational_units: ['OpenStack', 'K8s', 'Unix CC'],
+            available_organizational_units: ['Team A', 'Team B', 'Team C'],
             employees: [
               {
                 id: 'Doe, John',
@@ -162,7 +162,7 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
                 displayName: 'John Doe',
                 firstName: 'John',
                 lastName: 'Doe',
-                unit: 'Unix CC',
+                unit: 'Team C',
               },
             ],
             absences: [],
@@ -180,15 +180,15 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
 
   const countBeforeLookup = calls.length;
   const david = await mockClient.findPersonAbsence({
-    displayName: 'David Seelbach',
+    displayName: 'Carol Example',
     givenName: 'David',
-    surname: 'Seelbach',
-    email: 'david.seelbach@wiit.cloud',
+    surname: 'Example',
+    email: 'carol@example.com',
   });
   // Resolved straight from prefetched cache without extra HTTP calls
   assert.equal(calls.length, countBeforeLookup);
   assert.ok(david);
-  assert.equal(david.employee.displayName, 'David Seelbach');
+  assert.equal(david.employee.displayName, 'Carol Example');
   assert.ok(david.absence);
   assert.equal(david.absence.category, 'Absent');
   assert.equal(david.absence.startDate, '2026-09-27');
@@ -196,7 +196,7 @@ test('HRWorksClient prefetchAllAbsences batches organizational units and serves 
 });
 
 test('formatWhereisCard formats HRworks line for active, none, upcoming, and error', () => {
-  const person = { displayName: 'Test User', email: 'test@wiit.cloud' };
+  const person = { displayName: 'Test User', email: 'test@example.com' };
   const presence = { availability: 'Available', activity: 'Available' };
 
   // 1. Active today

@@ -9,16 +9,16 @@ test('formatMrStatusMessage includes auto-merge line when enabled and omits when
   const watcher = new MergeRequestWatcher({
     config: {
       conversations: [],
-      gitlab: { host: 'git.wiit.one', group: 'kubernetes' },
+      gitlab: { host: 'gitlab.example.com', group: 'group' },
     },
     gitlab: {
-      mrLink: (p, iid) => `https://git.wiit.one/${p}/-/merge_requests/${iid}`,
-      pipelineLink: (p, id) => `https://git.wiit.one/${p}/-/pipelines/${id}`,
+      mrLink: (p, iid) => `https://gitlab.example.com/${p}/-/merge_requests/${iid}`,
+      pipelineLink: (p, id) => `https://gitlab.example.com/${p}/-/pipelines/${id}`,
     },
   });
 
-  const mr = { project: 'kubernetes/k8s', iid: '42', title: 'Add feature' };
-  const pipeline = { id: 100, status: 'running', web_url: 'https://git.wiit.one/p/100' };
+  const mr = { project: 'group/app', iid: '42', title: 'Add feature' };
+  const pipeline = { id: 100, status: 'running', web_url: 'https://gitlab.example.com/p/100' };
 
   // Case 1: autoMerge disabled
   const msgDisabled = watcher.formatMrStatusMessage(mr, pipeline, {
@@ -27,7 +27,7 @@ test('formatMrStatusMessage includes auto-merge line when enabled and omits when
     autoMerge: false,
     autoMergeUser: null,
   });
-  assert.match(msgDisabled, /🦊 \[!42 \(kubernetes\/k8s\)\]/);
+  assert.match(msgDisabled, /🦊 \[!42 \(group\/app\)\]/);
   assert.match(msgDisabled, /⏳ \*\*Not approved yet\*\*/);
   assert.doesNotMatch(msgDisabled, /Auto-merge/);
 
@@ -37,10 +37,10 @@ test('formatMrStatusMessage includes auto-merge line when enabled and omits when
     approvedBy: ['Alice'],
     status: 'approved',
     autoMerge: true,
-    autoMergeUser: 'Daniel Nagy',
+    autoMergeUser: 'Dave Example',
   });
   assert.match(msgEnabledUser, /👍 \*\*Approved\*\* by Alice/);
-  assert.match(msgEnabledUser, /🔀 \*\*Auto-merge enabled\*\* by Daniel Nagy/);
+  assert.match(msgEnabledUser, /🔀 \*\*Auto-merge enabled\*\* by Dave Example/);
 
   // Case 3: autoMerge enabled without user
   const msgEnabledNoUser = watcher.formatMrStatusMessage(mr, pipeline, {
@@ -57,16 +57,16 @@ test('formatMrStatusMessage adds a closed line only for closed MRs', () => {
   const watcher = new MergeRequestWatcher({
     config: {
       conversations: [],
-      gitlab: { host: 'git.wiit.one', group: 'kubernetes' },
+      gitlab: { host: 'gitlab.example.com', group: 'group' },
     },
     gitlab: {
-      mrLink: (p, iid) => `https://git.wiit.one/${p}/-/merge_requests/${iid}`,
-      pipelineLink: (p, id) => `https://git.wiit.one/${p}/-/pipelines/${id}`,
+      mrLink: (p, iid) => `https://gitlab.example.com/${p}/-/merge_requests/${iid}`,
+      pipelineLink: (p, id) => `https://gitlab.example.com/${p}/-/pipelines/${id}`,
     },
   });
 
-  const mr = { project: 'kubernetes/k8s', iid: '42', title: 'Add feature' };
-  const pipeline = { id: 100, status: 'failed', web_url: 'https://git.wiit.one/p/100' };
+  const mr = { project: 'group/app', iid: '42', title: 'Add feature' };
+  const pipeline = { id: 100, status: 'failed', web_url: 'https://gitlab.example.com/p/100' };
 
   const closed = watcher.formatMrStatusMessage(mr, pipeline, { state: 'closed', status: 'closed' });
   assert.match(closed, /🚫 \*\*Closed\*\* \(unmerged\)/);
@@ -85,7 +85,7 @@ test('autoMerge status change detection in checkWatchedKey', async () => {
   process.env.XDG_STATE_HOME = tmpStateDir;
 
   const mrState = {
-    project: 'kubernetes/k8s',
+    project: 'group/app',
     iid: '42',
     title: 'Auto merge test',
     status: 'pending',
@@ -94,24 +94,24 @@ test('autoMerge status change detection in checkWatchedKey', async () => {
     needsRebase: false,
     autoMerge: false,
     autoMergeUser: null,
-    pipeline: { id: 100, status: 'running', web_url: 'https://git.wiit.one/p/100' },
+    pipeline: { id: 100, status: 'running', web_url: 'https://gitlab.example.com/p/100' },
   };
 
   const gitlabMock = {
-    findMrLinks: () => [{ project: 'kubernetes/k8s', iid: '42' }],
+    findMrLinks: () => [{ project: 'group/app', iid: '42' }],
     findJobLinks: () => [],
     findPipelineLinks: () => [],
     getMrStatus: async () => ({ ...mrState }),
-    mrLink: (p, iid) => `https://git.wiit.one/${p}/-/merge_requests/${iid}`,
-    pipelineLink: (p, id) => `https://git.wiit.one/${p}/-/pipelines/${id}`,
+    mrLink: (p, iid) => `https://gitlab.example.com/${p}/-/merge_requests/${iid}`,
+    pipelineLink: (p, id) => `https://gitlab.example.com/${p}/-/pipelines/${id}`,
   };
 
   const watcher = new MergeRequestWatcher({
     config: {
       conversations: [{ id: '19:test@thread.v2', name: 'test' }],
       gitlab: {
-        host: 'git.wiit.one',
-        group: 'kubernetes',
+        host: 'gitlab.example.com',
+        group: 'group',
         notify: { ci: { enable: true, on_failure: true, on_success: true } },
       },
     },
@@ -140,7 +140,7 @@ test('autoMerge status change detection in checkWatchedKey', async () => {
     isHistory: false,
     mrs: [
       {
-        project: 'kubernetes/k8s',
+        project: 'group/app',
         iid: '42',
         title: 'Auto merge test',
         ciMessageServerId: '2001',
@@ -163,17 +163,17 @@ test('autoMerge status change detection in checkWatchedKey', async () => {
 
   // Check 2: autoMerge enabled!
   mrState.autoMerge = true;
-  mrState.autoMergeUser = 'Philipp Schmitt';
+  mrState.autoMergeUser = 'Alice Example';
   await watcher.checkWatchedKey(key);
 
   assert.equal(statusCommentCalls.length, 1, 'Should trigger status comment update on autoMerge change');
   assert.equal(statusCommentCalls[0].details.autoMerge, true);
-  assert.equal(statusCommentCalls[0].details.autoMergeUser, 'Philipp Schmitt');
+  assert.equal(statusCommentCalls[0].details.autoMergeUser, 'Alice Example');
   assert.equal(statusCommentCalls[0].details.autoMergeChanged, true);
 
   const watchedMr = watcher.watched.get(key).mrs[0];
   assert.equal(watchedMr.lastReportedAutoMerge, true);
-  assert.equal(watchedMr.lastReportedAutoMergeUser, 'Philipp Schmitt');
+  assert.equal(watchedMr.lastReportedAutoMergeUser, 'Alice Example');
 
   // Check 3: autoMerge disabled / cancelled!
   mrState.autoMerge = false;
@@ -197,7 +197,7 @@ test('formatMrsText includes auto-merge badge when auto-merge is active', () => 
   const watcher = new MergeRequestWatcher({
     config: {
       conversations: [],
-      gitlab: { host: 'git.wiit.one', group: 'kubernetes' },
+      gitlab: { host: 'gitlab.example.com', group: 'group' },
     },
     gitlab: {},
   });
@@ -206,7 +206,7 @@ test('formatMrsText includes auto-merge badge when auto-merge is active', () => 
     {
       iid: 101,
       title: 'Normal MR',
-      web_url: 'https://git.wiit.one/kubernetes/repo/-/merge_requests/101',
+      web_url: 'https://gitlab.example.com/group/repo/-/merge_requests/101',
       author: { name: 'Alice' },
       detailed_merge_status: 'mergeable',
       merge_when_pipeline_succeeds: false,
@@ -214,7 +214,7 @@ test('formatMrsText includes auto-merge badge when auto-merge is active', () => 
     {
       iid: 102,
       title: 'Auto-merging MR',
-      web_url: 'https://git.wiit.one/kubernetes/repo/-/merge_requests/102',
+      web_url: 'https://gitlab.example.com/group/repo/-/merge_requests/102',
       author: { name: 'Bob' },
       detailed_merge_status: 'ci_still_running',
       merge_when_pipeline_succeeds: true,
@@ -222,9 +222,9 @@ test('formatMrsText includes auto-merge badge when auto-merge is active', () => 
   ];
 
   const formatted = watcher.formatMrsText(mrs);
-  assert.match(formatted, /- ✅ \[!101\]\(https:\/\/git\.wiit\.one\/kubernetes\/repo\/-\/merge_requests\/101\): Normal MR/);
+  assert.match(formatted, /- ✅ \[!101\]\(https:\/\/gitlab\.example\.com\/group\/repo\/-\/merge_requests\/101\): Normal MR/);
   assert.doesNotMatch(formatted, /Normal MR.*_auto-merge_/);
 
-  assert.match(formatted, /- ⏳ \[!102\]\(https:\/\/git\.wiit\.one\/kubernetes\/repo\/-\/merge_requests\/102\): Auto-merging MR/);
+  assert.match(formatted, /- ⏳ \[!102\]\(https:\/\/gitlab\.example\.com\/group\/repo\/-\/merge_requests\/102\): Auto-merging MR/);
   assert.match(formatted, /Auto-merging MR.*🔀 _auto-merge_/);
 });

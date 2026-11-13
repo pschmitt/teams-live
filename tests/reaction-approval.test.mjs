@@ -36,7 +36,7 @@ function createWatcher({
       }
       return { approved: true };
     },
-    mrLink: (project, iid) => `https://git.wiit.one/${project}/-/merge_requests/${iid}`,
+    mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`,
   };
 
   const getMessageMock = async (convId, msgId) => {
@@ -48,7 +48,7 @@ function createWatcher({
 
   const watcher = new MergeRequestWatcher({
     config: {
-      conversations: [{ id: '19:k8s@thread.v2', name: 'k8s' }],
+      conversations: [{ id: '19:team@thread.v2', name: 'team' }],
       gitlab: {},
       teams: {
         admin_ids: adminIds,
@@ -66,7 +66,7 @@ function createWatcher({
 }
 
 test('approves MR when self reacts with thumbs-up to bot status comment', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const botReplyId = '1770000000000';
   const originalMsgId = '1660000000000';
 
@@ -74,11 +74,11 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
     messages: {
       [`${convId}/${botReplyId}`]: {
         id: botReplyId,
-        content: '🦊 [!42 (kubernetes/k8s)](https://git.wiit.one/kubernetes/k8s/-/merge_requests/42)\n\n⏳ **Not approved yet**',
+        content: '🦊 [!42 (group/app)](https://gitlab.example.com/group/app/-/merge_requests/42)\n\n⏳ **Not approved yet**',
         reactions: [
           {
             key: 'like',
-            user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+            user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' },
           },
         ],
       },
@@ -92,7 +92,7 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
     editedOriginal: false,
     mrs: [
       {
-        project: 'kubernetes/k8s',
+        project: 'group/app',
         iid: '42',
         title: 'Fix networking',
         ciMessageServerId: botReplyId,
@@ -109,22 +109,22 @@ test('approves MR when self reacts with thumbs-up to bot status comment', async 
   });
 
   assert.equal(approvedCalls.length, 1);
-  assert.deepEqual(approvedCalls[0], { project: 'kubernetes/k8s', iid: '42' });
+  assert.deepEqual(approvedCalls[0], { project: 'group/app', iid: '42' });
 });
 
 test('approves MR when self reacts with 👍 emoji key on edited original bot message', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const msgId = '1770000001000';
 
   const { watcher, approvedCalls } = createWatcher({
     messages: {
       [`${convId}/${msgId}`]: {
         id: msgId,
-        content: '🦊 [!100 (kubernetes/workload-clusters)](https://git.wiit.one/kubernetes/workload-clusters/-/merge_requests/100)',
+        content: '🦊 [!100 (group/service-a)](https://gitlab.example.com/group/service-a/-/merge_requests/100)',
         reactions: [
           {
             key: '👍',
-            user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+            user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' },
           },
         ],
       },
@@ -137,7 +137,7 @@ test('approves MR when self reacts with 👍 emoji key on edited original bot me
     editedOriginal: true,
     mrs: [
       {
-        project: 'kubernetes/workload-clusters',
+        project: 'group/service-a',
         iid: '100',
         title: 'Bump core addons',
       },
@@ -151,11 +151,11 @@ test('approves MR when self reacts with 👍 emoji key on edited original bot me
   });
 
   assert.equal(approvedCalls.length, 1);
-  assert.deepEqual(approvedCalls[0], { project: 'kubernetes/workload-clusters', iid: '100' });
+  assert.deepEqual(approvedCalls[0], { project: 'group/service-a', iid: '100' });
 });
 
 test('does NOT approve MR when non-self user reacts with thumbs-up', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const botReplyId = '1770000002000';
 
   const otherUserMri = '8:orgid:11111111-2222-3333-4444-555555555555';
@@ -164,7 +164,7 @@ test('does NOT approve MR when non-self user reacts with thumbs-up', async () =>
     messages: {
       [`${convId}/${botReplyId}`]: {
         id: botReplyId,
-        content: '🦊 [!55 (kubernetes/capi)](https://git.wiit.one/kubernetes/capi/-/merge_requests/55)',
+        content: '🦊 [!55 (group/service-b)](https://gitlab.example.com/group/service-b/-/merge_requests/55)',
         reactions: [
           {
             key: 'like',
@@ -187,18 +187,18 @@ test('does NOT approve MR when non-self user reacts with thumbs-up', async () =>
 });
 
 test('does NOT approve MR when reaction is not thumbs-up (e.g. laugh, heart)', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const botReplyId = '1770000003000';
 
   const { watcher, approvedCalls } = createWatcher({
     messages: {
       [`${convId}/${botReplyId}`]: {
         id: botReplyId,
-        content: '🦊 [!55 (kubernetes/capi)](https://git.wiit.one/kubernetes/capi/-/merge_requests/55)',
+        content: '🦊 [!55 (group/service-b)](https://gitlab.example.com/group/service-b/-/merge_requests/55)',
         reactions: [
           {
             key: 'laugh',
-            user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+            user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' },
           },
         ],
       },
@@ -217,7 +217,7 @@ test('does NOT approve MR when reaction is not thumbs-up (e.g. laugh, heart)', a
 });
 
 test('does NOT approve MR when message is not a bot message', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const userMsgId = '1770000004000';
 
   const { watcher, approvedCalls } = createWatcher({
@@ -225,11 +225,11 @@ test('does NOT approve MR when message is not a bot message', async () => {
       [`${convId}/${userMsgId}`]: {
         id: userMsgId,
         sender: { mri: '8:orgid:someone-else', displayName: 'Colleague' },
-        content: 'Hey take a look at https://git.wiit.one/kubernetes/capi/-/merge_requests/55',
+        content: 'Hey take a look at https://gitlab.example.com/group/service-b/-/merge_requests/55',
         reactions: [
           {
             key: 'like',
-            user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+            user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' },
           },
         ],
       },
@@ -247,21 +247,21 @@ test('does NOT approve MR when message is not a bot message', async () => {
 });
 
 test('does NOT approve MR when MR is already approved', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const botReplyId = '1770000005000';
 
   const { watcher, approvedCalls } = createWatcher({
     mrStates: {
-      'kubernetes/capi!55': { status: 'approved', approved: true },
+      'group/service-b!55': { status: 'approved', approved: true },
     },
     messages: {
       [`${convId}/${botReplyId}`]: {
         id: botReplyId,
-        content: '🦊 [!55 (kubernetes/capi)](https://git.wiit.one/kubernetes/capi/-/merge_requests/55)',
+        content: '🦊 [!55 (group/service-b)](https://gitlab.example.com/group/service-b/-/merge_requests/55)',
         reactions: [
           {
             key: 'like',
-            user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+            user: { mri: TEST_SELF_MRI, displayName: 'Alice Example' },
           },
         ],
       },
@@ -280,14 +280,14 @@ test('does NOT approve MR when MR is already approved', async () => {
 });
 
 test('/rebase when MR is already up to date only sets checkmark reaction and triggers watched check without replying', async () => {
-  const convId = '19:k8s@thread.v2';
+  const convId = '19:team@thread.v2';
   const cmdMsgId = '1770000006000';
   const reactions = [];
   let checkedWatched = false;
 
   const { watcher } = createWatcher({
     mrStates: {
-      'kubernetes/capi!55': {
+      'group/service-b!55': {
         status: 'pending',
         approved: false,
         needsRebase: false,
@@ -307,9 +307,9 @@ test('/rebase when MR is already up to date only sets checkmark reaction and tri
     {
       conversationId: convId,
       messageId: cmdMsgId,
-      from: 'Philipp Schmitt',
+      from: 'Alice Example',
       fromMri: TEST_SELF_MRI,
-      rawHtml: '<p>https://git.wiit.one/kubernetes/capi/-/merge_requests/55</p>',
+      rawHtml: '<p>https://gitlab.example.com/group/service-b/-/merge_requests/55</p>',
     },
     []
   );

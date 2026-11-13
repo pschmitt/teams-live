@@ -26,7 +26,7 @@ test('isSameUrl normalizes protocol, trailing slash, and case', () => {
 });
 
 test('isMessageOnlyUrl accurately detects single-URL messages', () => {
-  const url = 'https://gitlab.wiit.one/kubernetes/infrastructure/-/merge_requests/42';
+  const url = 'https://gitlab.example.com/group/infrastructure/-/merge_requests/42';
 
   // Plain URL text
   assert.equal(isMessageOnlyUrl(url), true);
@@ -47,7 +47,7 @@ test('isMessageOnlyUrl accurately detects single-URL messages', () => {
   assert.equal(isMessageOnlyUrl(htmlWithComment, htmlWithComment), false);
 
   // Multiple URLs MUST return false
-  assert.equal(isMessageOnlyUrl(`${url} https://jira.wiit.one/browse/CKS-123`), false);
+  assert.equal(isMessageOnlyUrl(`${url} https://jira.example.com/browse/DOCS-123`), false);
 
   // No URL
   assert.equal(isMessageOnlyUrl('Hello world'), false);
@@ -58,7 +58,7 @@ test('isMessageOnlyUrl accurately detects single-URL messages', () => {
 test('shouldEditOriginalMessage behavior under config toggle', () => {
   const selfOid = 'f94ccd0d-d140-4d1d-9fee-b00e642b9c11';
   const selfMri = `8:orgid:${selfOid}`;
-  const targetUrl = 'https://gitlab.wiit.one/kubernetes/infrastructure/-/merge_requests/42';
+  const targetUrl = 'https://gitlab.example.com/group/infrastructure/-/merge_requests/42';
 
   // 1. When edit_own_url_messages is FALSE (default)
   const watcherDisabled = new MergeRequestWatcher({

@@ -333,3 +333,143 @@ test('setReactionStatus skips pending eyes reaction when editedOriginal is true'
   assert.equal(entry.status, 'pending');
 });
 
+test('formatTokenExpiry formats validity and warning states', async () => {
+  const { formatTokenExpiry } = await import('../src/gitlab.mjs');
+
+  assert.equal(formatTokenExpiry(null), null);
+  assert.equal(formatTokenExpiry({}), 'No expiration configured');
+  assert.equal(formatTokenExpiry({ expires_at: null }), 'No expiration configured');
+
+  // Past expiration
+  const past = formatTokenExpiry({ expires_at: '2020-01-01' });
+  assert.ok(past.startsWith('⚠️ Expired on 2020-01-01'), `Should indicate expired: ${past}`);
+
+  // Far future expiration (e.g. 2035)
+  const future = formatTokenExpiry({ expires_at: '2035-12-31' });
+  assert.ok(future.startsWith('Expires in '), `Should indicate days: ${future}`);
+  assert.ok(future.includes('2035-12-31'));
+});
+
+test('GitLabClient does not trigger onAuthError when action endpoint returns 401 but verifyAuth passes', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  let authErrorFired = false;
+
+  const client = new GitLabClient({
+    host: 'git.example.com',
+    token: 'glpat-test-token',
+    onAuthError: () => {
+      authErrorFired = true;
+    },
+  });
+
+  // Mock verifyAuth to succeed (token is valid)
+  client.verifyAuth = async () => true;
+
+  // Simulate an approveMr call where GitLab rejects self-approval with 401 Unauthorized
+  // Override global fetch temporarily or mock request makeFetch
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/user')) {
+      return { ok: true, status: 200, json: async () => ({ id: 1, username: 'test' }) };
+    }
+    // Action endpoint returns 401 Unauthorized
+    return {
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ message: '401 Unauthorized' }),
+    };
+  };
+
+  try {
+    await assert.rejects(
+      async () => {
+        await client.request('projects/123/merge_requests/456/approve', { method: 'POST' });
+      },
+      /GitLab error \(401\)/
+    );
+    assert.equal(authErrorFired, false, 'onAuthError should NOT fire when verifyAuth indicates token is valid');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('GitLabClient triggers onAuthError when verifyAuth also fails or user endpoint returns 401', async () => {
+  const { GitLabClient } = await import('../src/gitlab.mjs');
+  let authErrors = [];
+
+  const client = new GitLabClient({
+    host: 'git.example.com',
+    token: 'glpat-test-token',
+    onAuthError: (err) => {
+      authErrors.push(err);
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1. Direct call to user endpoint returns 401 -> must fire onAuthError immediately
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ message: '401 Unauthorized' }),
+    });
+
+    await assert.rejects(
+      async () => {
+        await client.request('user');
+      },
+      /GitLab error \(401\)/
+    );
+    assert.equal(authErrors.length, 1, 'onAuthError should fire immediately on user endpoint 401');
+
+    // 2. Action endpoint returns 401 and verifyAuth also returns false -> must fire onAuthError
+    client.verifyAuth = async () => false;
+    await assert.rejects(
+      async () => {
+        await client.request('projects/123/merge_requests/456/approve', { method: 'POST' });
+      },
+      /GitLab error \(401\)/
+    );
+    assert.equal(authErrors.length, 2, 'onAuthError should fire when verifyAuth confirms token failure');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('isRecentMrMessage restricts comment and status card updates to the last 3 messages for an MR', async () => {
+  const convId = '19:team@thread.v2';
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: convId, name: 'team' }],
+      gitlab: { max_mr_messages_to_update: 3 },
+      teams: {},
+    },
+    gitlab: {},
+  });
+
+  const mr = { project: 'group/app', iid: '10' };
+
+  // Register 5 messages referencing the same MR in the same conversation
+  const entries = [
+    { conversationId: convId, messageId: 'msg1', createdAt: 1000, mrs: [{ ...mr }] },
+    { conversationId: convId, messageId: 'msg2', createdAt: 2000, mrs: [{ ...mr }] },
+    { conversationId: convId, messageId: 'msg3', createdAt: 3000, mrs: [{ ...mr }] },
+    { conversationId: convId, messageId: 'msg4', createdAt: 4000, mrs: [{ ...mr }] },
+    { conversationId: convId, messageId: 'msg5', createdAt: 5000, mrs: [{ ...mr }] },
+  ];
+
+  for (const e of entries) {
+    watcher.watched.set(`${convId}/${e.messageId}`, e);
+  }
+
+  // The 3 most recent are msg5, msg4, msg3
+  assert.equal(watcher.isRecentMrMessage(entries[4], mr), true, 'msg5 (newest) should be updated');
+  assert.equal(watcher.isRecentMrMessage(entries[3], mr), true, 'msg4 (2nd newest) should be updated');
+  assert.equal(watcher.isRecentMrMessage(entries[2], mr), true, 'msg3 (3rd newest) should be updated');
+
+  // The older 2 messages must NOT be updated
+  assert.equal(watcher.isRecentMrMessage(entries[1], mr), false, 'msg2 (older) should be skipped');
+  assert.equal(watcher.isRecentMrMessage(entries[0], mr), false, 'msg1 (oldest) should be skipped');
+});
+
+

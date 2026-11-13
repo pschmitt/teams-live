@@ -35,6 +35,7 @@ import {
 import { SnakeGame } from './snake.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
+import { formatTokenExpiry } from './gitlab.mjs';
 
 const log = (...args) => console.error(new Date().toISOString(), '[watcher]', ...args);
 
@@ -1468,6 +1469,15 @@ export class MergeRequestWatcher {
     if (this.gitlab?.token) {
       glUser = await this.gitlab.getCurrentUser().catch(() => null);
     }
+    let glTokenInfo = null;
+    if (this.gitlab?.getTokenInfo) {
+      try {
+        const rawToken = await this.gitlab.getTokenInfo();
+        if (rawToken) {
+          glTokenInfo = formatTokenExpiry(rawToken);
+        }
+      } catch {}
+    }
     const glHealth = services.gitlab || {};
     let webhookStatusStr = null;
     if (this.webhookServer?.listening) {
@@ -1484,6 +1494,7 @@ export class MergeRequestWatcher {
       group: this.gitlab?.group || '',
       user: glUser ? `${glUser.name || ''} (@${glUser.username})`.trim() : (glHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
       webhook: webhookStatusStr,
+      tokenExpiry: glTokenInfo,
       error: glHealth.error,
     };
 
@@ -2092,8 +2103,50 @@ export class MergeRequestWatcher {
     entry.status = newStatus;
   }
 
+  isRecentMrMessage(entry, mr, maxLimit = null) {
+    if (!mr || !entry) return true;
+    const limit = maxLimit ?? this.config.gitlab?.max_mr_messages_to_update ?? 3;
+    const projLower = (mr.project || '').toLowerCase();
+    const projBase = projLower.split('/').pop();
+    const mrIid = String(mr.iid);
+
+    const norm = (id) => {
+      try {
+        return decodeURIComponent(String(id || ''));
+      } catch {
+        return String(id || '');
+      }
+    };
+    const targetConv = norm(entry.conversationId);
+
+    const matchingEntries = [];
+    for (const item of this.watched.values()) {
+      if (norm(item.conversationId) !== targetConv) continue;
+      const hasMr = (item.mrs || []).some((m) => {
+        if (String(m.iid) !== mrIid) return false;
+        const mProj = (m.project || '').toLowerCase();
+        return mProj === projLower || mProj.split('/').pop() === projBase;
+      });
+      if (hasMr) {
+        matchingEntries.push(item);
+      }
+    }
+
+    if (matchingEntries.length <= limit) return true;
+
+    matchingEntries.sort((a, b) => {
+      const timeA = a.createdAt || Number(a.messageId) || 0;
+      const timeB = b.createdAt || Number(b.messageId) || 0;
+      return timeB - timeA;
+    });
+
+    const allowed = matchingEntries.slice(0, limit);
+    return allowed.some((e) => String(e.messageId) === String(entry.messageId));
+  }
+
   async sendHeadsup(entry, mr) {
     if (!this.config.gitlab.notify?.approval_lost) return;
+    if (!this.isRecentMrMessage(entry, mr)) return;
     const mrUrl = this.gitlab.mrLink(mr.project, mr.iid);
     const lines = [];
     if (mr.title) lines.push(`💬 **${mr.title}**`);
@@ -2143,6 +2196,13 @@ export class MergeRequestWatcher {
     }
 
     if (!shouldNotify) return;
+
+    if (!this.isRecentMrMessage(entry, mr)) {
+      log(
+        `Skipping CI status comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
+      );
+      return;
+    }
 
     const msg = this.formatMrStatusMessage(mr, pipeline, mrDetails);
 
@@ -2253,6 +2313,13 @@ export class MergeRequestWatcher {
     const notifyMerged = this.config.gitlab.notify?.merged ?? true;
     if (!notifyMerged) return;
 
+    if (!this.isRecentMrMessage(entry, mr)) {
+      log(
+        `Skipping merged comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
+      );
+      return;
+    }
+
     let title = mrDetails?.title || mr.title;
     if (!title) {
       try {
@@ -2348,6 +2415,13 @@ export class MergeRequestWatcher {
   async handleClosedComment(entry, mr, mrDetails) {
     const notifyClosed = this.config.gitlab.notify?.closed ?? true;
     if (!notifyClosed) return;
+
+    if (!this.isRecentMrMessage(entry, mr)) {
+      log(
+        `Skipping closed comment for older message ${entry.messageId} in ${entry.conversationId} for ${mr.project}!${mr.iid} (only updating last 3 messages)`
+      );
+      return;
+    }
 
     let title = mrDetails?.title || mr.title;
     if (!title) {
@@ -4883,6 +4957,7 @@ export class MergeRequestWatcher {
       `  - **Host**: \`${conn.gitlab.host}\`${conn.gitlab.group ? ` (group: \`${conn.gitlab.group}\`)` : ''}\n` +
       (conn.gitlab.webhook ? `  - **Webhook**: ${conn.gitlab.webhook}\n` : '') +
       (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
+      (conn.gitlab.tokenExpiry ? `  - **Token**: ${conn.gitlab.tokenExpiry}\n` : '') +
       (conn.gitlab.error ? `  - **Error**: \`${conn.gitlab.error}\`\n` : '') +
       `- 📋 **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.jira.configured ? `  - **URL**: \`${conn.jira.url}\` (project: \`${conn.jira.project}\`)\n` +

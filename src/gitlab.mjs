@@ -25,6 +25,56 @@ export class GitLabClient {
     }
   }
 
+  async verifyAuth() {
+    if (!this.token) return false;
+    try {
+      const url = `${this.baseUrl}/user`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'teams-live/1.0',
+          'PRIVATE-TOKEN': this.token,
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+      return res.ok;
+    } catch {
+      return true;
+    }
+  }
+
+  async getTokenInfo() {
+    if (!this.token) return null;
+    if (this._tokenInfo && Date.now() - (this._tokenInfoFetchedAt || 0) < 60_000) {
+      return this._tokenInfo;
+    }
+    try {
+      const info = await this.request('personal_access_tokens/self');
+      this._tokenInfo = info;
+      this._tokenInfoFetchedAt = Date.now();
+      return info;
+    } catch {
+      return null;
+    }
+  }
+
+  async rotateToken({ expiresAt = null } = {}) {
+    if (!this.token) throw new Error('Cannot rotate token: no token configured');
+    const body = {};
+    if (expiresAt) body.expires_at = expiresAt;
+    const res = await this.request('personal_access_tokens/self/rotate', {
+      method: 'POST',
+      body: Object.keys(body).length > 0 ? body : null,
+    });
+    if (res?.token) {
+      this.token = res.token;
+      this._tokenInfo = res;
+      this._tokenInfoFetchedAt = Date.now();
+      this.currentUser = null;
+    }
+    return res;
+  }
+
   async request(path, { method = 'GET', body = null, timeoutMs = 30_000 } = {}) {
     const url = `${this.baseUrl}/${path.replace(/^\/+/, '')}`;
     const headers = {
@@ -67,7 +117,18 @@ export class GitLabClient {
       }
       const errStr = `GitLab error (${res.status}): ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`;
       if (res.status === 401 || res.status === 403) {
-        this.onAuthError?.(errStr);
+        const cleanPath = path.replace(/^\/+/, '');
+        const isAuthProbe = cleanPath === 'user' || cleanPath.startsWith('user?') || cleanPath.startsWith('personal_access_tokens/self');
+        if (isAuthProbe) {
+          this.onAuthError?.(errStr);
+        } else {
+          // Double check token validity before raising an auth alarm.
+          // Actions like author self-approval or forbidden endpoints return 401/403 even when the token is valid.
+          const isStillValid = await this.verifyAuth().catch(() => true);
+          if (!isStillValid) {
+            this.onAuthError?.(errStr);
+          }
+        }
       }
       throw new Error(errStr);
     }
@@ -589,12 +650,6 @@ export class GitLabClient {
     return { action: 'created', hook: created };
   }
 
-  async getCurrentUser() {
-    if (this._currentUser) return this._currentUser;
-    this._currentUser = await this.request('user');
-    return this._currentUser;
-  }
-
   async getAwardEmojis(project, mrIid) {
     return await this.request(
       `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji?per_page=100`
@@ -617,4 +672,31 @@ export class GitLabClient {
       { method: 'DELETE' }
     );
   }
+}
+
+export function formatTokenExpiry(tokenData) {
+  if (!tokenData) return null;
+  if (!tokenData.expires_at) {
+    return 'No expiration configured';
+  }
+
+  const expireDate = new Date(`${tokenData.expires_at}T23:59:59Z`);
+  const now = new Date();
+  const diffMs = expireDate.getTime() - now.getTime();
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    const daysAgo = Math.abs(diffDays);
+    return `⚠️ Expired on ${tokenData.expires_at} (${daysAgo} day${daysAgo === 1 ? '' : 's'} ago)`;
+  }
+  if (diffDays === 0) {
+    return `⚠️ Expires today (${tokenData.expires_at})`;
+  }
+  if (diffDays === 1) {
+    return `⚠️ Expires tomorrow (${tokenData.expires_at})`;
+  }
+  if (diffDays <= 7) {
+    return `⚠️ Expires in ${diffDays} days (${tokenData.expires_at})`;
+  }
+  return `Expires in ${diffDays} days (${tokenData.expires_at})`;
 }

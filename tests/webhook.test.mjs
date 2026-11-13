@@ -290,3 +290,72 @@ test('MergeRequestWatcher.isOwnMessage does not false-positive on messages menti
   assert.equal(watcher.isOwnMessage('8:orgid:other', 'teams-live status: running'), true);
   assert.equal(watcher.isOwnMessage('8:orgid:other', '🟢 **teams-live started**'), true);
 });
+
+test('getConnectorsStatus and executeAdminStatusCommand report webhook setup and last received event', async () => {
+  const watcher = new MergeRequestWatcher({
+    config: {
+      gitlab: { host: 'git.example.com', group: 'my-group', webhook: { enable: true } },
+      teams: {},
+      conversations: [{ id: 'conv1', name: 'Notes' }],
+    },
+    gitlab: {
+      host: 'git.example.com',
+      group: 'my-group',
+      token: 'mock-token',
+      getCurrentUser: async () => ({ name: 'Admin', username: 'admin' }),
+    },
+    jira: null,
+    opsgenie: null,
+    authManager: { getCachedAuth: () => ({ userMri: '8:orgid:me' }), getUserProfile: () => ({ displayName: 'Admin' }) },
+  });
+
+  watcher.setWebhookServer({ listening: true, port: 3005 });
+  watcher.lastWebhookEvent = null;
+  watcher.setWebhookSetupStatus({
+    ok: true,
+    action: 'updated',
+    hookId: 42,
+    group: 'my-group',
+    url: 'https://teams-live.example.com/webhook/gitlab',
+    timestamp: Date.now() - 60000,
+  });
+
+  // Check initial connector status before receiving events
+  let conn = await watcher.getConnectorsStatus();
+  assert.ok(conn.gitlab.webhook.includes('Configured'));
+  assert.ok(conn.gitlab.webhook.includes('my-group'));
+  assert.ok(conn.gitlab.webhook.includes('42'));
+  assert.ok(conn.gitlab.webhook.includes(':3005'));
+  assert.equal(conn.gitlab.webhookLastReceived, 'None received yet (waiting for GitLab events)');
+
+  // Simulate receiving a webhook
+  await watcher.handleWebhookEvent('Merge Request Hook', {
+    object_kind: 'merge_request',
+    project: { path_with_namespace: 'my-group/service-x' },
+    object_attributes: { iid: 7, action: 'reopen' },
+  });
+
+  conn = await watcher.getConnectorsStatus();
+  assert.ok(conn.gitlab.webhookLastReceived.includes('MR my-group/service-x!7 (reopen)'));
+  assert.ok(conn.gitlab.webhookLastReceived.includes('ago'));
+
+  // Test sudo status command output contains both lines
+  let replyText = null;
+  const originalSendReply = globalThis.sendReply;
+  // We can call executeAdminStatusCommand and inspect the formatted reply
+  watcher.setCommandReaction = async () => {};
+  watcher.executeAdminStatusCommand = async (event) => {
+    const text =
+      '🔧 **teams-live status (sudo)**:\n\n' +
+      `- 🦊 **GitLab**: 🟢 Connected\n` +
+      `  - **Host**: \`${conn.gitlab.host}\` (group: \`${conn.gitlab.group}\`)\n` +
+      (conn.gitlab.webhook ? `  - **Webhook**: ${conn.gitlab.webhook}\n` : '') +
+      (conn.gitlab.webhookLastReceived ? `  - **Last Webhook**: ${conn.gitlab.webhookLastReceived}\n` : '');
+    replyText = text;
+  };
+
+  await watcher.executeAdminStatusCommand({ conversationId: 'conv1', messageId: 'm1' });
+  assert.ok(replyText.includes('**Webhook**: 🟢 Configured (group: `my-group`, ID: 42, listening on :3005)'));
+  assert.ok(replyText.includes('**Last Webhook**:'));
+  assert.ok(replyText.includes('MR my-group/service-x!7 (reopen)'));
+});

@@ -1080,6 +1080,8 @@ export class MergeRequestWatcher {
     this.pendingTokenRenewalMessageIds = new Set();
     this.lastGitLabExpiryWarningAt = 0;
     this.tokenExpiryCheckTimer = null;
+    this.webhookSetupStatus = null;
+    this.lastWebhookEvent = null;
     this.loadState();
   }
 
@@ -1175,6 +1177,12 @@ export class MergeRequestWatcher {
         }
         if (typeof data.lastGitLabExpiryWarningAt === 'number') {
           this.lastGitLabExpiryWarningAt = data.lastGitLabExpiryWarningAt;
+        }
+        if (data.lastWebhookEvent && typeof data.lastWebhookEvent === 'object') {
+          this.lastWebhookEvent = data.lastWebhookEvent;
+        }
+        if (data.webhookSetupStatus && typeof data.webhookSetupStatus === 'object') {
+          this.webhookSetupStatus = data.webhookSetupStatus;
         }
         this.userDirectory.loadConfig(this.config);
         log(
@@ -1288,6 +1296,8 @@ export class MergeRequestWatcher {
         bannedUsers: bannedObj,
         pendingTokenRenewalMessageIds: Array.from(this.pendingTokenRenewalMessageIds || []),
         lastGitLabExpiryWarningAt: this.lastGitLabExpiryWarningAt || 0,
+        lastWebhookEvent: this.lastWebhookEvent || null,
+        webhookSetupStatus: this.webhookSetupStatus || null,
       };
       const tmpPath = `${this.stateFile}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
@@ -1341,6 +1351,21 @@ export class MergeRequestWatcher {
     const convNames = this.config.conversations.map((c) => c.name || c.id).join(', ');
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
+    const isWhListening = Boolean(this.webhookServer?.listening);
+    let gitlabStatusLine = '';
+    if (isWhListening) {
+      const targetGroup = this.webhookSetupStatus?.group || this.config.gitlab?.group || this.gitlab?.group;
+      let setupDetail = '';
+      if (this.webhookSetupStatus?.ok) {
+        setupDetail = `configured on \`${targetGroup}\`${this.webhookSetupStatus.hookId ? ` id: ${this.webhookSetupStatus.hookId}` : ''}, `;
+      } else {
+        setupDetail = `listening on :${this.webhookServer.port}, `;
+      }
+      gitlabStatusLine = `- **GitLab**: Webhooks active (${setupDetail}fallback poll every ${this.pollIntervalMs / 1000}s)\n`;
+    } else {
+      gitlabStatusLine = `- **GitLab**: Polling every ${this.pollIntervalMs / 1000}s\n`;
+    }
+
     let msg =
       '🟢 **teams-live started**\n\n' +
       `- **Host**: \`${hostname}\`\n` +
@@ -1349,7 +1374,7 @@ export class MergeRequestWatcher {
       `- **Memory**: ${memRss} MB\n` +
       `- **Started**: ${startTime}\n` +
       `- **Watched Conversations**: ${this.watchedConversations.size} (${convNames})\n` +
-      `- **GitLab**: Polling every ${this.pollIntervalMs / 1000}s\n` +
+      gitlabStatusLine +
       `- **Jira**: ${this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'}\n` +
       `- **Home Assistant (HR works)**: ${this.hrworks?.isConfigured() ? 'Active' : 'Not configured'}\n` +
       `- **Precompute Cache**: Active (every ${this.precomputeIntervalMs / 60000}m)`;
@@ -1501,9 +1526,40 @@ export class MergeRequestWatcher {
     const glHealth = services.gitlab || {};
     let webhookStatusStr = null;
     if (this.webhookServer?.listening) {
-      webhookStatusStr = `listening on :${this.webhookServer.port}`;
+      const portStr = this.webhookServer.port ? `:${this.webhookServer.port}` : '';
+      if (this.webhookSetupStatus?.ok) {
+        const group = this.webhookSetupStatus.group || this.gitlab?.group || '';
+        const idPart = this.webhookSetupStatus.hookId ? `ID: ${this.webhookSetupStatus.hookId}` : '';
+        const details = [group ? `group: \`${group}\`` : '', idPart, `listening on ${portStr}`].filter(Boolean).join(', ');
+        webhookStatusStr = `🟢 Configured (${details})`;
+      } else if (this.webhookSetupStatus && !this.webhookSetupStatus.ok) {
+        webhookStatusStr = `⚠️ Setup error: ${this.webhookSetupStatus.error || 'Failed'} (listening on ${portStr})`;
+      } else {
+        webhookStatusStr = `🟢 Listening on ${portStr}`;
+      }
     } else if (this.config.gitlab?.webhook?.enable) {
-      webhookStatusStr = 'enabled (inactive)';
+      webhookStatusStr = '❌ Enabled but not listening';
+    } else {
+      webhookStatusStr = '⚪ Disabled (polling fallback only)';
+    }
+
+    let lastWebhookStr = null;
+    if (this.lastWebhookEvent?.timestamp) {
+      const dateStr = new Date(this.lastWebhookEvent.timestamp).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+      const ageSec = Math.max(0, Math.floor((Date.now() - this.lastWebhookEvent.timestamp) / 1000));
+      let ageStr = '';
+      if (ageSec < 60) {
+        ageStr = `${ageSec}s ago`;
+      } else if (ageSec < 3600) {
+        ageStr = `${Math.floor(ageSec / 60)}m ago`;
+      } else {
+        const h = Math.floor(ageSec / 3600);
+        const m = Math.floor((ageSec % 3600) / 60);
+        ageStr = `${h}h ${m}m ago`;
+      }
+      lastWebhookStr = `${dateStr} (${ageStr}) — ${this.lastWebhookEvent.summary || this.lastWebhookEvent.eventType}`;
+    } else if (this.webhookServer?.listening || this.config.gitlab?.webhook?.enable) {
+      lastWebhookStr = 'None received yet (waiting for GitLab events)';
     }
 
     const gitlabStatus = {
@@ -1514,6 +1570,7 @@ export class MergeRequestWatcher {
       group: this.gitlab?.group || '',
       user: glUser ? `${glUser.name || ''} (@${glUser.username})`.trim() : (glHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
       webhook: webhookStatusStr,
+      webhookLastReceived: lastWebhookStr,
       tokenExpiry: glTokenInfo,
       tokenOverride: this.config.gitlab?.is_token_override ? this.config.gitlab.override_token_path : null,
       error: glHealth.error,
@@ -1695,15 +1752,23 @@ export class MergeRequestWatcher {
     this.webhookServer = server;
   }
 
+  setWebhookSetupStatus(status) {
+    this.webhookSetupStatus = status;
+    this.saveState();
+  }
+
   async handleWebhookEvent(eventType, payload) {
     if (!payload) return;
     const kind = payload.object_kind || (eventType || '').toLowerCase();
+    const timestamp = Date.now();
+    let summary = kind;
 
     if (kind === 'merge_request' || eventType === 'Merge Request Hook') {
       const project = payload.project?.path_with_namespace || payload.project?.name;
       const iid = payload.object_attributes?.iid;
       const action = payload.object_attributes?.action || payload.object_attributes?.state;
-      log(`GitLab webhook: MR ${project}!${iid} (action: ${action})`);
+      summary = `MR ${project}!${iid}${action ? ` (${action})` : ''}`;
+      log(`GitLab webhook: ${summary}`);
 
       if (project && iid) {
         let matched = false;
@@ -1735,7 +1800,8 @@ export class MergeRequestWatcher {
       const pipeId = payload.object_attributes?.id;
       const status = payload.object_attributes?.status;
       const mrIid = payload.merge_request?.iid;
-      log(`GitLab webhook: pipeline #${pipeId} for ${project} (status: ${status}${mrIid ? `, MR: !${mrIid}` : ''})`);
+      summary = `pipeline #${pipeId} for ${project} (${status}${mrIid ? `, MR !${mrIid}` : ''})`;
+      log(`GitLab webhook: ${summary}`);
 
       if (mrIid && project) {
         const projLower = project.toLowerCase();
@@ -1757,7 +1823,19 @@ export class MergeRequestWatcher {
           log(`Webhook pipeline checkAllWatched failed: ${err.message}`)
         );
       }
+    } else {
+      const project = payload.project?.path_with_namespace || payload.project?.name;
+      summary = project ? `${kind} for ${project}` : kind;
+      log(`GitLab webhook: ${summary}`);
     }
+
+    this.lastWebhookEvent = {
+      timestamp,
+      eventType,
+      kind,
+      summary,
+    };
+    this.saveState();
   }
 
   isSenderSelf(event) {
@@ -4982,6 +5060,7 @@ export class MergeRequestWatcher {
       `- 🦊 **GitLab**: ${glIcon} ${conn.gitlab.status === 'ok' ? 'Connected' : (conn.gitlab.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       `  - **Host**: \`${conn.gitlab.host}\`${conn.gitlab.group ? ` (group: \`${conn.gitlab.group}\`)` : ''}\n` +
       (conn.gitlab.webhook ? `  - **Webhook**: ${conn.gitlab.webhook}\n` : '') +
+      (conn.gitlab.webhookLastReceived ? `  - **Last Webhook**: ${conn.gitlab.webhookLastReceived}\n` : '') +
       (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
       (conn.gitlab.tokenExpiry ? `  - **Token**: ${conn.gitlab.tokenExpiry}\n` : '') +
       (conn.gitlab.tokenOverride ? `  - **Token Override**: ⚠️ Loaded from \`${conn.gitlab.tokenOverride}\`\n` : '') +

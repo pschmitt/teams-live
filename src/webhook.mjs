@@ -18,6 +18,11 @@ export class GitLabWebhookServer {
     this.onEvent = onEvent;
     this.server = null;
     this.listening = false;
+    this.stats = {
+      receivedCount: 0,
+      lastReceivedAt: null,
+      lastEvent: null,
+    };
   }
 
   verifyToken(reqToken) {
@@ -116,6 +121,10 @@ export class GitLabWebhookServer {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+
+      this.stats.receivedCount++;
+      this.stats.lastReceivedAt = Date.now();
+      this.stats.lastEvent = eventType;
 
       try {
         this.onEvent?.(eventType, payload);

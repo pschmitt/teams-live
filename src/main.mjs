@@ -199,9 +199,33 @@ async function main() {
           },
         });
         log(`GitLab group webhook status: ${result.action} (id: ${result.hook?.id ?? 'existing'})`);
+        watcher.setWebhookSetupStatus({
+          ok: true,
+          action: result.action,
+          hookId: result.hook?.id ?? null,
+          url: whCfg.url,
+          group: gitlab.group,
+          timestamp: Date.now(),
+        });
       } catch (err) {
         log(`GitLab group webhook auto-setup failed: ${err.message}`);
+        watcher.setWebhookSetupStatus({
+          ok: false,
+          error: err.message,
+          url: whCfg.url,
+          group: gitlab.group,
+          timestamp: Date.now(),
+        });
       }
+    } else if (whCfg.enable) {
+      watcher.setWebhookSetupStatus({
+        ok: true,
+        action: 'manual',
+        hookId: null,
+        url: whCfg.url || null,
+        group: gitlab.group,
+        timestamp: Date.now(),
+      });
     }
   }
 

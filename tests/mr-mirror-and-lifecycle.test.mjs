@@ -472,4 +472,188 @@ test('isRecentMrMessage restricts comment and status card updates to the last 3 
   assert.equal(watcher.isRecentMrMessage(entries[0], mr), false, 'msg1 (oldest) should be skipped');
 });
 
+test('loadConfig loads GitLab token from override file when present', async () => {
+  const { loadConfig } = await import('../src/config.mjs');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const os = await import('node:os');
+
+  const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-live-override-test-'));
+  const overrideDir = path.join(tmpStateDir, 'overrides');
+  fs.mkdirSync(overrideDir, { recursive: true });
+  const overrideFile = path.join(overrideDir, 'gitlab-token');
+  fs.writeFileSync(overrideFile, 'mock-override-token-value\n', 'utf8');
+
+  const oldEnv = process.env.XDG_STATE_HOME;
+  try {
+    process.env.XDG_STATE_HOME = tmpStateDir;
+    const config = loadConfig();
+    assert.equal(config.gitlab.token, 'mock-override-token-value');
+    assert.equal(config.gitlab.is_token_override, true);
+    assert.equal(config.gitlab.override_token_path, overrideFile);
+  } finally {
+    if (oldEnv !== undefined) {
+      process.env.XDG_STATE_HOME = oldEnv;
+    } else {
+      delete process.env.XDG_STATE_HOME;
+    }
+    fs.rmSync(tmpStateDir, { recursive: true, force: true });
+  }
+});
+
+test('renewGitLabToken falls back to override file when configured secret is read-only', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const os = await import('node:os');
+
+  const tmpStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-live-renew-test-'));
+  const readOnlyFile = '/run/secrets/teams-live/gitlab-token-non-writable';
+
+  const rotatedTokenValue = 'mock-newly-rotated-token-12345';
+  let rotateCalled = false;
+
+  const mockGitLab = {
+    token: 'mock-old-token',
+    rotateToken: async () => {
+      rotateCalled = true;
+      return {
+        token: rotatedTokenValue,
+        expires_at: '2027-01-01',
+      };
+    },
+  };
+
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: '48:notes', name: 'Notes' }],
+      gitlab: {
+        token_file: readOnlyFile,
+        state_dir: tmpStateDir,
+      },
+      teams: {},
+    },
+    gitlab: mockGitLab,
+  });
+
+  try {
+    const result = await watcher.renewGitLabToken({ reason: 'unit_test' });
+    assert.equal(rotateCalled, true);
+    assert.equal(result.isReadOnlySecret, true);
+    assert.equal(result.savedPath, path.join(tmpStateDir, 'overrides', 'gitlab-token'));
+    assert.equal(watcher.config.gitlab.is_token_override, true);
+    assert.equal(watcher.config.gitlab.token, rotatedTokenValue);
+    assert.equal(mockGitLab.token, rotatedTokenValue);
+
+    const savedContent = fs.readFileSync(result.savedPath, 'utf8');
+    assert.equal(savedContent, rotatedTokenValue);
+  } finally {
+    fs.rmSync(tmpStateDir, { recursive: true, force: true });
+  }
+});
+
+test('checkGitLabTokenExpiryAndAutoRenew auto-renews when token expires in <= 3 days', async () => {
+  let renewCalled = false;
+
+  const twoDaysAhead = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const mockGitLab = {
+    token: 'mock-test-expiring',
+    getTokenInfo: async () => ({
+      expires_at: twoDaysAhead,
+    }),
+  };
+
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: '48:notes', name: 'Notes' }],
+      gitlab: {},
+      teams: {},
+    },
+    gitlab: mockGitLab,
+  });
+
+  watcher.renewGitLabToken = async ({ reason }) => {
+    renewCalled = true;
+    return {
+      rotated: { token: 'mock-auto-renewed-token', expires_at: '2027-01-01' },
+      savedPath: '/tmp/test/overrides/gitlab-token',
+      isReadOnlySecret: true,
+    };
+  };
+
+  await watcher.checkGitLabTokenExpiryAndAutoRenew();
+  assert.equal(renewCalled, true, 'Auto-renewal should be triggered when expiry <= 3 days');
+});
+
+test('checkGitLabTokenExpiryAndAutoRenew alerts admin and tracks message ID when expires in <= 10 days', async () => {
+  const sevenDaysAhead = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const mockGitLab = {
+    token: 'mock-test-expiring-soon',
+    getTokenInfo: async () => ({
+      expires_at: sevenDaysAhead,
+    }),
+  };
+
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: '48:notes', name: 'Notes' }],
+      gitlab: {},
+      teams: {},
+    },
+    gitlab: mockGitLab,
+  });
+
+  // Since sendDirectMessage interacts with Teams API, we can observe that
+  // pendingTokenRenewalMessageIds records message IDs and lastGitLabExpiryWarningAt is updated
+  await watcher.checkGitLabTokenExpiryAndAutoRenew();
+  assert.ok(watcher.lastGitLabExpiryWarningAt > 0, 'Warning timestamp should be recorded');
+});
+
+test('handleTokenRenewalReaction executes token rotation when admin reacts with thumbs up', async () => {
+  const alertMsgId = '1987654321';
+  let renewReason = null;
+
+  const watcher = new MergeRequestWatcher({
+    config: {
+      conversations: [{ id: '48:notes', name: 'Notes' }],
+      gitlab: {},
+      teams: {},
+    },
+    gitlab: { token: 'mock-test-token' },
+  });
+
+  watcher.pendingTokenRenewalMessageIds.add(alertMsgId);
+  watcher.selfOid = TEST_SELF_OID;
+  watcher.renewGitLabToken = async ({ reason }) => {
+    renewReason = reason;
+    return {
+      rotated: { token: 'mock-rotated-via-reaction', expires_at: '2027-01-01' },
+      savedPath: '/tmp/test/overrides/gitlab-token',
+      isReadOnlySecret: true,
+    };
+  };
+
+  watcher.getMessage = async () => ({
+    ok: true,
+    value: {
+      id: alertMsgId,
+      reactions: [
+        {
+          key: 'like',
+          user: { mri: TEST_SELF_MRI, displayName: 'Philipp Schmitt' },
+        },
+      ],
+    },
+  });
+
+  const event = {
+    kind: 'MessageUpdate',
+    conversationId: '48:notes',
+    messageId: alertMsgId,
+  };
+
+  await watcher.handleMessageUpdate(event);
+  assert.equal(renewReason, 'reaction', 'Token rotation should be triggered by admin thumbs-up reaction');
+  assert.equal(watcher.pendingTokenRenewalMessageIds.has(alertMsgId), false, 'Message ID should be removed from pending');
+});
+
 

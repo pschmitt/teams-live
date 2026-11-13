@@ -550,6 +550,7 @@ const KNOWN_COMMANDS = [
   '/random',
   '/reauth',
   '/rebase',
+  '/renew',
   '/reopen',
   '/restart',
   '/retry',
@@ -1076,6 +1077,9 @@ export class MergeRequestWatcher {
     this.pendingSuggestions = new Map();
     this.typoMessageToSuggestion = new Map();
     this.thumbnailEditedMessageIds = new Set();
+    this.pendingTokenRenewalMessageIds = new Set();
+    this.lastGitLabExpiryWarningAt = 0;
+    this.tokenExpiryCheckTimer = null;
     this.loadState();
   }
 
@@ -1165,6 +1169,12 @@ export class MergeRequestWatcher {
         }
         if (data.bannedUsers && typeof data.bannedUsers === 'object') {
           this.bannedUsers = new Map(Object.entries(data.bannedUsers));
+        }
+        if (Array.isArray(data.pendingTokenRenewalMessageIds)) {
+          this.pendingTokenRenewalMessageIds = new Set(data.pendingTokenRenewalMessageIds.map(String));
+        }
+        if (typeof data.lastGitLabExpiryWarningAt === 'number') {
+          this.lastGitLabExpiryWarningAt = data.lastGitLabExpiryWarningAt;
         }
         this.userDirectory.loadConfig(this.config);
         log(
@@ -1276,6 +1286,8 @@ export class MergeRequestWatcher {
         entries: entriesObj,
         userInteractions: interactionsObj,
         bannedUsers: bannedObj,
+        pendingTokenRenewalMessageIds: Array.from(this.pendingTokenRenewalMessageIds || []),
+        lastGitLabExpiryWarningAt: this.lastGitLabExpiryWarningAt || 0,
       };
       const tmpPath = `${this.stateFile}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
@@ -1329,7 +1341,7 @@ export class MergeRequestWatcher {
     const convNames = this.config.conversations.map((c) => c.name || c.id).join(', ');
     const memRss = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
-    const msg =
+    let msg =
       '🟢 **teams-live started**\n\n' +
       `- **Host**: \`${hostname}\`\n` +
       `- **PID**: \`${pid}\`\n` +
@@ -1341,6 +1353,14 @@ export class MergeRequestWatcher {
       `- **Jira**: ${this.jira?.isConfigured() ? 'Active (CKS)' : 'Not configured'}\n` +
       `- **Home Assistant (HR works)**: ${this.hrworks?.isConfigured() ? 'Active' : 'Not configured'}\n` +
       `- **Precompute Cache**: Active (every ${this.precomputeIntervalMs / 60000}m)`;
+
+    if (this.config.gitlab?.is_token_override) {
+      msg +=
+        '\n\n⚠️ **WARNING: GitLab Token Override is Active!**\n' +
+        `- **Override File**: \`${this.config.gitlab.override_token_path}\`\n` +
+        '- The configured secret file was read-only; please update the rotated token in your host configuration/SOPS (`nixos-config-private`) so it persists:\n' +
+        `  \`cat ${this.config.gitlab.override_token_path}\``;
+    }
 
     log(`Sending startup announcement to ${adminConv}...`);
     await sendDirectMessage(adminConv, msg);
@@ -1495,6 +1515,7 @@ export class MergeRequestWatcher {
       user: glUser ? `${glUser.name || ''} (@${glUser.username})`.trim() : (glHealth.status === 'auth_expired' ? 'Auth expired' : 'N/A'),
       webhook: webhookStatusStr,
       tokenExpiry: glTokenInfo,
+      tokenOverride: this.config.gitlab?.is_token_override ? this.config.gitlab.override_token_path : null,
       error: glHealth.error,
     };
 
@@ -4892,6 +4913,10 @@ export class MergeRequestWatcher {
       await this.executeReauthCommand(event);
     } else if (sub === 'status') {
       await this.executeAdminStatusCommand(event);
+    } else if (sub === 'glab' || sub === 'gitlab' || sub === 'token') {
+      await this.executeRenewGitLabTokenCommand(event);
+    } else if (sub === 'renew' || sub === 'rotate') {
+      await this.executeRenewGitLabTokenCommand(event);
     } else if (sub === 'kick') {
       await this.executeKickCommand(event, args.slice(1));
     } else if (sub === 'ban') {
@@ -4906,6 +4931,7 @@ export class MergeRequestWatcher {
         '- `/sudo restart`: Restarts the teams-live daemon.\n' +
         '- `/sudo reauth` (or `/sudo refresh`): Forces token refresh and shows status.\n' +
         '- `/sudo status`: Shows service runtime metrics, memory, and token auth health.\n' +
+        '- `/sudo glab renew` (or `/sudo renew glab`, `/sudo token renew`): Rotates the GitLab personal access token and saves to writable override if needed.\n' +
         '- `/sudo kick <nick> [reason]`: Ejects a user from the channel.\n' +
         '- `/sudo ban <nick>`: Bans a user (bot ignores messages and only reacts with ⛔).\n' +
         '- `/sudo unban <nick>`: Unbans a user.\n' +
@@ -4958,6 +4984,7 @@ export class MergeRequestWatcher {
       (conn.gitlab.webhook ? `  - **Webhook**: ${conn.gitlab.webhook}\n` : '') +
       (conn.gitlab.configured ? `  - **User**: ${conn.gitlab.user}\n` : '') +
       (conn.gitlab.tokenExpiry ? `  - **Token**: ${conn.gitlab.tokenExpiry}\n` : '') +
+      (conn.gitlab.tokenOverride ? `  - **Token Override**: ⚠️ Loaded from \`${conn.gitlab.tokenOverride}\`\n` : '') +
       (conn.gitlab.error ? `  - **Error**: \`${conn.gitlab.error}\`\n` : '') +
       `- 📋 **Jira**: ${jiraIcon} ${conn.jira.status === 'ok' ? 'Connected' : (conn.jira.status === 'unconfigured' ? 'Not configured' : 'Auth Expired / Error')}\n` +
       (conn.jira.configured ? `  - **URL**: \`${conn.jira.url}\` (project: \`${conn.jira.project}\`)\n` +
@@ -5028,6 +5055,217 @@ export class MergeRequestWatcher {
       log(`Admin /reauth failed: ${err.message}`);
       await sendReply(event.conversationId, event, `❌ Manual reauth failed: ${err.message}`);
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+    }
+  }
+
+  async renewGitLabToken({ reason = 'manual', expiresAt = null } = {}) {
+    if (!this.gitlab?.rotateToken) {
+      throw new Error('GitLab client is not configured or does not support token rotation');
+    }
+
+    log(`Rotating GitLab personal access token (reason: ${reason})...`);
+    const rotated = await this.gitlab.rotateToken({ expiresAt });
+    if (!rotated?.token) {
+      throw new Error('GitLab token rotation response did not include a new token');
+    }
+
+    const stateDir =
+      this.config.gitlab?.state_dir ||
+      process.env.XDG_STATE_HOME ||
+      path.join(process.cwd(), 'state');
+    const overrideDir = path.join(stateDir, 'overrides');
+    const overridePath = path.join(overrideDir, 'gitlab-token');
+    const configuredPath = this.config.gitlab?.token_file;
+
+    let savedPath = null;
+    let isReadOnlySecret = false;
+
+    if (this.config.gitlab?.is_token_override && this.config.gitlab?.override_token_path) {
+      const targetPath = this.config.gitlab.override_token_path;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
+      savedPath = targetPath;
+      isReadOnlySecret = true;
+    } else if (configuredPath) {
+      let canWriteConfigured = false;
+      try {
+        if (fs.existsSync(configuredPath)) {
+          fs.accessSync(configuredPath, fs.constants.W_OK);
+          fs.writeFileSync(configuredPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
+          canWriteConfigured = true;
+          savedPath = configuredPath;
+        } else {
+          fs.accessSync(path.dirname(configuredPath), fs.constants.W_OK);
+          fs.writeFileSync(configuredPath, rotated.token, { encoding: 'utf8', mode: 0o600 });
+          canWriteConfigured = true;
+          savedPath = configuredPath;
+        }
+      } catch (err) {
+        log(`Configured secret file (${configuredPath}) is not writable (${err.code || err.message}). Using override directory.`);
+        isReadOnlySecret = true;
+      }
+
+      if (!canWriteConfigured) {
+        fs.mkdirSync(overrideDir, { recursive: true });
+        fs.writeFileSync(overridePath, rotated.token, { encoding: 'utf8', mode: 0o600 });
+        savedPath = overridePath;
+        if (this.config.gitlab) {
+          this.config.gitlab.is_token_override = true;
+          this.config.gitlab.override_token_path = overridePath;
+        }
+      }
+    } else {
+      fs.mkdirSync(overrideDir, { recursive: true });
+      fs.writeFileSync(overridePath, rotated.token, { encoding: 'utf8', mode: 0o600 });
+      savedPath = overridePath;
+      if (this.config.gitlab) {
+        this.config.gitlab.is_token_override = true;
+        this.config.gitlab.override_token_path = overridePath;
+      }
+      isReadOnlySecret = true;
+    }
+
+    if (this.config.gitlab) {
+      this.config.gitlab.token = rotated.token;
+    }
+    if (this.gitlab) {
+      this.gitlab.token = rotated.token;
+    }
+
+    log(`GitLab personal access token successfully rotated and saved to ${savedPath} (isOverride=${isReadOnlySecret}, new expiry=${rotated.expires_at})`);
+
+    this.lastGitLabExpiryWarningAt = 0;
+    this.pendingTokenRenewalMessageIds.clear();
+    this.saveState();
+
+    return {
+      rotated,
+      savedPath,
+      isReadOnlySecret,
+    };
+  }
+
+  async executeRenewGitLabTokenCommand(event) {
+    if (!this.isAdmin(event)) {
+      log(`Unauthorized GitLab token renewal attempt from ${event.from || event.fromMri} in ${event.conversationId}`);
+      await sendReply(event.conversationId, event, this.respondNotPrivileged(event));
+      this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      return;
+    }
+
+    log(`Admin GitLab token renewal requested by ${event.from || event.fromMri} in ${event.conversationId}`);
+    await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.pending).catch(() => {});
+
+    try {
+      const renewal = await this.renewGitLabToken({ reason: 'admin_command' });
+      await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.success).catch(() => {});
+
+      let text =
+        '✅ **GitLab Personal Access Token Renewed Successfully!**\n\n' +
+        `- **New Expiry**: ${renewal.rotated?.expires_at || 'unknown'}\n`;
+
+      if (renewal.isReadOnlySecret) {
+        text +=
+          `- **Saved to Override**: \`${renewal.savedPath}\`\n\n` +
+          '⚠️ **Action Required**: The configured secret path (`' + (this.config.gitlab?.token_file || 'read-only') + '`) is read-only (e.g. deployed via SOPS/NixOS).\n' +
+          'Please update the secret in your host configuration (`nixos-config-private`) so future rebuilds don\'t revert to the old token:\n' +
+          `\`cat ${renewal.savedPath}\`\n` +
+          'The override will be loaded automatically on startup until then.';
+      } else {
+        text += `- **Saved to**: \`${renewal.savedPath}\``;
+      }
+
+      await sendReply(event.conversationId, event, text);
+    } catch (err) {
+      log(`GitLab token renewal failed: ${err.message}`);
+      await this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
+      await sendReply(event.conversationId, event, `❌ Failed to rotate GitLab token: ${err.message}`);
+    }
+  }
+
+  async checkGitLabTokenExpiryAndAutoRenew() {
+    if (!this.gitlab?.token || !this.gitlab?.getTokenInfo) return;
+    try {
+      const tokenData = await this.gitlab.getTokenInfo();
+      if (!tokenData || !tokenData.expires_at) return;
+
+      const expireDate = new Date(`${tokenData.expires_at}T23:59:59Z`);
+      const now = new Date();
+      const diffMs = expireDate.getTime() - now.getTime();
+      const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+      log(`GitLab token expiry check: expires on ${tokenData.expires_at} (~${diffDays} days remaining)`);
+
+      const adminConv = this.getAdminConversationId();
+
+      // Case 1: <= 3 days remaining -> Auto-renew!
+      if (diffDays <= 3) {
+        log(`GitLab token expires in ${diffDays} days (<= 3d), triggering auto-renewal...`);
+        try {
+          const renewal = await this.renewGitLabToken({ reason: `auto_renew_${diffDays}d` });
+          if (adminConv) {
+            let msg =
+              '🔄 **GitLab Personal Access Token Auto-Renewed**\n\n' +
+              `The GitLab personal access token was expiring in **${diffDays} day${diffDays === 1 ? '' : 's'}** (${tokenData.expires_at}) and has been automatically rotated.\n\n` +
+              `- **New Expiry**: ${renewal.rotated?.expires_at || 'unknown'}\n`;
+
+            if (renewal.isReadOnlySecret) {
+              msg +=
+                `- **Stored in Override**: \`${renewal.savedPath}\`\n\n` +
+                '⚠️ **Action Required**: The configured secret path (`' + (this.config.gitlab?.token_file || 'read-only') + '`) is read-only (e.g. deployed via SOPS/NixOS).\n' +
+                'Please update the secret in your host configuration (`nixos-config-private`) so future deployments use the new token:\n' +
+                `\`cat ${renewal.savedPath}\`\n` +
+                'The override file will keep GitLab working across restarts until then.';
+            } else {
+              msg += `- **Saved to**: \`${renewal.savedPath}\``;
+            }
+
+            await sendDirectMessage(adminConv, msg);
+          }
+          return;
+        } catch (err) {
+          log(`GitLab token auto-renewal failed: ${err.message}`);
+          if (adminConv) {
+            const alertMsg =
+              '🚨 **GitLab Token Auto-Renewal Failed!**\n\n' +
+              `The GitLab token expires in **${diffDays} day${diffDays === 1 ? '' : 's'}** (${tokenData.expires_at}), but auto-renewal failed:\n` +
+              `\`${err.message}\`\n\n` +
+              'Please renew manually using `/sudo glab renew`.';
+            await sendDirectMessage(adminConv, alertMsg);
+          }
+          return;
+        }
+      }
+
+      // Case 2: <= 10 days remaining -> Warning notification to admin!
+      if (diffDays <= 10) {
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        if (this.lastGitLabExpiryWarningAt && Date.now() - this.lastGitLabExpiryWarningAt < ONE_DAY_MS) {
+          log('Skipping GitLab token expiry warning: last alert was sent < 24h ago');
+          return;
+        }
+
+        if (adminConv) {
+          log(`GitLab token expires in ${diffDays} days (< 10d), sending warning to admin ${adminConv}...`);
+          const warningMsg =
+            '⚠️ **GitLab Personal Access Token Expiry Warning**\n\n' +
+            `The GitLab personal access token will expire in **${diffDays} day${diffDays === 1 ? '' : 's'}** (${tokenData.expires_at}).\n\n` +
+            'You can renew it now:\n' +
+            '- Run command: `/sudo glab renew`\n' +
+            '- Or **react to this message with a 👍 (thumbs up)** emoji to renew automatically!';
+
+          const res = await sendDirectMessage(adminConv, warningMsg);
+          this.lastGitLabExpiryWarningAt = Date.now();
+          if (res?.ok && res.value) {
+            for (const id of [res.value.id, res.value.messageId, res.value.timestamp]) {
+              if (id) this.pendingTokenRenewalMessageIds.add(String(id));
+            }
+          }
+          this.saveState();
+        }
+      }
+    } catch (err) {
+      log(`Error checking GitLab token expiry: ${err.message}`);
     }
   }
 
@@ -6046,6 +6284,8 @@ export class MergeRequestWatcher {
       this.setCommandReaction(event.conversationId, event.messageId, COMMAND_REACTIONS.failure).catch(() => {});
     } else if (command === '/exec') {
       await this.executeExecCommand(event, args);
+    } else if (command === '/renew') {
+      await this.executeRenewGitLabTokenCommand(event);
     } else if (command === '/sudo' || command === '/admin') {
       await this.executeAdminCommand(event, args);
     } else if (command === '/restart') {
@@ -6485,6 +6725,84 @@ export class MergeRequestWatcher {
     }
   }
 
+  async handleTokenRenewalReaction(event) {
+    const msgId = String(event.messageId);
+    if (!this.pendingTokenRenewalMessageIds || !this.pendingTokenRenewalMessageIds.has(msgId)) {
+      return;
+    }
+    const convId = event.conversationId;
+
+    const fetchMessageData = async () => {
+      try {
+        const res = await this.getMessage(convId, msgId);
+        if (!res?.ok || !res.value) return null;
+        return res.value;
+      } catch (err) {
+        log(`Failed to fetch message ${msgId} for token renewal reaction check: ${err.message}`);
+        return null;
+      }
+    };
+
+    let msgData = await fetchMessageData();
+    if (!msgData) return;
+
+    const findAdminThumbUp = (reactions) => {
+      if (!reactions || !Array.isArray(reactions)) return null;
+      for (const r of reactions) {
+        const key = (r.key || '').toLowerCase();
+        const isThumbUp = key === 'like' || key === '👍' || key.includes('thumb');
+        if (isThumbUp && this.isReactorSelf(r.user) && !this.isBotReaction(msgId, r.key)) {
+          return r;
+        }
+      }
+      return null;
+    };
+
+    let adminThumb = findAdminThumbUp(msgData.reactions);
+    if (!adminThumb) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const retryData = await fetchMessageData();
+      if (retryData?.reactions) {
+        msgData = retryData;
+        adminThumb = findAdminThumbUp(msgData.reactions);
+      }
+    }
+
+    if (!adminThumb) return;
+
+    // Remove from pending so we don't trigger repeatedly
+    this.pendingTokenRenewalMessageIds.delete(msgId);
+    this.saveState();
+
+    log(`👍 Reaction detected from admin on token renewal alert ${msgId}. Rotating token...`);
+    await this.setCommandReaction(convId, msgId, COMMAND_REACTIONS.pending).catch(() => {});
+
+    try {
+      const renewal = await this.renewGitLabToken({ reason: 'reaction' });
+      await this.setCommandReaction(convId, msgId, COMMAND_REACTIONS.success).catch(() => {});
+
+      let replyText =
+        '✅ **GitLab Personal Access Token Renewed via 👍 Reaction!**\n\n' +
+        `- **New Expiry**: ${renewal.rotated?.expires_at || 'unknown'}\n`;
+
+      if (renewal.isReadOnlySecret) {
+        replyText +=
+          `- **Saved to Override**: \`${renewal.savedPath}\`\n\n` +
+          '⚠️ **Action Required**: The configured secret file is read-only.\n' +
+          'Please update the secret in your host configuration/SOPS:\n' +
+          `\`cat ${renewal.savedPath}\``;
+      } else {
+        replyText += `- **Saved to**: \`${renewal.savedPath}\``;
+      }
+
+      await sendReply(convId, { messageId: msgId }, replyText);
+    } catch (err) {
+      log(`Failed to renew GitLab token on reaction: ${err.message}`);
+      await this.setCommandReaction(convId, msgId, COMMAND_REACTIONS.failure).catch(() => {});
+      await sendReply(convId, { messageId: msgId }, `❌ Failed to rotate GitLab token: ${err.message}`);
+    }
+  }
+
   async handleMessageUpdate(event) {
     const msgId = String(event.messageId);
     let suggestion = this.pendingSuggestions.get(msgId);
@@ -6494,6 +6812,11 @@ export class MergeRequestWatcher {
     }
     if (suggestion) {
       await this.handleSuggestionReaction(event, suggestion);
+      return;
+    }
+
+    if (this.pendingTokenRenewalMessageIds?.has(msgId)) {
+      await this.handleTokenRenewalReaction(event);
       return;
     }
 
@@ -6781,6 +7104,18 @@ export class MergeRequestWatcher {
 
     if (this.pollTimer.unref) this.pollTimer.unref();
     this.startPrecompute();
+
+    // Check GitLab token expiry and auto-renew on startup and every 6 hours
+    this.checkGitLabTokenExpiryAndAutoRenew().catch((err) =>
+      log(`GitLab token expiry check failed: ${err.message}`)
+    );
+    if (this.tokenExpiryCheckTimer) clearInterval(this.tokenExpiryCheckTimer);
+    this.tokenExpiryCheckTimer = setInterval(() => {
+      this.checkGitLabTokenExpiryAndAutoRenew().catch((err) =>
+        log(`Periodic GitLab token expiry check failed: ${err.message}`)
+      );
+    }, 6 * 60 * 60 * 1000); // 6 hours
+    if (this.tokenExpiryCheckTimer.unref) this.tokenExpiryCheckTimer.unref();
   }
 
   stop() {
@@ -6795,6 +7130,10 @@ export class MergeRequestWatcher {
     if (this.precomputeTimer) {
       clearTimeout(this.precomputeTimer);
       this.precomputeTimer = null;
+    }
+    if (this.tokenExpiryCheckTimer) {
+      clearInterval(this.tokenExpiryCheckTimer);
+      this.tokenExpiryCheckTimer = null;
     }
   }
 }

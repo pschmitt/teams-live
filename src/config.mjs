@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 
 function stripYamlComments(text) {
   return text
@@ -160,14 +161,47 @@ export function loadConfig(configPath) {
 
   gitlab.webhook = webhook;
 
-  if (gitlab.token_file && fs.existsSync(gitlab.token_file)) {
-    try {
-      gitlab.token = fs.readFileSync(gitlab.token_file, 'utf8').trim();
-    } catch (e) {
-      console.warn(`Could not read GitLab token file ${gitlab.token_file}: ${e.message}`);
+  const stateDir = process.env.XDG_STATE_HOME || path.join(process.cwd(), 'state');
+  const overridePaths = [
+    path.join(stateDir, 'overrides', 'gitlab-token'),
+    path.join(stateDir, 'gitlab-token'),
+  ];
+  let overrideToken = null;
+  let overrideTokenPath = null;
+  for (const p of overridePaths) {
+    if (fs.existsSync(p)) {
+      try {
+        const content = fs.readFileSync(p, 'utf8').trim();
+        if (content) {
+          overrideToken = content;
+          overrideTokenPath = p;
+          break;
+        }
+      } catch (e) {
+        console.warn(`Could not read GitLab token override file ${p}: ${e.message}`);
+      }
     }
-  } else if (process.env.GITLAB_TOKEN) {
-    gitlab.token = process.env.GITLAB_TOKEN.trim();
+  }
+
+  gitlab.state_dir = stateDir;
+  if (overrideToken) {
+    gitlab.token = overrideToken;
+    gitlab.override_token_path = overrideTokenPath;
+    gitlab.is_token_override = true;
+  } else {
+    gitlab.is_token_override = false;
+    gitlab.override_token_path = null;
+    if (gitlab.token_file && fs.existsSync(gitlab.token_file)) {
+      try {
+        gitlab.token = fs.readFileSync(gitlab.token_file, 'utf8').trim();
+      } catch (e) {
+        console.warn(`Could not read GitLab token file ${gitlab.token_file}: ${e.message}`);
+      }
+    } else if (process.env.GITLAB_TOKEN) {
+      gitlab.token = process.env.GITLAB_TOKEN.trim();
+    } else if (typeof fileConfig.gitlab?.token === 'string' && fileConfig.gitlab.token) {
+      gitlab.token = fileConfig.gitlab.token.trim();
+    }
   }
 
   const jira = {

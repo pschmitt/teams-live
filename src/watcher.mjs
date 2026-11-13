@@ -46,6 +46,94 @@ const SNAKE_FRAMES = 40;
 const SNAKE_FRAME_DELAY_MS = 1800;
 const REBASE_PREFIX = '**Rebase';
 
+export function teamsReactionToGitLabEmoji(reactionKey) {
+  if (!reactionKey) return null;
+  const raw = String(reactionKey).trim();
+  const lower = raw.toLowerCase();
+
+  // Thumbs up is reserved for approving, not mirrored
+  if (
+    lower === 'like' ||
+    lower === '👍' ||
+    lower === '1f44d_thumbsup' ||
+    lower.includes('thumbup') ||
+    lower.includes('thumbs_up') ||
+    lower.includes('thumbsup')
+  ) {
+    return null;
+  }
+
+  // Standard Teams reaction keys
+  const standardMap = {
+    laugh: 'laughing',
+    heart: 'heart',
+    surprised: 'open_mouth',
+    sad: 'cry',
+    angry: 'angry',
+    '1f44e_thumbsdown': 'thumbsdown',
+    thumbsdown: 'thumbsdown',
+    thumbs_down: 'thumbsdown',
+    '👎': 'thumbsdown',
+  };
+
+  if (standardMap[lower]) {
+    return standardMap[lower];
+  }
+
+  // Common Unicode emojis to GitLab names
+  const unicodeMap = {
+    '❤️': 'heart',
+    '♥️': 'heart',
+    '💖': 'sparkling_heart',
+    '😆': 'laughing',
+    '😂': 'joy',
+    '🤣': 'rofl',
+    '😀': 'grinning',
+    '😃': 'smiley',
+    '😄': 'smile',
+    '😊': 'blush',
+    '😮': 'open_mouth',
+    '😲': 'astonished',
+    '😢': 'cry',
+    '😭': 'sob',
+    '😡': 'angry',
+    '🤬': 'rage',
+    '🎉': 'tada',
+    '🚀': 'rocket',
+    '🔥': 'fire',
+    '🤔': 'thinking',
+    '👀': 'eyes',
+    '👏': 'clap',
+    '🙌': 'raised_hands',
+    '💯': '100',
+    '✨': 'sparkles',
+    '💩': 'poop',
+  };
+
+  if (unicodeMap[raw]) {
+    return unicodeMap[raw];
+  }
+
+  // Hex encoded keys like 1f600_grinning or 1f389_party_popper
+  const match = lower.match(/^[0-9a-f]+_(.+)$/);
+  if (match) {
+    const slug = match[1].replace(/-/g, '_');
+    if (slug === 'party_popper') return 'tada';
+    if (slug === 'thinking_face') return 'thinking';
+    if (slug === 'grinning_face') return 'grinning';
+    if (slug === 'face_with_tears_of_joy') return 'joy';
+    if (slug === 'red_heart') return 'heart';
+    return slug;
+  }
+
+  // If already alphanumeric/underscore, try as-is
+  if (/^[a-z0-9_+-]+$/.test(lower)) {
+    return lower;
+  }
+
+  return null;
+}
+
 export function extractCandidateUrls(text, rawHtml = '', links = []) {
   const urls = new Set();
 
@@ -762,6 +850,8 @@ export class MergeRequestWatcher {
     this.webhookServer = webhookServer;
     this.getMessage = customGetMessage || getMessage;
     this.approvingMrs = new Set();
+    this.botPlacedLikeMessageIds = new Set();
+    this.syncingAwardEmojis = new Set();
     this.serviceAlertState = new Map();
     this.pollIntervalMs = (config.gitlab.poll_interval_seconds || 60) * 1000;
     this.historyLimit = config.gitlab.history_limit || 50;
@@ -850,6 +940,9 @@ export class MergeRequestWatcher {
             const conversationId = saved.conversationId || key.slice(0, slashIndex);
             const messageId = saved.messageId || key.slice(slashIndex + 1);
             if (this.completedMessages.has(String(messageId))) continue;
+            if (saved.status === 'approved') {
+              this.botPlacedLikeMessageIds.add(String(messageId));
+            }
             this.watched.set(key, {
               conversationId,
               messageId,
@@ -1762,11 +1855,17 @@ export class MergeRequestWatcher {
   async setReactionStatus(entry, newStatus) {
     const { conversationId, messageId } = entry;
     if (newStatus && newStatus !== entry.status) {
+      if (STATUS_REACTIONS[newStatus] === 'like') {
+        this.botPlacedLikeMessageIds.add(String(messageId));
+      }
       const result = await addReaction(conversationId, messageId, STATUS_REACTIONS[newStatus]);
       if (!result.ok) log(`adding ${newStatus} reaction failed: ${result.error?.message}`);
     }
 
     if (entry.status && entry.status !== newStatus) {
+      if (STATUS_REACTIONS[entry.status] === 'like') {
+        this.botPlacedLikeMessageIds.delete(String(messageId));
+      }
       const result = await removeReaction(conversationId, messageId, STATUS_REACTIONS[entry.status]);
       if (!result.ok) log(`removing ${entry.status} reaction failed: ${result.error?.message}`);
     }
@@ -2587,6 +2686,7 @@ export class MergeRequestWatcher {
         const autoMergeChanged = mr.lastReportedAutoMerge !== isAutoMerge;
         const autoMergeUser = mrState.autoMergeUser || null;
         const autoMergeUserChanged = mr.lastReportedAutoMergeUser !== autoMergeUser;
+        const statusReopened = mr.status === 'closed' && mrState.status !== 'closed';
         const needsInitialComment = !entry.isHistory && !mr.ciMessageServerId;
 
         if (
@@ -2600,6 +2700,7 @@ export class MergeRequestWatcher {
             titleChanged ||
             draftChanged ||
             jiraChanged ||
+            statusReopened ||
             needsInitialComment)
         ) {
           if (
@@ -2609,7 +2710,8 @@ export class MergeRequestWatcher {
             mr.lastReportedNeedsRebase !== null ||
             mr.lastReportedAutoMerge !== null ||
             mr.lastReportedTitle !== null ||
-            mr.lastReportedJiraKey !== null
+            mr.lastReportedJiraKey !== null ||
+            statusReopened
           ) {
             await this.handleCiStatusComment(entry, mr, pipe, {
               ...mrState,
@@ -2622,6 +2724,7 @@ export class MergeRequestWatcher {
               draftChanged,
               jiraChanged,
               jiraTicket,
+              statusReopened,
             });
           }
           if (pipe) {
@@ -2823,7 +2926,7 @@ export class MergeRequestWatcher {
         log(`${key} status updated -> ${overallStatus ?? 'cleared'}`);
       }
 
-      const mrsDone = (entry.mrs || []).length === 0 || statuses.every((s) => s === 'merged' || s === 'closed');
+      const mrsDone = (entry.mrs || []).length === 0 || statuses.every((s) => s === 'merged');
       const jobsDone = (entry.jobs || []).length === 0 || (entry.jobs || []).every((j) => isTerminalCiStatus(j.status));
       const pipesDone = (entry.pipelines || []).length === 0 || (entry.pipelines || []).every((p) => isTerminalCiStatus(p.status));
       const jiraDone =
@@ -5808,16 +5911,20 @@ export class MergeRequestWatcher {
     const convId = event.conversationId;
     if (!msgId || !convId) return;
 
+    if (this.botPlacedLikeMessageIds.has(msgId)) return;
+
     let targetMrs = [];
     let matchedWatchedKey = null;
     let isConfirmedBotMessage = botSentMessageIds.has(msgId);
 
     for (const [key, entry] of this.watched.entries()) {
       if (entry.conversationId !== convId) continue;
+      const isOriginal = String(entry.messageId) === msgId;
       const isCiMsg = entry.mrs?.some((m) => String(m.ciMessageServerId) === msgId);
       const isRebaseMsg = entry.mrs?.some((m) => String(m.rebaseMessageServerId) === msgId);
       const isEditedOriginal = entry.editedOriginal && String(entry.messageId) === msgId;
-      if (isCiMsg || isRebaseMsg || isEditedOriginal) {
+      if (isOriginal || isCiMsg || isRebaseMsg || isEditedOriginal) {
+        if (entry.status === 'approved') return;
         if (entry.mrs && entry.mrs.length > 0) {
           targetMrs = entry.mrs.map((m) => ({ project: m.project, iid: m.iid, title: m.title }));
           matchedWatchedKey = key;
@@ -5931,6 +6038,112 @@ export class MergeRequestWatcher {
     }
   }
 
+  async syncMrAwardEmojis(project, iid, desiredEmojiNames) {
+    if (!this.gitlab?.getAwardEmojis || !this.gitlab?.awardEmoji || !this.gitlab?.deleteAwardEmoji) return;
+    const syncKey = `${project}!${iid}`.toLowerCase();
+    if (this.syncingAwardEmojis.has(syncKey)) return;
+    this.syncingAwardEmojis.add(syncKey);
+
+    try {
+      const currentUser = await this.gitlab.getCurrentUser().catch(() => null);
+      if (!currentUser) return;
+
+      const existingAwards = await this.gitlab.getAwardEmojis(project, iid).catch(() => []);
+      const myAwards = (existingAwards || []).filter(
+        (a) => a.user?.id === currentUser.id || (currentUser.username && a.user?.username === currentUser.username)
+      );
+
+      const existingNames = new Set(myAwards.map((a) => a.name));
+
+      // Award missing emojis
+      for (const name of desiredEmojiNames) {
+        if (!existingNames.has(name)) {
+          log(`Awarding emoji :${name}: on ${project}!${iid}...`);
+          try {
+            await this.gitlab.awardEmoji(project, iid, name);
+            log(`Awarded emoji :${name}: on ${project}!${iid}`);
+          } catch (err) {
+            log(`Failed to award emoji :${name}: on ${project}!${iid}: ${err.message}`);
+          }
+        }
+      }
+
+      // Remove unneeded emojis (excluding thumbsup which is reserved for approval)
+      for (const award of myAwards) {
+        if (award.name !== 'thumbsup' && !desiredEmojiNames.has(award.name)) {
+          log(`Removing award emoji :${award.name}: (id: ${award.id}) from ${project}!${iid}...`);
+          try {
+            await this.gitlab.deleteAwardEmoji(project, iid, award.id);
+            log(`Removed award emoji :${award.name}: from ${project}!${iid}`);
+          } catch (err) {
+            log(`Failed to remove award emoji :${award.name}: from ${project}!${iid}: ${err.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      log(`Error syncing award emojis for ${project}!${iid}: ${err.message}`);
+    } finally {
+      this.syncingAwardEmojis.delete(syncKey);
+    }
+  }
+
+  async handleMrReactionMirroring(event) {
+    if (!this.gitlab?.getAwardEmojis) return;
+    const msgId = String(event.messageId || '');
+    const convId = event.conversationId;
+    if (!msgId || !convId) return;
+
+    let targetMrs = [];
+    for (const [key, entry] of this.watched.entries()) {
+      if (entry.conversationId !== convId) continue;
+      const isOriginal = String(entry.messageId) === msgId;
+      const isCiMsg = entry.mrs?.some((m) => String(m.ciMessageServerId) === msgId);
+      const isRebaseMsg = entry.mrs?.some((m) => String(m.rebaseMessageServerId) === msgId);
+      const isEditedOriginal = entry.editedOriginal && String(entry.messageId) === msgId;
+      if (isOriginal || isCiMsg || isRebaseMsg || isEditedOriginal) {
+        if (entry.mrs && entry.mrs.length > 0) {
+          targetMrs = entry.mrs.map((m) => ({ project: m.project, iid: m.iid }));
+          break;
+        }
+      }
+    }
+
+    const fetchMessageData = async () => {
+      try {
+        const res = await this.getMessage(convId, msgId);
+        if (!res?.ok || !res.value) return null;
+        return res.value;
+      } catch (err) {
+        log(`Failed to fetch message ${msgId} for reaction mirroring: ${err.message}`);
+        return null;
+      }
+    };
+
+    let msgData = await fetchMessageData();
+    if (!msgData) return;
+
+    if (targetMrs.length === 0 && msgData.content) {
+      const fullText = [msgData.content, ...(msgData.links || [])].filter(Boolean).join(' ');
+      targetMrs = this.gitlab.findMrLinks(fullText, { allowQuotes: true });
+    }
+
+    if (targetMrs.length === 0) return;
+
+    // Collect desired emoji names from user's own reactions
+    const selfReactions = (msgData.reactions || []).filter((r) => this.isReactorSelf(r.user));
+    const desiredEmojiNames = new Set();
+    for (const r of selfReactions) {
+      const emojiName = teamsReactionToGitLabEmoji(r.key);
+      if (emojiName) {
+        desiredEmojiNames.add(emojiName);
+      }
+    }
+
+    for (const mr of targetMrs) {
+      await this.syncMrAwardEmojis(mr.project, mr.iid, desiredEmojiNames);
+    }
+  }
+
   async handleMessageUpdate(event) {
     const msgId = String(event.messageId);
     let suggestion = this.pendingSuggestions.get(msgId);
@@ -5943,7 +6156,10 @@ export class MergeRequestWatcher {
       return;
     }
 
-    await this.handleMrReactionApproval(event);
+    await Promise.all([
+      this.handleMrReactionApproval(event),
+      this.handleMrReactionMirroring(event),
+    ]);
   }
 
   async handleIncomingEvent(event) {

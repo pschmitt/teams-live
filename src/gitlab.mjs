@@ -438,12 +438,14 @@ export class GitLabClient {
     if (state !== 'merged' && state !== 'closed') {
       try {
         const approvals = await this.getApprovals(project, iid);
-        approved = !!approvals.approved;
         if (Array.isArray(approvals.approved_by)) {
           approvedBy = approvals.approved_by
             .map((a) => a.user?.name || a.user?.username || a.name || a.username)
             .filter(Boolean);
         }
+        const approvalsRequired =
+          typeof approvals.approvals_required === 'number' ? approvals.approvals_required : 0;
+        approved = approvalsRequired > 0 ? Boolean(approvals.approved) : approvedBy.length > 0;
         status = approved ? 'approved' : 'pending';
       } catch {
         status = 'pending';
@@ -582,5 +584,34 @@ export class GitLabClient {
 
     const created = await this.addGroupHook(targetGroup, hookData);
     return { action: 'created', hook: created };
+  }
+
+  async getCurrentUser() {
+    if (this._currentUser) return this._currentUser;
+    this._currentUser = await this.request('user');
+    return this._currentUser;
+  }
+
+  async getAwardEmojis(project, mrIid) {
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji?per_page=100`
+    );
+  }
+
+  async awardEmoji(project, mrIid, name) {
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }
+    );
+  }
+
+  async deleteAwardEmoji(project, mrIid, awardId) {
+    return await this.request(
+      `projects/${encodeURIComponent(project)}/merge_requests/${mrIid}/award_emoji/${awardId}`,
+      { method: 'DELETE' }
+    );
   }
 }

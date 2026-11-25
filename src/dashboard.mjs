@@ -972,6 +972,15 @@ export function alertDetail(a, ctx) {
 }
 
 /** The numbers at the top: what waits for the user, their own merge requests, their sprint tickets, open alerts. */
+/** The summary tiles: each one is a small card of its own (`st-…`), hidden and moved like the other cards. */
+export const STAT_CARDS = [
+  ['st-review', 'Review requested', 'mrs'],
+  ['st-mine', 'Your merge requests', 'mrs'],
+  ['st-sprint', 'Your sprint tickets', 'sprint'],
+  ['st-alerts', 'Open alerts', 'alerts'],
+];
+
+/** The summary tiles' bodies by card: the number and its line, a button that opens the matching view. */
 export function statsSection(data, ctx) {
   const mrs = data.mrs.items || [];
   const review = mrs.filter((mr) => mrFilters(mr, ctx.username).includes('review')).length;
@@ -982,20 +991,20 @@ export function statsSection(data, ctx) {
   const myTickets = [...(sprint.todo || []), ...(sprint.inProgress || [])].filter((t) => me && lower(t.assignee) === me).length;
   const alerts = data.alerts.data?.alerts || [];
   const urgent = alerts.filter((a) => a.priority === 'P1' || a.priority === 'P2').length;
-  const tile = (view, icon, label, value, sub, tone = '', filter = '') =>
-    `<button type="button" class="stat${tone ? ` stat-${tone}` : ''}" data-view-to="${view}"${filter ? ` data-mrf-set="${filter}"` : ''}><span class="k">${ICONS[icon]}${label}</span><span class="v">${value}</span><span class="s">${sub}</span></button>`;
-  return [
-    tile('mrs', 'mrs', 'Review requested', data.mrs.error ? '–' : review, review === 1 ? 'merge request waits for you' : 'merge requests wait for you', review ? 'accent' : '', 'review'),
-    tile('mrs', 'mrs', 'Your merge requests', data.mrs.error ? '–' : mine.length, `${mineReady} ready to merge`, '', 'mine'),
-    tile('sprint', 'sprint', 'Your sprint tickets', data.sprint.error ? '–' : myTickets, 'to do or in progress'),
-    tile('alerts', 'alerts', 'Open alerts', data.alerts.error ? '–' : alerts.length, urgent ? `${urgent} with P1 or P2` : 'none urgent', urgent ? 'bad' : ''),
-  ].join('');
+  const tile = (view, label, value, sub, tone = '', filter = '') =>
+    `<button type="button" class="stat${tone ? ` stat-${tone}` : ''}" data-view-to="${view}"${filter ? ` data-mrf-set="${filter}"` : ''} aria-label="${escapeHtml(`${label}: ${value}, ${sub}`)}"><span class="v">${value}</span><span class="s">${sub}</span></button>`;
+  return {
+    'st-review': tile('mrs', 'Review requested', data.mrs.error ? '–' : review, review === 1 ? 'merge request waits for you' : 'merge requests wait for you', review ? 'accent' : '', 'review'),
+    'st-mine': tile('mrs', 'Your merge requests', data.mrs.error ? '–' : mine.length, `${mineReady} ready to merge`, '', 'mine'),
+    'st-sprint': tile('sprint', 'Your sprint tickets', data.sprint.error ? '–' : myTickets, 'to do or in progress'),
+    'st-alerts': tile('alerts', 'Open alerts', data.alerts.error ? '–' : alerts.length, urgent ? `${urgent} with P1 or P2` : 'none urgent', urgent ? 'bad' : ''),
+  };
 }
 
 /** All sections as HTML by name: the page and its refreshes are drawn by the same code. */
 export function renderSections(data, ctx) {
   return {
-    stats: statsSection(data, ctx),
+    ...statsSection(data, ctx),
     mrs: mrsSection(data.mrs, ctx),
     sprint: sprintSection(data.sprint, ctx),
     alerts: alertsSection(data.alerts, ctx),
@@ -1114,6 +1123,7 @@ const NAV = [
 // The cards in their default order, with their default width in columns of a 12-column grid. Each visitor can
 // move and resize them; the layout is kept in their browser (localStorage), never on the server.
 const SECTIONS = [
+  ...STAT_CARDS.map(([k, title]) => [k, title]),
   ['mrs', 'Merge requests'],
   ['alerts', 'Alerts'],
   ['oncall', 'On-call'],
@@ -1123,7 +1133,7 @@ const SECTIONS = [
 ];
 
 // The default layout: rows of columns (relative widths) holding stacks of cards. Each visitor can rearrange it.
-export const DEFAULT_LAYOUT = { rows: [{ cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'oncall', 'meetings', 'leave'] }] }] };
+export const DEFAULT_LAYOUT = { rows: [{ cols: STAT_CARDS.map(([k]) => ({ w: 3, cards: [k] })) }, { cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'oncall', 'meetings', 'leave'] }] }] };
 
 /** The body of the dashboard page (inside the common header). */
 export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }) {
@@ -1138,9 +1148,10 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }
   // The merge request card's filters sit in its header, next to the title; the page script counts the rows.
   const MR_CHIPS = `<div class="chips hchips" role="group" aria-label="Filter merge requests">${FILTERS.map(([k, label]) => `<button type="button" data-mrf-to="${k}">${label}<span class="n" data-mrf-n="${k}"></span></button>`).join('')}<span class="chips-sep"></span><button type="button" class="toggle" data-nodraft-toggle aria-pressed="false" title="Hide draft merge requests">Hide drafts<span class="n" data-mrf-n="draft"></span></button></div>`;
   const box = ([k, title]) =>
-    `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}">` +
-    `<header><h2 id="h-${k}">${ICONS[k]}${title}</h2>${k === 'mrs' ? MR_CHIPS : k === 'sprint' ? SPRINT_MINE_TOGGLE : k === 'meetings' ? `<span class="mpills">${MEET_PILLS}</span>` : ''}<span class="tools"><button type="button" class="tool" data-hide title="Hide this card" aria-label="Hide ${title}">${ICONS.hide}</button><button type="button" class="tool grip" data-grip title="Move with the arrow keys" aria-label="Move ${title}: arrow keys">${ICONS.grip}</button></span></header>` +
+    `<section class="box box-${k}${k.startsWith('st-') ? ' box-st' : ''}" data-sec="${k}" aria-labelledby="h-${k}">` +
+    `<header><h2 id="h-${k}">${ICONS[STAT_ICONS[k] || k]}${title}</h2>${k === 'mrs' ? MR_CHIPS : k === 'sprint' ? SPRINT_MINE_TOGGLE : k === 'meetings' ? `<span class="mpills">${MEET_PILLS}</span>` : ''}<span class="tools"><button type="button" class="tool" data-hide title="Hide this card" aria-label="Hide ${title}">${ICONS.hide}</button><button type="button" class="tool grip" data-grip title="Move with the arrow keys" aria-label="Move ${title}: arrow keys">${ICONS.grip}</button></span></header>` +
     `<div class="box-body" data-sec-body="${k}">${s[k]}</div><span class="rs" data-resize title="Drag to resize (height, and the width against the next column); double-click to reset the height" aria-hidden="true"></span></section>`;
+  const STAT_ICONS = Object.fromEntries(STAT_CARDS.map(([k, , icon]) => [k, icon]));
   const byKey = Object.fromEntries(SECTIONS.map((sec) => [sec[0], sec]));
   const layout = DEFAULT_LAYOUT.rows
     .map((r) => `<div class="lrow">${r.cols.map((c) => `<div class="lcol" style="--w:${c.w}">${c.cards.map((k) => box(byKey[k])).join('')}</div>`).join('')}</div>`)
@@ -1149,7 +1160,6 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }
     `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}" data-events="${escapeHtml(JSON.stringify(events))}" data-notify-defaults="${escapeHtml(JSON.stringify(NOTIFY_DEFAULTS))}"${pushKey ? ` data-push-key="${escapeHtml(pushKey)}"` : ''}>` +
     `<nav class="side" aria-label="Dashboard">${nav(false)}<div class="side-foot"><button type="button" class="sync" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><a class="side-gh" href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer" title="teams-live on GitHub" aria-label="teams-live on GitHub">${GITHUB_MARK}</a><button type="button" class="side-toggle" data-collapse aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">${ICONS.collapse}</button></div></nav>` +
     `<div class="dmain"><h1 class="sr">Dashboard</h1><div class="offline-bar" data-offline-bar hidden>${ICONS.offline}<span>You are offline. This is the dashboard as last loaded; approving and moving tickets wait until you are back online.</span></div>` +
-    `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="editbar" data-editbar><span class="hint">${ICONS.edit}Drag a card by its header: onto a card to stack it, to a card's side for a new column, onto a "New row" strip for a row of its own. Drag a card's corner or the column gaps to resize.</span><span class="hidden-bar" data-hidden-bar hidden></span><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-layout-reset disabled>Reset layout</button><button type="button" class="btn btn-sm" data-edit-done>Done</button></div>` +
     `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div>${settingsSection()}</div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
@@ -1314,7 +1324,7 @@ export const DASHBOARD_CSS = [
   '.toast{pointer-events:auto;background:var(--bar);color:var(--bar-text);padding:.6rem .85rem;border-radius:8px;box-shadow:var(--shadow-lg);font-weight:500;max-width:min(360px,calc(100vw - 2rem));animation:tl-toast .4s var(--spring)}.toast.out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform .3s}',
   '@keyframes tl-toast{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:none}}',
   // one section at a time when a section is picked; everything on the overview
-  '.dash:not([data-view=overview]) .stats{display:none}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]):not([data-sec=oncall]),.dash[data-view=meetings] .box:not([data-sec=meetings]):not([data-sec=leave]){display:none}',
+  '.box-st>header{padding:.55rem .95rem 0;border-bottom:0}.box-st>header h2{font-size:.82rem;font-weight:500;color:var(--muted)}.box-st .box-body{display:flex}.box-st .stat{flex:1;border:0;background:none;border-radius:0 0 8px 8px;padding:.2rem .95rem .75rem;animation:none}.box-st .stat:hover{transform:none;box-shadow:none;background:var(--subtle)}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]):not([data-sec=oncall]),.dash[data-view=meetings] .box:not([data-sec=meetings]):not([data-sec=leave]){display:none}',
   '.dash:not([data-view=overview]) .box{height:auto!important}.dash:not([data-view=overview]) .lcol-rs,.dash:not([data-view=overview]) .tools,.dash:not([data-view=overview]) .rs{display:none}',
   // the settings view: one card of rows with switches; it replaces the cards while it is open
   '.settings{display:none;max-width:46rem}.dash[data-view=settings] .settings{display:block}.dash[data-view=settings] .layout,.dash[data-view=settings] .editbar{display:none!important}.set-title{font-size:1.25rem;margin:0 0 1rem}',
@@ -1395,7 +1405,7 @@ var hseen=null;
 function hbar(){var bar=d.querySelector('[data-hidden-bar]');if(!bar)return;var hs=boxes().filter(function(b){return b.classList.contains('is-hidden')}),before=hseen;hseen={};hs.forEach(function(b){hseen[b.getAttribute('data-sec')]=1});bar.textContent='';if(!hs.length){bar.hidden=true;return}bar.hidden=false;var lab=document.createElement('span');lab.textContent='Hidden:';bar.appendChild(lab);hs.forEach(function(b){var t=document.createElement('button');t.type='button';t.setAttribute('data-unhide',b.getAttribute('data-sec'));t.title='Show this card again';var h=b.querySelector('h2');t.textContent=h?h.textContent:b.getAttribute('data-sec');if(before&&!before[b.getAttribute('data-sec')])t.classList.add('wiggle');bar.appendChild(t)})}
 function saveL(){markFill();var l=snap(),custom=JSON.stringify(l.rows)!==JSON.stringify(DEFL&&DEFL.rows)||Object.keys(l.height).length||l.hidden.length;try{if(custom)localStorage.setItem(LK,JSON.stringify(l));else localStorage.removeItem(LK)}catch(e){}hbar();var r=document.querySelector('[data-layout-reset]');if(r)r.disabled=!custom}
 function readL(){try{var l=JSON.parse(localStorage.getItem(LK)||'null');return l&&Array.isArray(l.rows)?l:null}catch(e){return null}}
-function build(rows){var used={},out=[];(rows||[]).forEach(function(r){var re=mk('lrow');(r.cols||[]).forEach(function(c){var ce=mk('lcol'),w=+c.w;ce.style.setProperty('--w',String(w>0&&w<=24?w:4));(c.cards||[]).forEach(function(k){if(BOX[k]&&!used[k]){used[k]=1;ce.appendChild(BOX[k])}});if(ce.children.length)re.appendChild(ce)});if(re.children.length)out.push(re)});Object.keys(BOX).forEach(function(k){if(used[k])return;var re=mk('lrow'),ce=mk('lcol');ce.style.setProperty('--w','12');ce.appendChild(BOX[k]);re.appendChild(ce);out.push(re)});L.textContent='';out.forEach(function(r){L.appendChild(r)});decorate()}
+function build(rows){var used={},out=[];(rows||[]).forEach(function(r){var re=mk('lrow');(r.cols||[]).forEach(function(c){var ce=mk('lcol'),w=+c.w;ce.style.setProperty('--w',String(w>0&&w<=24?w:4));(c.cards||[]).forEach(function(k){if(BOX[k]&&!used[k]){used[k]=1;ce.appendChild(BOX[k])}});if(ce.children.length)re.appendChild(ce)});if(re.children.length)out.push(re)});var st=mk('lrow');Object.keys(BOX).forEach(function(k){if(used[k])return;if(k.indexOf('st-')===0){var sc=mk('lcol');sc.style.setProperty('--w','3');sc.appendChild(BOX[k]);st.appendChild(sc);return}var re=mk('lrow'),ce=mk('lcol');ce.style.setProperty('--w','12');ce.appendChild(BOX[k]);re.appendChild(ce);out.push(re)});if(st.children.length)out.unshift(st);L.textContent='';out.forEach(function(r){L.appendChild(r)});decorate()}
 function applyL(l){if(!L)return;build(l?l.rows:(DEFL&&DEFL.rows));boxes().forEach(function(b){var k=b.getAttribute('data-sec'),h=l&&l.height&&+l.height[k];b.style.height=h>=120&&h<=4000?h+'px':'';b.classList.toggle('is-hidden',!!(l&&Array.isArray(l.hidden)&&l.hidden.indexOf(k)>=0))});hbar();var r=document.querySelector('[data-layout-reset]');if(r)r.disabled=!l}
 applyL(readL());
 function wide(){return window.matchMedia('(min-width:68.01rem)').matches&&d.getAttribute('data-view')==='overview'}

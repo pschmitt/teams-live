@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { DEFAULT_LAYOUT, dashboardBody, alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -218,11 +218,20 @@ test('filters: review requests, own and bot merge requests', () => {
 
 test('the merge request tiles open the list with their filter', () => {
   const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
-  const html = statsSection({ mrs: { items: [normalizeMr(node())] }, sprint: { data: {} }, alerts: { data: { alerts: [] } } }, ctx);
-  assert.match(html, /data-view-to="mrs" data-mrf-set="review"><span class="k">[\s\S]*?Review requested/);
-  assert.match(html, /data-view-to="mrs" data-mrf-set="mine"><span class="k">[\s\S]*?Your merge requests/);
-  assert.match(html, /data-view-to="sprint">/, 'other tiles only switch the view');
+  const tiles = statsSection({ mrs: { items: [normalizeMr(node())] }, sprint: { data: {} }, alerts: { data: { alerts: [] } } }, ctx);
+  assert.deepEqual(Object.keys(tiles), ['st-review', 'st-mine', 'st-sprint', 'st-alerts'], 'one card per tile');
+  assert.match(tiles['st-review'], /data-view-to="mrs" data-mrf-set="review" aria-label="Review requested: 1, merge request waits for you"><span class="v">1<\/span>/);
+  assert.match(tiles['st-mine'], /data-view-to="mrs" data-mrf-set="mine"/);
+  assert.match(tiles['st-sprint'], /data-view-to="sprint" aria-label/, 'other tiles only switch the view');
   assert.match(dashboardScript('/dashboard'), /getAttribute\('data-mrf-set'\)/);
+});
+
+test('the summary tiles are cards: hideable and movable, on top by default, kept together when a saved layout lacks them', () => {
+  assert.deepEqual(DEFAULT_LAYOUT.rows[0].cols.map((c) => c.cards[0]), ['st-review', 'st-mine', 'st-sprint', 'st-alerts']);
+  const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
+  assert.match(body, /<section class="box box-st-review box-st" data-sec="st-review"[^>]*><header><h2 id="h-st-review"><svg[\s\S]*?Review requested<\/h2>[\s\S]*?data-hide[\s\S]*?data-grip/);
+  assert.doesNotMatch(body, /class="stats"/);
+  assert.match(dashboardScript('/dashboard'), /if\(k\.indexOf\('st-'\)===0\)\{[^}]*--w','3'/, 'missing tiles share one row');
 });
 
 test('detail panels: the external link is a row of the panel, merge requests show status and repository', () => {

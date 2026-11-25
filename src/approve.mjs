@@ -520,8 +520,16 @@ const actorBind = (actor) => `user=${actor.user};cred=${actor.cred}`;
 
 const UNVERIFIED_ACCOUNT = 'The GitLab account that would act could not be verified. Nothing was sent. Reload the page to try again.';
 
-/** A `Server-Timing` header value from phase durations in milliseconds (visible in the browser's network panel). */
-const serverTiming = (phases) => Object.entries(phases).map(([k, ms]) => `${k};dur=${Math.max(0, ms).toFixed(1)}`).join(', ');
+/**
+ * A `Server-Timing` header value from phase durations in milliseconds (visible in the browser's network panel).
+ * A panel that took more than a second is logged with its phases.
+ */
+const serverTiming = (phases, what = 'detail panel') => {
+  const value = Object.entries(phases).map(([k, ms]) => `${k};dur=${Math.max(0, ms).toFixed(1)}`).join(', ');
+  const total = Object.values(phases).reduce((a, b) => a + Math.max(0, b), 0);
+  if (total > 1000) log(`Slow dashboard ${what} (${Math.round(total)} ms): ${value}`);
+  return value;
+};
 
 const kindOf = (record) => (ACTIONS.includes(record?.action) ? record.action : 'approve');
 
@@ -728,6 +736,10 @@ export class ApproveServer {
     this.pushSubs = new Map();
     this.loadPush();
     this.dashData = new Map();
+    // The last dashboard data that finished loading, per visitor: what detail panels are checked against.
+    this.dashDataDone = new Map();
+    // The last settled answer of each slow source (HR WORKS): the page never waits for those.
+    this.dashSourceSettled = new Map();
     this.dashSourceCache = new Map();
     this.dashboardScript = dashboardScript(this.dashPath);
     this.dashboardWorker = serviceWorkerScript(this.dashPath);
@@ -1491,6 +1503,7 @@ export class ApproveServer {
           log(`Dashboard session of ${s.user.username} ended: ${err.message}`);
           this.dashSessions.delete(key);
           this.dashData.delete(key);
+          this.dashDataDone.delete(key);
           this.dropPushSubs((sub) => sub.session === key);
           return false;
         })
@@ -1813,6 +1826,7 @@ export class ApproveServer {
       if (session && parsed.form && this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) {
         this.dashSessions.delete(sha256Hex(session.sid));
         this.dashData.delete(sha256Hex(session.sid));
+        this.dashDataDone.delete(sha256Hex(session.sid));
         this.saveDashSessions();
         this.dropPushSubs((sub) => sub.session === sha256Hex(session.sid));
       }
@@ -1891,7 +1905,17 @@ export class ApproveServer {
   }
 
   /** One source the bot reads (sprint, alerts, meetings), shared by every visitor for a minute. */
-  dashSource(name) {
+  /**
+   * A source the dashboard never waits for (HR WORKS answers in tens of seconds, or not at all): its last settled
+   * answer right away, `{pending: true}` before the first one. A refresh runs in the background.
+   */
+  dashSourceNow(name) {
+    const read = this.dashSource(name, { retryMs: 120_000 });
+    read.then((r) => this.dashSourceSettled.set(name, r)).catch(() => {});
+    return Promise.resolve(this.dashSourceSettled.get(name) || { pending: true });
+  }
+
+  dashSource(name, { retryMs = 10_000 } = {}) {
     const fn = this.dashboard.sources?.[name];
     if (typeof fn !== 'function') return Promise.resolve({ error: `${DASH_SOURCES[name]} is not configured.` });
     const now = this.now();
@@ -1902,7 +1926,7 @@ export class ApproveServer {
       .then((data) => ({ data }))
       .catch((err) => {
         log(`Dashboard could not read ${name}: ${err.message}`);
-        if (this.dashSourceCache.get(name) === entry) this.dashSourceCache.set(name, { ...entry, at: now - DASH_SOURCE_CACHE_MS + 10_000 });
+        if (this.dashSourceCache.get(name) === entry) this.dashSourceCache.set(name, { ...entry, at: now - DASH_SOURCE_CACHE_MS + retryMs });
         return hit?.ok ? hit.promise : { error: `Could not read ${DASH_SOURCES[name]} right now.` };
       });
     const entry = { at: now, promise, ok: false };
@@ -2026,7 +2050,7 @@ export class ApproveServer {
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars };
-      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }) });
+      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, kind) });
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2039,7 +2063,11 @@ export class ApproveServer {
    * Only an item the known data does not have (it may have just appeared) waits for fresh data.
    */
   async dashboardDataFor(session, listed) {
-    const hit = this.dashData.get(session.key || sha256Hex(session.sid));
+    const key = session.key || sha256Hex(session.sid);
+    // The last data that finished loading first: a refresh in flight must not hold the panel up.
+    const done = this.dashDataDone.get(key);
+    if (done && listed(done)) return done;
+    const hit = this.dashData.get(key);
     if (hit) {
       const data = await hit.promise.catch(() => null);
       if (data && listed(data)) return data;
@@ -2098,7 +2126,7 @@ export class ApproveServer {
       await this.warmBriefly([name]);
       const avatars = {};
       try { const u = this.avatarOf?.(name); if (u) avatars[name] = u; } catch { /* initials */ }
-      return this.json(res, 200, { ...personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }), pending }, { 'Server-Timing': serverTiming({ check: t1 - t0, lookup: t2 - t1, photos: performance.now() - t2 }) });
+      return this.json(res, 200, { ...personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }), pending }, { 'Server-Timing': serverTiming({ check: t1 - t0, lookup: t2 - t1, photos: performance.now() - t2 }, 'person') });
     } catch (err) {
       log(`Dashboard could not look up a person for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2129,7 +2157,7 @@ export class ApproveServer {
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost, merge: this.mergeEnabled };
-      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }) });
+      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, 'merge request') });
     } catch (err) {
       log(`Dashboard could not read ${ref} for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2154,12 +2182,12 @@ export class ApproveServer {
         this.dashSource('sprint'),
         this.dashSource('alerts'),
         this.dashSource('meetings'),
-        // HR WORKS can take a minute on a cold cache: the page does not wait for it, the next refresh shows it.
-        this.dashboard.sources?.leave
-          ? Promise.race([this.dashSource('leave'), new Promise((resolve) => { const t = setTimeout(() => resolve({ pending: true }), 8_000); t.unref?.(); })])
-          : Promise.resolve({ off: true }),
+        // HR WORKS can take a minute, or fail after one: the page never waits for it, a later refresh shows it.
+        this.dashboard.sources?.leave ? this.dashSourceNow('leave') : Promise.resolve({ off: true }),
       ]);
-      return { at: this.now(), mrs, sprint, alerts, meetings, leave };
+      const data = { at: this.now(), mrs, sprint, alerts, meetings, leave };
+      this.dashDataDone.set(key, data);
+      return data;
     })();
     const entry = { at: now, promise };
     this.dashData.set(key, entry);

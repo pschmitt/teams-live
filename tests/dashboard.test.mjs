@@ -583,6 +583,20 @@ test('detail panels do not wait for the whole dashboard: the last known data is 
   });
 });
 
+test('a slow or failing HR WORKS never holds up the dashboard: the Leave card shows its last answer or that it is loading', async () => {
+  let calls = 0;
+  await withDashboard({ sources: { leave: () => { calls++; return new Promise(() => {}); } } }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const started = Date.now();
+    const page = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    const data = await (await fetch(`${base}/approve/dashboard/data`, { headers: { Cookie: cookie } })).json();
+    assert.ok(Date.now() - started < 2_000, 'no wait for HR WORKS');
+    assert.match(page, /Reading HR WORKS/);
+    assert.match(data.sections.leave, /Reading HR WORKS/);
+    assert.equal(calls, 1, 'one read in flight, not one per refresh');
+  });
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

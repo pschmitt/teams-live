@@ -682,7 +682,10 @@ test('the Team leave card: a row per team member over four weeks of weekdays, ab
   ] } };
   const html = teamLeaveSection(leave, ctx);
   assert.equal((html.match(/class="tl-d/g) || []).length, 20, 'Monday to Friday for four weeks');
-  assert.match(html, /<span class="tl-d wk" title="Monday 23 November"><small>Nov<\/small>23<\/span>/, 'starts on this week\'s Monday');
+  assert.match(html, /<span class="tl-d" title="Monday 23 November"><small>Nov<\/small>23<\/span>/, 'starts on this week\'s Monday');
+  assert.equal((html.match(/<span class="tl-gap"><\/span>/g) || []).length, 3 * 4, 'a spacer between the weeks, in the header and each row');
+  assert.doesNotMatch(html, /class="[^"]*\bwk\b/, 'no margin that would make Mondays narrower');
+  assert.match(html, /style="--day-cols:minmax\(1\.35rem,1fr\)( minmax\(1\.35rem,1fr\)){4} 4px minmax/);
   assert.equal((html.match(/<div class="tl-row[^"]*" data-key="tl:/g) || []).length, 3, 'every team member');
   assert.match(html, /<div class="tl-row tl-here" data-key="tl:Alice Example"><span class="tl-n"><button[^>]*data-person="Alice Example"/, 'present people are rows too');
   assert.equal((html.match(/tl-c ab ab-leave/g) || []).length, 4, 'Erin: Tuesday to Friday');
@@ -715,7 +718,7 @@ test('drafts are hidden by default; the Drafts button shows them and is remember
 
 test('mobile: Team leave keeps the people pinned while scrolling; tickets move only after a long press', () => {
   assert.match(DASHBOARD_CSS, /\.tl-n\{[^}]*position:sticky;left:0/, 'the people column stays put');
-  assert.match(DASHBOARD_CSS, /@media \(max-width:40rem\)\{\.tl-grid\{grid-template-columns:2rem/, 'only the photos on a narrow screen');
+  assert.match(DASHBOARD_CSS, /@media \(max-width:40rem\)\{\.tl-grid\{--first:2rem\}/, 'only the photos on a narrow screen');
   assert.match(DASHBOARD_CSS, /@media \(hover:hover\) and \(pointer:fine\)\{\.tk\[data-issue\]\{touch-action:none\}\}/, 'touch scrolls over tickets');
   const script = dashboardScript('/dashboard');
   assert.match(script, /if\(tk\.touch\)\{var me=tk;me\.timer=setTimeout\([\s\S]*?,450\)/, 'a touch arms the ticket after a long press');
@@ -776,6 +779,19 @@ test('the sidebar animates like the other apps: a hop for the current view, a po
   assert.match(DASHBOARD_CSS, /@keyframes tl-nav-hop\{0%\{transform:translateY\(0\) scale\(\.85\)\}45%\{transform:translateY\(-4px\) scale\(1\.12\)\}/);
   assert.match(DASHBOARD_CSS, /\.side \.badge:not\(\[hidden\]\)[^{]*\{animation:tl-badge-pop/);
   assert.match(DASHBOARD_CSS, /@media \(prefers-reduced-motion:reduce\)\{\.side button\[data-view-to\][^}]*\{transition:none!important;animation:none!important/);
+});
+
+test('every view has its own layout (falling back to the overview\'s) and can be edited; Meetings is now Calendar', () => {
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /function lk\(v\)\{v=v\|\|d\.getAttribute\('data-view'\)\|\|'overview';return v==='overview'\?LK:LK\+':'\+v\}/, 'one saved layout per view, the overview keeps its key');
+  assert.match(script, /var base=readOwn\('overview'\);return base\?\{rows:base\.rows,height:\{\},hidden:base\.hidden\|\|\[\],inherited:true\}/, 'a view without its own starts from the overview');
+  assert.match(script, /function view\(v\)\{d\.setAttribute\('data-view',v\);if\(L&&v!=='settings'&&L\.getAttribute\('data-layout-of'\)!==v\)applyL\(readL\(v\)\)/);
+  assert.match(script, /if\(on&&d\.getAttribute\('data-view'\)==='settings'\)view\('overview'\)/, 'editing stays on the view');
+  assert.doesNotMatch(DASHBOARD_CSS, /\.dash:not\(\[data-view=overview\]\) \.tools/);
+  const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
+  assert.match(body, /data-view-to="meetings"[^>]*>[\s\S]*?<span>Calendar<\/span>/);
+  assert.match(body, /<h2 id="h-meetings">[\s\S]*?Calendar<\/h2>/);
+  assert.doesNotMatch(body, />Meetings</);
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

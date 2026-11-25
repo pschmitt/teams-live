@@ -704,6 +704,15 @@ test('after a restart the Leave card shows saved HR WORKS data at once, not "Rea
   });
 });
 
+test('drafts are hidden by default; the Drafts button shows them and is remembered', () => {
+  const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
+  assert.match(body, /<div class="dash" id="dash" data-view="overview" data-nodraft="1"/, 'hidden from the first paint');
+  assert.match(body, /data-nodraft-toggle aria-pressed="false" title="Show draft merge requests">Drafts<span/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /d\.setAttribute\('data-nodraft',localStorage\.getItem\('tl-drafts'\)==='1'\?'0':'1'\)/);
+  assert.match(script, /aria-pressed',String\(d\.getAttribute\('data-nodraft'\)!=='1'\)/, 'pressed means shown');
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

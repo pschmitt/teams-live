@@ -1399,7 +1399,16 @@ export class ApproveServer {
     const key = params.get('state') || '';
     const state = this.oauthStates.get(key);
     this.oauthStates.delete(key);
-    if (!state || state.exp <= this.now()) return fail('The sign-in expired or was not started here.');
+    if (!state || state.exp <= this.now()) {
+      // Back (or Forward) through GitLab's consent page replays a dashboard sign-in whose state is used up. Go on to
+      // the dashboard from this origin, so the SameSite=Strict cookie is sent: the dashboard when still signed in,
+      // the sign-in page otherwise. No session is made and the code is not redeemed; the target is fixed.
+      if (this.dashboard && key.startsWith('d.')) {
+        const next = escapeHtml(this.dashPath);
+        return this.send(res, 200, this.page('Dashboard', `<meta http-equiv="refresh" content="0;url=${next}"><p class="links"><a class="btn" href="${next}">Open the dashboard</a></p>`, { kind: 'generic' }));
+      }
+      return fail('The sign-in expired or was not started here.');
+    }
     if (state.dash) return this.dashboardCallback(res, params, state);
     const session = this.sessions.get(state.sid);
     const code = params.get('code');
@@ -1809,7 +1818,8 @@ export class ApproveServer {
     const now = this.now();
     for (const [k, v] of this.oauthStates) if (v.exp <= now) this.oauthStates.delete(k);
     while (this.oauthStates.size >= MAX_OAUTH_STATES) this.oauthStates.delete(this.oauthStates.keys().next().value);
-    const nonce = crypto.randomBytes(32).toString('base64url');
+    // `d.` marks a dashboard sign-in, so a replayed one (Back through GitLab's consent page) can be told apart.
+    const nonce = `d.${crypto.randomBytes(32).toString('base64url')}`;
     const verifier = crypto.randomBytes(48).toString('base64url');
     this.oauthStates.set(nonce, { dash: true, verifier, exp: now + OAUTH_STATE_TTL_MS });
     const url = new URL(`https://${this.gitlabHost}/oauth/authorize`);

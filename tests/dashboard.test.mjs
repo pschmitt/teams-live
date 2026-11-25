@@ -592,3 +592,29 @@ test('push: a browser subscribes with its settings, gets only what is new and as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a replayed dashboard sign-in (Back through the GitLab consent page) continues to the dashboard', async () => {
+  await withDashboard({}, async ({ base, seen }) => {
+    const { location, cookie } = await signIn(base);
+    const state = location.searchParams.get('state');
+    assert.match(state, /^d\./, 'dashboard sign-ins are marked');
+    const tokens = () => seen.filter((c) => c.url.endsWith('/oauth/token')).length;
+    const before = tokens();
+    const again = await fetch(`${base}/approve/oauth/callback?code=othercode&state=${encodeURIComponent(state)}`, { headers: { Cookie: cookie } });
+    assert.equal(again.status, 200);
+    assert.match(await again.text(), /http-equiv="refresh" content="0;url=\/approve\/dashboard"/);
+    assert.equal(again.headers.get('set-cookie'), null, 'no session from a replay');
+    assert.equal(tokens(), before, 'the replayed code is not redeemed');
+    const unknown = await fetch(`${base}/approve/oauth/callback?code=x&state=unknown`);
+    assert.equal(unknown.status, 400, 'any other unknown sign-in still fails');
+    assert.match(await unknown.text(), /expired or was not started here/);
+  });
+});
+
+test('every view is an address: views, the merge request filter and the detail panel go into the history', () => {
+  const script = dashboardScript('/dashboard');
+  assert.ok(script.includes('(overview|mrs|sprint|alerts|meetings|settings)'), 'all views, the settings too');
+  assert.match(script, /history\.pushState/);
+  assert.match(script, /addEventListener\('popstate',apply\)/);
+  for (const k of ["'mr'", "'issue'", "'alert'", "q.set('f'"]) assert.ok(script.includes(k), k);
+});

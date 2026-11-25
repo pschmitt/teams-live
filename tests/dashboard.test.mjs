@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, webLink } from '../src/dashboard.mjs';
+import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -205,6 +205,15 @@ test('filters: review requests, own and bot merge requests', () => {
   assert.ok(isBotMr(normalizeMr(node({ author: { username: 'renovate-bot', name: 'Renovate', bot: true } }))));
   assert.equal(defaultFilter([mr], 'alice'), 'review');
   assert.equal(defaultFilter([mr], 'zoe'), 'human');
+});
+
+test('the merge request tiles open the list with their filter', () => {
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const html = statsSection({ mrs: { items: [normalizeMr(node())] }, sprint: { data: {} }, alerts: { data: { alerts: [] } } }, ctx);
+  assert.match(html, /data-view-to="mrs" data-mrf-set="review"><span class="k">[\s\S]*?Review requested/);
+  assert.match(html, /data-view-to="mrs" data-mrf-set="mine"><span class="k">[\s\S]*?Your merge requests/);
+  assert.match(html, /data-view-to="sprint">/, 'other tiles only switch the view');
+  assert.match(dashboardScript('/dashboard'), /getAttribute\('data-mrf-set'\)/);
 });
 
 test('sections: links stay on their hosts, failures read plainly', () => {

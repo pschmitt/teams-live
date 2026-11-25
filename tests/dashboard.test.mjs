@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, diffsSection, issueDetail, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -527,6 +527,25 @@ test('the On-call card: who is on duty, and the visitor\'s own current or next s
 test('the sprint card has no summary bar any more; alerts and on-call, meetings and leave are separate cards', () => {
   const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
   assert.doesNotMatch(sprintSection({ data: { todo: [{ key: 'ABC-1', summary: 's', assignee: 'Alice' }] } }, ctx), /sbar|slegend/);
+});
+
+test('meetings: Today and Tomorrow pills filter the list; every meeting of both days is listed', () => {
+  const now = Date.parse('2026-11-25T08:00:00Z');
+  const at = (day, h) => new Date(Date.parse(`2026-11-${day}T00:00:00Z`) + h * 3_600_000).toISOString();
+  const data = [];
+  for (let h = 9; h < 15; h++) data.push({ subject: `Today ${h}`, startTime: at(25, h), endTime: at(25, h + 0.5) });
+  for (let h = 9; h < 13; h++) data.push({ subject: `Tomorrow ${h}`, startTime: at(26, h), endTime: at(26, h + 0.5) });
+  data.push({ subject: 'Later', startTime: at(28, 9), endTime: at(28, 10) });
+  const html = meetingsSection({ data }, { avatars: {}, now, timeZone: 'UTC' });
+  assert.equal((html.match(/class="mt[^"]*" data-md="today"/g) || []).length, 6);
+  assert.equal((html.match(/class="mt[^"]*" data-md="tomorrow"/g) || []).length, 4, 'all of tomorrow, beyond the first eight');
+  assert.doesNotMatch(html, /Later/, 'later days only up to eight in all');
+  assert.match(html, /<li class="day" data-md="today">Today<\/li>/);
+  assert.match(html, /<li class="none only-tomorrow">No meetings tomorrow\.<\/li>/);
+  assert.match(DASHBOARD_CSS, /\.dash\[data-mtf=today\] \.mlist \[data-md\]:not\(\[data-md=today\]\)/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /var mf=e\.target\.closest\('\[data-mtf-to\]'\);if\(mf\)\{mtf\(/);
+  assert.match(script, /localStorage\.setItem\('tl-mtf',on\)/);
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

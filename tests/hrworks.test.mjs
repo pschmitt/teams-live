@@ -449,3 +449,27 @@ test('the HR WORKS calendars survive a restart through the cache file, and one r
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('HR WORKS: the team calendar is refreshed hourly, the company every six hours; a failed or empty read keeps serving the saved one', async () => {
+  const client = new HRWorksClient({ url: 'https://ha.example.com', token: 't' });
+  assert.equal(client.cacheTtlMs, 60 * 60 * 1000);
+  assert.equal(client.companyTtlMs, 6 * 60 * 60 * 1000);
+  const good = { employees: [{ id: 'e1', rawName: 'Example, Bob', displayName: 'Bob Example' }], absences: [] };
+  let calls = 0;
+  let answer = good;
+  client.callService = async () => { calls++; return answer; };
+  assert.equal(await client.getTeamAbsences(), good);
+  assert.equal(await client.getTeamAbsences(), good);
+  assert.equal(calls, 1, 'fresh: no second read');
+  client.cache.get('team:current').expiresAt = 0;
+  answer = { employees: [], absences: [] };
+  assert.equal(await client.getTeamAbsences(), good, 'an empty answer does not replace the saved calendar');
+  assert.equal(calls, 2);
+  assert.equal(client.cache.get('team:current').data, good);
+  answer = null;
+  assert.equal(await client.getTeamAbsences(), good, 'no new read right after a failure');
+  assert.equal(calls, 2);
+  client.failedAt.set('team:current', Date.now() - 16 * 60 * 1000);
+  assert.equal(await client.getTeamAbsences(), good, 'a failed retry still serves the saved calendar');
+  assert.equal(calls, 3);
+});

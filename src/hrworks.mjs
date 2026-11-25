@@ -40,8 +40,14 @@ export class HRWorksClient {
     this.onSuccess = config.onSuccess || null;
     this.lastError = null;
     this.cache = new Map();
-    this.cacheTtlMs = 10 * 60 * 1000; // 10 minutes cache for team/single-OU
-    this.companyTtlMs = 30 * 60 * 1000; // 30 minutes cache for full company prefetch
+    // Every read drives a browser through the portal (slow, at times failing). The last good calendar is always
+    // served (and saved across restarts, cache_file); the background prefetch refreshes the team calendar every
+    // hour and the whole company (70 units, the heavy one) every six hours.
+    this.cacheTtlMs = Number(config.cache_ttl_ms) || 60 * 60 * 1000; // team/single-OU
+    this.companyTtlMs = Number(config.company_ttl_ms) || 6 * 60 * 60 * 1000; // full company prefetch
+    // After a failed read the saved calendar is served and the read is not tried again for a while.
+    this.retryAfterFailureMs = Number(config.retry_after_failure_ms) || 15 * 60 * 1000;
+    this.failedAt = new Map();
     // Each organizational unit costs the HR WORKS integration a page load, and a
     // request that runs past the reverse proxy's read timeout (60s) fails as a
     // 504, so keep batches small.
@@ -220,6 +226,8 @@ export class HRWorksClient {
     }
     const running = this.inflight.get(cacheKey);
     if (running) return running;
+    // A read failed a moment ago: the saved calendar (however old) until the retry is due.
+    if (cached?.data && Date.now() - (this.failedAt.get(cacheKey) || 0) < this.retryAfterFailureMs) return cached.data;
     const read = this.readTeamAbsences(cacheKey, { organizationalUnit, date }).finally(() => this.inflight.delete(cacheKey));
     this.inflight.set(cacheKey, read);
     return read;
@@ -232,13 +240,22 @@ export class HRWorksClient {
     if (date) payload.date = date;
 
     const data = await this.callService('get_team_absences', payload, { timeoutMs: 90000 });
-    if (data && Array.isArray(data.employees)) {
+    // A calendar without anyone in it is a failed read (the portal or its browser misbehaved), never "an empty
+    // team": it does not replace the saved one.
+    if (data && Array.isArray(data.employees) && data.employees.length > 0) {
+      this.failedAt.delete(cacheKey);
       this.cache.set(cacheKey, {
         data,
         expiresAt: Date.now() + this.cacheTtlMs,
       });
       this.mergeIntoCompanyCache(data);
       return data;
+    }
+    this.failedAt.set(cacheKey, Date.now());
+    const saved = this.cache.get(cacheKey);
+    if (saved?.data) {
+      log.warn(`HR WORKS ${cacheKey} read failed; serving the saved calendar`);
+      return saved.data;
     }
     return null;
   }

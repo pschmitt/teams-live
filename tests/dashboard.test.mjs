@@ -454,6 +454,34 @@ test('merge request details: only listed ones, read with the visitor\'s token, w
   });
 });
 
+test('an approval drops the cached detail panel, so it no longer shows the old count', async () => {
+  await withDashboard({ nodes: [node({ approvalsRequired: 1, approvalsLeft: 1, approvedBy: { nodes: [] } })] }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const mock = globalThis.fetch;
+    let approved = false;
+    globalThis.fetch = async (url, options = {}) => {
+      const u = String(url);
+      if (u.endsWith('/merge_requests/7/approvals')) {
+        return Response.json(approved
+          ? { approved: true, approvals_required: 1, approvals_left: 0, approved_by: [{ user: { id: 9, username: 'alice', name: 'Alice Example' } }], user_has_approved: true, user_can_approve: true }
+          : { approved: false, approvals_required: 1, approvals_left: 1, approved_by: [], user_can_approve: true });
+      }
+      const res = await mock(url, options);
+      if (u.endsWith('/merge_requests/7/approve') && options.method === 'POST') approved = true;
+      return res;
+    };
+    const detail = async () => (await (await fetch(`${base}/approve/dashboard/mr?ref=${encodeURIComponent('group/app!7')}`, { headers: { Cookie: cookie } })).json()).html;
+    assert.match(await detail(), /alt="0 of 1 approvals"/, 'cached before the approval');
+    const ok = await fetch(`${base}/approve/dashboard/approve`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: ORIGIN }, body: new URLSearchParams({ csrf, project: 'group/app', iid: '7', sha: SHA }).toString() });
+    assert.equal((await ok.json()).status, 'approved');
+    const after = await detail();
+    assert.match(after, /alt="Approved"/);
+    assert.doesNotMatch(after, /0 of 1/);
+  });
+});
+
 test('GitLab descriptions: Markdown becomes HTML, Renovate HTML is dropped, links are http(s) only', () => {
   const html = markdownToHtml('## Release notes\n<details><summary>v4.25.0</summary>\n\n- **fix** a [bug](https://example.com/b) in `x`\n  - nested\n1. one\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\n<script>no</script>\n```\n</details>\n<!-- hidden -->\n[bad](javascript:alert(1)) <img src=x onerror=alert(1)> <b>bold</b>');
   assert.match(html, /<h4>Release notes<\/h4>/);

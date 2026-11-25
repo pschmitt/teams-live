@@ -2147,6 +2147,8 @@ export class ApproveServer {
         return ['failed', `GitLab rejected the approval of ${ref}. Nothing was approved.`];
       });
       this.dashData.delete(sha256Hex(session.sid));
+      // The detail panel of this merge request was cached before the approval ("0 of 1 Approvals").
+      this.dashSourceCache.delete(`mr:${sha256Hex(session.sid)}:${ref}`);
       return answer(outcome[0], outcome[1]);
     } catch {
       return answer('unknown', `The outcome for ${ref} is unknown. Check it in GitLab before retrying.`);

@@ -141,6 +141,7 @@ test('the page shows the merge requests read as the visitor, escaped, with the b
     assert.match(html, /data-f="human review"/);
     assert.match(html, /data-mrf="review"/, 'what waits for the visitor is shown first');
     assert.ok(html.includes('Rotate &lt;keys&gt;'));
+    assert.match(html, /<li class="tk mine"/, 'the visitor’s own ticket is marked');
     assert.match(html, /Could not read OpsGenie right now/, 'a failing source is named, not its error');
     assert.ok(!html.includes('boom'));
     assert.ok(!html.includes('javascript:'), 'only http(s) links');

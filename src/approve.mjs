@@ -1477,8 +1477,12 @@ export class ApproveServer {
 
   // --- dashboard ---
 
+  // Lax, not Strict: an installed dashboard app opened from the home screen (and a link from Teams or mail) is a
+  // top-level navigation without a same-site origin, and some mobile browsers then leave a Strict cookie out, so
+  // the app showed the sign-in page with a valid session. Lax still keeps it off cross-site POSTs and subrequests;
+  // every write also checks the Origin and a CSRF token.
   dashCookie(value, maxAge) {
-    return `${DASH_COOKIE}=${value}; Path=${this.dashPath}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
+    return `${DASH_COOKIE}=${value}; Path=${this.dashPath}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${this.secure ? '; Secure' : ''}`;
   }
 
   /** The dashboard session of a request: `{sid, user, accessToken}` or null. */

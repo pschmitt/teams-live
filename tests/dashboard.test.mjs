@@ -116,7 +116,7 @@ test('sign-in uses PKCE without a card link and opens a session for a group memb
     assert.equal(location.searchParams.get('redirect_uri'), `${ORIGIN}/approve/oauth/callback`);
     assert.equal(back.status, 200);
     assert.ok(cookie, 'a dashboard session cookie');
-    assert.match(back.headers.get('set-cookie'), /tl_dash=[^;]+; Path=\/approve\/dashboard; Max-Age=\d+; HttpOnly; SameSite=Strict; Secure/);
+    assert.match(back.headers.get('set-cookie'), /tl_dash=[^;]+; Path=\/approve\/dashboard; Max-Age=\d+; HttpOnly; SameSite=Lax; Secure/);
     const member = seen.find((c) => c.url.includes('/members/all/9'));
     assert.equal(member.options.headers.Authorization, 'Bearer tok', 'membership is asked with the visitor’s own token');
   });
@@ -717,7 +717,7 @@ test('drafts are hidden by default; the Drafts button shows them and is remember
 });
 
 test('mobile: Team leave keeps the people pinned while scrolling; tickets move only after a long press', () => {
-  assert.match(DASHBOARD_CSS, /\.tl-n\{[^}]*position:sticky;left:0/, 'the people column stays put');
+  assert.match(DASHBOARD_CSS, /\.tl-n\{[^}]*position:sticky;left:0;z-index:1;background:var\(--panel\);box-shadow:-1rem 0 0 var\(--panel\)/, 'the people column stays put and covers the padding to its left');
   assert.match(DASHBOARD_CSS, /@media \(max-width:40rem\)\{\.tl-grid\{--first:2rem\}/, 'only the photos on a narrow screen');
   assert.match(DASHBOARD_CSS, /@media \(hover:hover\) and \(pointer:fine\)\{\.tk\[data-issue\]\{touch-action:none\}\}/, 'touch scrolls over tickets');
   const script = dashboardScript('/dashboard');

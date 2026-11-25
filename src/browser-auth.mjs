@@ -17,6 +17,19 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     headers['X-Browser-Cluster-Secret'] = secret;
   }
 
+  // Placement refuses conflicting copies rather than silently using a wrong node.
+  let placement = null;
+  if (bdConfig.node_group) {
+    const res = await fetch(`${url}/api/mesh/placement`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: profileName, group: bdConfig.node_group, engine: 'chromium', create: true }),
+      signal: AbortSignal.timeout(180000),
+    });
+    if (!res.ok) throw new Error(`Browser placement failed: HTTP ${res.status}`);
+    placement = await res.json();
+  }
+
   // 1. Fetch overview
   const ovRes = await fetch(`${url}/api/mesh/overview`, {
     headers,
@@ -28,7 +41,9 @@ export async function acquireFromBrowserDaemon(bdConfig) {
   const ov = await ovRes.json();
   const localNode = ov.local_node?.name;
 
-  const prof = (ov.profiles || []).find(p => p.name === profileName);
+  const matches = (ov.profiles || []).filter(p => p.name === profileName && (!placement || p.node_name === placement.node));
+  if (matches.length > 1) throw new Error(`Profile "${profileName}" is ambiguous in browser-daemon`);
+  const prof = matches[0];
   if (!prof) {
     throw new Error(`Profile "${profileName}" not found in browser-daemon`);
   }

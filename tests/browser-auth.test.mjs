@@ -151,6 +151,7 @@ test('reaches a profile on another node through the peer proxy and closes the se
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(input);
     calls.push({ url, method: options.method || 'GET' });
+    if (url.pathname === '/api/mesh/placement') return { ok: true, json: async () => ({ node: 'remote' }) };
     if (url.pathname === '/api/mesh/overview') {
       return { ok: true, json: async () => ({
         local_node: { name: 'local' },
@@ -174,14 +175,31 @@ test('reaches a profile on another node through the peer proxy and closes the se
   };
 
   await assert.rejects(
-    acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'ha-msteams' }),
+    acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'ha-msteams', node_group: 'cloud' }),
     /Auth export failed/,
   );
 
+  assert.equal(calls[0].url.pathname, '/api/mesh/placement');
   assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/sessions' && c.method === 'POST'));
   assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/pages/owned-tab/auth'));
   assert.ok(calls.some((c) => c.url.pathname === '/api/peers/remote/sessions/new-session' && c.method === 'DELETE'));
   // The whole session goes, so no blank tab is kept and no tab closed one by one.
   assert.ok(!calls.some((c) => c.url.searchParams.get('url') === 'about:blank'));
   assert.ok(!calls.some((c) => c.url.pathname.includes('/remote/api/')));
+});
+
+test('requires cloud placement before accessing the profile', async () => {
+  const calls = [];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    calls.push({ path: url.pathname, body: options.body && JSON.parse(options.body) });
+    if (url.pathname === '/api/mesh/placement') return { ok: false, status: 409 };
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+
+  await assert.rejects(
+    acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work', node_group: 'cloud' }),
+    /Browser placement failed: HTTP 409/,
+  );
+  assert.deepEqual(calls, [{ path: '/api/mesh/placement', body: { profile: 'work', group: 'cloud', engine: 'chromium', create: true } }]);
 });

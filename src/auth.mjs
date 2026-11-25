@@ -28,6 +28,9 @@ export class AuthManager {
     if (config.browser_daemon?.profile) {
       process.env.TEAMS_MCP_BROWSER_DAEMON_PROFILE = config.browser_daemon.profile;
     }
+    if (config.browser_daemon?.node_group) {
+      process.env.TEAMS_MCP_BROWSER_DAEMON_NODE_GROUP = config.browser_daemon.node_group;
+    }
     if (config.browser_daemon?.secret_file) {
       process.env.BROWSER_DAEMON_SECRET_FILE = config.browser_daemon.secret_file;
     }

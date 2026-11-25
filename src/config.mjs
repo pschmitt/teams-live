@@ -204,6 +204,7 @@ export function loadConfig(configPath) {
   const browserDaemon = {
     url: getString(fileConfig.browser_daemon?.url) || process.env.TEAMS_MCP_BROWSER_DAEMON_URL || '',
     profile: getString(fileConfig.browser_daemon?.profile) || process.env.TEAMS_MCP_BROWSER_DAEMON_PROFILE || 'work',
+    node_group: getString(fileConfig.browser_daemon?.node_group) || process.env.TEAMS_MCP_BROWSER_DAEMON_NODE_GROUP || '',
     secret_file: getNullableString(fileConfig.browser_daemon?.secret_file) || process.env.BROWSER_DAEMON_SECRET_FILE || null,
   };
 

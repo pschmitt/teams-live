@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, diffsSection, issueDetail, mergeButton, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, diffsSection, issueDetail, linkify, mergeButton, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -426,6 +426,16 @@ test('the page script parses (a syntax error would leave the whole page inert)',
   assert.doesNotThrow(() => new Function(dashboardScript('/dashboard')));
   assert.doesNotThrow(() => new Function(liveScript('/approve/state')));
   assert.doesNotThrow(() => new Function(BATCH_APPROVAL_SCRIPT));
+});
+
+test('alert panels: URLs in the source, description and details are links, everything else stays escaped', () => {
+  const ctx = { host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const html = alertDetail({ message: 'm', source: 'http://alertmanager.example.com:9093/#/alerts?receiver=x', description: 'Runbook https://docs.example.com/runbook.md.\n<b>x</b> javascript:alert(1)', details: { runbook: 'see https://docs.example.com/a' } }, ctx).html;
+  assert.match(html, /<dt>Source<\/dt><dd><a href="http:\/\/alertmanager\.example\.com:9093\/#\/alerts\?receiver=x" target="_blank" rel="noopener noreferrer">/);
+  assert.match(html, /Runbook <a href="https:\/\/docs\.example\.com\/runbook\.md"[^>]*>https:\/\/docs\.example\.com\/runbook\.md<\/a>\./, 'the full stop stays outside');
+  assert.match(html, /see <a href="https:\/\/docs\.example\.com\/a"/);
+  assert.match(html, /&lt;b&gt;x&lt;\/b&gt; javascript:alert\(1\)/);
+  assert.equal(linkify('(https://e.example.com/Foo_(bar))'), '(<a href="https://e.example.com/Foo_(bar)" target="_blank" rel="noopener noreferrer">https://e.example.com/Foo_(bar)</a>)');
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

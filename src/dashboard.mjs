@@ -28,6 +28,26 @@ export function webLink(value) {
   }
 }
 
+/**
+ * Plain text as HTML with its http(s) URLs as links (new tab, no referrer); everything else escaped. Trailing
+ * punctuation that ends a sentence or closes a bracket stays outside the link.
+ */
+export function linkify(text) {
+  const value = String(text ?? '');
+  let out = '';
+  let last = 0;
+  for (const m of value.matchAll(/https?:\/\/[^\s<>"']+/g)) {
+    let raw = m[0];
+    const count = (c) => raw.split(c).length - 1;
+    while (/[.,;:!?\]}]$/.test(raw) || (raw.endsWith(')') && count(')') > count('('))) raw = raw.slice(0, -1);
+    const href = webLink(raw);
+    out += escapeHtml(value.slice(last, m.index));
+    out += href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(raw)}</a>` : escapeHtml(raw);
+    last = m.index + raw.length;
+  }
+  return out + escapeHtml(value.slice(last));
+}
+
 async function gitlabRequest(host, token, path, { method = 'GET', body = null } = {}) {
   const response = await fetch(`https://${host}/api/${path}`, {
     method,
@@ -786,16 +806,16 @@ export function alertDetail(a, ctx) {
       ['Status', escapeHtml(`${a.status || 'open'}${a.acknowledged ? ', acknowledged' : ''}${a.snoozed ? ', snoozed' : ''}`)],
       ['Owner', escapeHtml(a.owner || '')],
       ['Count', a.count > 1 ? escapeHtml(`${a.count}×`) : ''],
-      ['Source', escapeHtml(a.source || '')],
-      ['Entity', escapeHtml(a.entity || '')],
+      ['Source', linkify(a.source || '')],
+      ['Entity', linkify(a.entity || '')],
       ['Created', escapeHtml(when(a.createdAt, ctx))],
       ['Last seen', escapeHtml(when(a.lastOccurredAt || a.updatedAt, ctx))],
       ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
       openRow(url, 'Open in OpsGenie', 'opsgenie'),
     ]) +
     '</div>' +
-    (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
-    (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, escapeHtml(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '');
+    (a.description ? `<div class="dtext">${linkify(clip(a.description, 4000))}</div>` : '') +
+    (details.length ? `<h3 class="dsub">Details</h3>${facts(details.map(([k, v]) => [k, linkify(clip(typeof v === 'string' ? v : JSON.stringify(v), 400))]))}` : '');
   return { title: a.message || 'Alert', html, url, urlLabel: 'Open in OpsGenie' };
 }
 

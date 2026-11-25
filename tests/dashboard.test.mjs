@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, issueDetail, mrDetail, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -218,6 +218,18 @@ test('the merge request tiles open the list with their filter', () => {
   assert.match(dashboardScript('/dashboard'), /getAttribute\('data-mrf-set'\)/);
 });
 
+test('detail panels: the external link is a row of the panel, merge requests show status and repository', () => {
+  const ctx = { host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const mr = mrDetail({ mr: { iid: 7, state: 'merged', title: 'T', web_url: `https://${GL}/group/app/-/merge_requests/7`, references: { full: 'group/app!7' } } }, ctx);
+  assert.match(mr.html, /<dt>Status<\/dt><dd><span class="pill pill-merged">Merged<\/span>/);
+  assert.match(mr.html, /<dt>Repo<\/dt><dd><a class="dref" href="https:\/\/git\.example\.com\/group\/app"[^>]*>group\/app<\/a>/);
+  assert.match(mr.html, /<dt>GitLab<\/dt><dd><a class="dlink" href="https:\/\/git\.example\.com\/group\/app\/-\/merge_requests\/7"[^>]*>Open in GitLab<svg/);
+  assert.match(issueDetail({ key: 'ABC-1', summary: 's', status: 'Open', url: 'https://jira.example.com/browse/ABC-1' }, ctx).html, /<dt>Jira<\/dt><dd><a class="dlink" href="https:\/\/jira\.example\.com\/browse\/ABC-1"/);
+  assert.match(alertDetail({ message: 'm', url: 'https://app.opsgenie.com/alert/detail/x' }, ctx).html, /<dt>OpsGenie<\/dt><dd><a class="dlink"/);
+  assert.doesNotMatch(issueDetail({ key: 'ABC-1', summary: 's', status: 'Open', url: 'javascript:alert(1)' }, ctx).html, /dlink/, 'no unsafe link');
+  assert.doesNotMatch(dashboardScript('/dashboard'), /data-drawer-link/, 'the header has no link any more');
+});
+
 test('sections: links stay on their hosts, failures read plainly', () => {
   assert.equal(webLink('javascript:alert(1)'), '');
   assert.equal(webLink('https://teams.example.com/x'), 'https://teams.example.com/x');
@@ -368,6 +380,7 @@ test('merge request details: only listed ones, read with the visitor\'s token, w
     assert.equal(res.status, 200);
     const d = await res.json();
     assert.ok(d.html.includes('Branches') && d.urlLabel === 'Open in GitLab');
+    assert.match(d.html, /<dt>Status<\/dt><dd><span class="pill pill-ok">Open<\/span>/, 'the state is a row of its own');
     assert.match(d.html, /data-approve data-project="group\/app" data-iid="7"/, 'the Approve button comes along');
     const read = seen.filter((c) => c.url.endsWith('/merge_requests/7'));
     assert.ok(read.length && read.every((c) => c.options.headers.Authorization === 'Bearer tok'));

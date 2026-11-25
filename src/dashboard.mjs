@@ -359,6 +359,9 @@ const when = (iso, ctx) => {
   if (!Number.isFinite(t)) return '';
   return `${new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: ctx.timeZone })} (${ago(iso, ctx.now)})`;
 };
+/** The "Open in …" row of a detail panel: the external link, with its icon, or nothing without a safe link. */
+const openRow = (url, label) => [label.replace(/^Open in /, ''), url ? `<a class="dlink" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}${ICONS.ext}</a>` : ''];
+
 const facts = (rows) => `<dl class="dfacts">${rows.filter(([, v]) => v).map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
 
 /**
@@ -607,6 +610,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
   const host = ctx.host;
   const url = safeLink(mr.web_url, host);
   const project = mr.references?.full ? mr.references.full.replace(/!\d+$/, '') : String(mr.web_url || '').replace(/^https?:\/\/[^/]+\//, '').replace(/\/-\/merge_requests\/.*$/, '');
+  const projectUrl = safeLink(String(mr.web_url || '').replace(/\/-\/merge_requests\/.*$/, ''), host);
   const draft = mr.draft || mr.work_in_progress;
   const [tone, stateText] = MR_STATE[mr.state] || ['idle', mr.state || 'Unknown'];
   const person = (u) => (u ? `<span class="who">${avatarImg(u.name || u.username, ctx.avatars)}${escapeHtml(u.name || u.username)}</span>` : '');
@@ -634,8 +638,10 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
     : '<span class="note">No pipeline</span>';
   const branch = (b) => `<code>${escapeHtml(b)}</code>`;
   const html =
-    `<div class="dmeta"><div class="dhead"><span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="dref">${escapeHtml(project)}!${escapeHtml(mr.iid)}</span></div>` +
+    '<div class="dmeta">' +
     facts([
+      ['Status', `<span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? ' <span class="pill pill-draft">Draft</span>' : ''}`],
+      ['Repo', !project ? '' : projectUrl ? `<a class="dref" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(project)}</a>` : `<span class="dref">${escapeHtml(project)}</span>`],
       ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
       ['Author', person(mr.author)],
       ['Reviewers', (mr.reviewers || []).map(person).join(' ')],
@@ -646,6 +652,7 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
       ['Labels', (mr.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
       ['Created', escapeHtml(when(mr.created_at, ctx))],
       ['Updated', escapeHtml(when(mr.updated_at, ctx))],
+      openRow(url, 'Open in GitLab'),
     ]) +
     (approve ? `<p class="dactions">${approve}</p>` : '') +
     '</div>' +
@@ -667,6 +674,7 @@ export function issueDetail(i, ctx) {
       ['Labels', (i.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
       ['Created', escapeHtml(when(i.created, ctx))],
       ['Updated', escapeHtml(when(i.updated, ctx))],
+      openRow(url, 'Open in Jira'),
     ]) +
     '</div>' +
     (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>');
@@ -690,6 +698,7 @@ export function alertDetail(a, ctx) {
       ['Created', escapeHtml(when(a.createdAt, ctx))],
       ['Last seen', escapeHtml(when(a.lastOccurredAt || a.updatedAt, ctx))],
       ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
+      openRow(url, 'Open in OpsGenie'),
     ]) +
     '</div>' +
     (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
@@ -871,7 +880,7 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }
     `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div>${settingsSection()}</div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
     `<div class="palette" data-palette hidden><div class="pal-bg" data-pal-close></div><div class="pal-box" role="dialog" aria-modal="true" aria-label="Search and commands"><div class="pal-top">${ICONS.search}<input class="pal-in" data-pal-in type="text" placeholder="Search merge requests, tickets and alerts, or type a command" autocomplete="off" spellcheck="false" aria-controls="pal-list"></div><ul class="pal-list" id="pal-list" data-pal-list role="listbox"></ul><div hidden data-pal-icons>${['gitlab', 'jira', 'opsgenie'].map((k) => `<img data-ico="${k}" src="${escapeHtml(SERVICE_ICONS[k])}" width="16" height="16" alt="">`).join('')}${['overview', 'mrs', 'sprint', 'alerts', 'meetings', 'bolt', 'refresh', 'edit', 'collapse', 'hide', 'undo', 'settings', 'bell'].map((k) => `<span data-ico="${k}">${ICONS[k]}</span>`).join('')}</div><div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div></div></div>` +
-    `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><a class="tool" data-drawer-link href="#" target="_blank" rel="noopener noreferrer" hidden>${ICONS.ext}</a><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
+    `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
   );
 }
@@ -995,7 +1004,7 @@ export const DASHBOARD_CSS = [
   '.drawer-panel>header{display:flex;gap:.35rem;align-items:center;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
   '.drawer-body{padding:0 1.1rem 1.5rem;overflow:auto;flex:1}.dmeta{position:sticky;top:0;z-index:2;background:var(--panel);padding-top:1rem;margin:0 -1.1rem 1rem;padding-inline:1.1rem;border-bottom:1px solid var(--line);box-shadow:0 8px 12px -12px rgba(0,0,0,.45)}.dmeta .dfacts{margin-bottom:.9rem}.dmeta .dactions{margin:0 0 .9rem}@media (max-height:600px){.dmeta{position:static}}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
-  '.dhead{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:0 0 .9rem}.dref{font:.82rem var(--mono);color:var(--muted)}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
+  '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
   '.dactions{margin:0 0 1rem}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
@@ -1073,8 +1082,8 @@ fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',header
 d.addEventListener('pointerup',tkDrop);d.addEventListener('pointercancel',tkDrop);
 var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0,dkey=null,dpush=false,rbusy=false;
 function closeDetail(){if(!dr||dr.hidden)return;dr.hidden=true;document.body.style.overflow='';if(dlast&&dlast.focus)dlast.focus();dkey=null;if(!rbusy){if(dpush)try{history.back()}catch(e){}else unroute()}dpush=false}
-function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),mrk=el.getAttribute('data-mr'),n=++dreq,was=!dr.hidden;dlast=el;dkey=issue?['issue',issue]:alertId?['alert',alertId]:['mr',mrk];var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');var lk=dr.querySelector('[data-drawer-link]');if(lk){lk.hidden=true;lk.removeAttribute('href')}t.textContent=issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';if(!rbusy){if(was)unroute();else{route();dpush=true}}var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
-var q=mrk?'/mr?ref='+encodeURIComponent(mrk):issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId);fetch(B+q,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';if(lk&&x.url&&/^https?:/.test(x.url)){lk.href=x.url;lk.title=x.urlLabel||'Open';lk.setAttribute('aria-label',x.urlLabel||'Open');lk.hidden=false}}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
+function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),mrk=el.getAttribute('data-mr'),n=++dreq,was=!dr.hidden;dlast=el;dkey=issue?['issue',issue]:alertId?['alert',alertId]:['mr',mrk];var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';if(!rbusy){if(was)unroute();else{route();dpush=true}}var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
+var q=mrk?'/mr?ref='+encodeURIComponent(mrk):issue?'/issue?key='+encodeURIComponent(issue):'/alert?id='+encodeURIComponent(alertId);fetch(B+q,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';}).catch(function(){if(n===dreq)body.textContent='Could not load the details right now.'})}
 d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}if(e.key==='Escape'&&editing()&&!mv&&!rz){setEdit(false);return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert],.mrrow[data-mr]')){e.preventDefault();openDetail(el)}});
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
 try{if(localStorage.getItem('tl-side')==='1'){d.style.transition='none';collapse(true);requestAnimationFrame(function(){requestAnimationFrame(function(){d.style.transition=''})})}}catch(e){}

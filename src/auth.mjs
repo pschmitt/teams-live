@@ -7,13 +7,25 @@ import {
 } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { signInViaBrowserDaemon } from 'msteams-mcp/dist/auth/token-refresh.js';
-import { writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
+import { readSessionState, writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
 import { acquireFromBrowserDaemon, trackBrowserAuth } from './browser-auth.mjs';
 import { createLogger } from './logger.mjs';
 
 export { getUserProfile, getUserDisplayName };
 
 const log = createLogger('auth');
+
+// Expiry (ms since epoch) of the Skype token in a session state, or null.
+export function sessionTokenExpiry(state) {
+  const token = state?.cookies?.find((c) => c.domain?.includes('teams.microsoft.com') && c.name === 'skypetoken_asm')?.value;
+  if (typeof token !== 'string') return null;
+  try {
+    const exp = JSON.parse(Buffer.from(token.split('.')[1] || '', 'base64url').toString('utf8'))?.exp;
+    return Number.isFinite(exp) ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
 
 export class AuthManager {
   constructor(config) {
@@ -98,6 +110,16 @@ export class AuthManager {
               },
             }),
           });
+        }
+        // The session store is refreshed in place and survives restarts; the
+        // credentials file is only a seed. Never replace a store whose tokens
+        // are as new as (or newer than) the file's, or every start would throw
+        // away the refreshed session and sign in again.
+        const fileExpiry = sessionTokenExpiry(data);
+        const storeExpiry = sessionTokenExpiry(readSessionState());
+        if (storeExpiry && (!fileExpiry || storeExpiry >= fileExpiry)) {
+          log(`Keeping cached Teams session (token valid until ${new Date(storeExpiry).toISOString()}); credentials file is not newer`);
+          return extractMessageAuth();
         }
         writeSessionState(data);
         return extractMessageAuth(data);

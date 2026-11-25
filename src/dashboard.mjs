@@ -271,6 +271,7 @@ export const ICONS = {
   run: svg('<path d="M12 3a9 9 0 1 0 9 9"/>', 'di spin'),
   clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
   oncall: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
+  teamleave: svg('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4M8 14h3M13 14h3M8 17h3"/>'),
   leave: svg('<path d="M12 3v18M12 3a8 8 0 0 0-8 8h16a8 8 0 0 0-8-8z"/><path d="M8 21h8"/>'),
   merge: svg('<circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 7.2c0 3 2.5 4.8 9.8 4.8"/>'),
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
@@ -438,9 +439,13 @@ export function leaveSection(leave, ctx) {
   const wrap = (inner) => `<div class="leave">${inner}</div>`;
   if (leave.pending) return wrap('<p class="note">Reading HR WORKS…</p>');
   if (leave.error) return wrap(`<p class="note">${escapeHtml(leave.error)}</p>`);
-  const items = Array.isArray(leave.data) ? leave.data.slice(0, 20) : [];
-  if (!items.length) return wrap('<p class="note">Nobody on leave this week.</p>');
   const today = new Date(ctx.now).toLocaleDateString('en-CA', { timeZone: ctx.timeZone || 'Europe/Berlin' });
+  const week = new Date(ctx.now + 7 * 86_400_000).toLocaleDateString('en-CA', { timeZone: ctx.timeZone || 'Europe/Berlin' });
+  // This week only (the source reads four weeks for the Team leave card); an older answer is a plain list.
+  const all = (Array.isArray(leave.data) ? leave.data : leave.data?.absences || []).filter((ab) => ab.startDate <= week);
+  const items = all.slice(0, 20);
+  leave = { ...leave, data: all };
+  if (!items.length) return wrap('<p class="note">Nobody on leave this week.</p>');
   const rows = items.map((ab) => {
     const range = ab.startDate <= today
       ? (ab.endDate === today ? 'today' : `until ${shortDay(ab.endDate)}`)
@@ -495,6 +500,51 @@ export function oncallSection(state, ctx) {
   }
   if (!duty && !mine) return '<p class="empty">No on-call schedules.</p>';
   return `${mine}${duty ? `<ul class="duty">${duty}</ul>` : ''}`;
+}
+
+/**
+ * The team's leave as one calendar: a row per team member (HR WORKS team), Monday to Friday for four weeks from
+ * this week's Monday, absence days coloured by kind, today marked. People open the person panel.
+ */
+export function teamLeaveSection(leave, ctx) {
+  if (!leave || leave.off) return '<p class="empty">HR WORKS is not configured.</p>';
+  if (leave.pending) return '<p class="empty">Reading HR WORKS…</p>';
+  if (leave.error) return `<p class="empty">${escapeHtml(leave.error)}</p>`;
+  const absences = Array.isArray(leave.data) ? leave.data : leave.data?.absences || [];
+  const team = Array.isArray(leave.data?.team) && leave.data.team.length ? leave.data.team : [...new Set(absences.map((a) => a.name))].sort((a, b) => a.localeCompare(b));
+  if (!team.length) return '<p class="empty">No team in HR WORKS.</p>';
+  const tz = ctx.timeZone || 'Europe/Berlin';
+  const today = new Date(ctx.now).toLocaleDateString('en-CA', { timeZone: tz });
+  const monday = new Date(`${today}T12:00:00Z`);
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const days = [];
+  for (let i = 0; i < 28; i++) {
+    const d = new Date(monday.getTime() + i * 86_400_000);
+    if (d.getUTCDay() % 6 !== 0) days.push(d.toISOString().slice(0, 10));
+  }
+  const byName = new Map();
+  for (const a of absences) {
+    if (!byName.has(a.name)) byName.set(a.name, []);
+    byName.get(a.name).push(a);
+  }
+  const head = days.map((d, i) => {
+    const date = new Date(`${d}T12:00:00Z`);
+    const label = date.toLocaleDateString('en-GB', { day: 'numeric', timeZone: 'UTC' });
+    const week = i % 5 === 0 ? ` wk` : '';
+    return `<span class="tl-d${d === today ? ' today' : ''}${week}" title="${escapeHtml(date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }))}">${i % 5 === 0 ? `<small>${escapeHtml(date.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' }))}</small>` : ''}${label}</span>`;
+  }).join('');
+  const rows = team.slice(0, 40).map((name) => {
+    const own = byName.get(name) || [];
+    const cells = days.map((d, i) => {
+      const a = own.find((x) => x.startDate <= d && x.endDate >= d);
+      const cls = ['tl-c', a ? `ab ab-${absenceKind(a.category)}` : '', d === today ? 'today' : '', i % 5 === 0 ? 'wk' : ''].filter(Boolean).join(' ');
+      return `<span class="${cls}"${a ? ` title="${escapeHtml(`${name}: ${a.category}${a.status ? `, ${a.status}` : ''} (${a.startDate === a.endDate ? a.startDate : `${a.startDate} – ${a.endDate}`})`)}"` : ''}></span>`;
+    }).join('');
+    return `<div class="tl-row${own.length ? '' : ' tl-here'}" data-key="${escapeHtml(`tl:${name}`)}"><span class="tl-n">${personRef(name, ctx.avatars)}</span>${cells}</div>`;
+  }).join('');
+  const kinds = [...new Set(absences.map((a) => absenceKind(a.category)))];
+  const legend = kinds.map((k) => `<span><i class="ab-${k}"></i>${{ sick: 'Sick', home: 'Mobile work', leave: 'Leave' }[k]}</span>`).join('');
+  return `<div class="tl"><div class="tl-grid" style="--days:${days.length}"><div class="tl-row tl-head"><span class="tl-n"></span>${head}</div>${rows}</div>${legend ? `<p class="cal-legend">${legend}</p>` : '<p class="note">Nobody in the team is on leave in the next four weeks.</p>'}</div>`;
 }
 
 export function meetingsSection(state, ctx) {
@@ -880,7 +930,9 @@ export function dashboardPeople(data) {
   for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data?.sprint?.data?.[k] || []) { add(t.assignee); add(t.reporter); }
   for (const d of data?.alerts?.data?.duty || []) { if (d?.who) add(d.who); for (const p of d?.people || []) add(p?.name); }
   for (const m of Array.isArray(data?.meetings?.data) ? data.meetings.data : []) add(m.organizer);
-  for (const ab of Array.isArray(data?.leave?.data) ? data.leave.data : []) add(ab.name);
+  const leave = data?.leave?.data;
+  for (const ab of Array.isArray(leave) ? leave : leave?.absences || []) add(ab.name);
+  for (const n of Array.isArray(leave?.team) ? leave.team : []) add(n);
   return names;
 }
 
@@ -1060,6 +1112,7 @@ export function renderSections(data, ctx) {
     oncall: oncallSection(data.alerts, ctx),
     meetings: meetingsSection(data.meetings, ctx),
     leave: leaveSection(data.leave, ctx),
+    teamleave: teamLeaveSection(data.leave, ctx),
   };
 }
 
@@ -1179,10 +1232,11 @@ const SECTIONS = [
   ['sprint', 'Active sprint'],
   ['meetings', 'Meetings'],
   ['leave', 'Leave'],
+  ['teamleave', 'Team leave'],
 ];
 
 // The default layout: rows of columns (relative widths) holding stacks of cards. Each visitor can rearrange it.
-export const DEFAULT_LAYOUT = { rows: [{ cols: STAT_CARDS.map(([k]) => ({ w: 3, cards: [k] })) }, { cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'oncall', 'meetings', 'leave'] }] }] };
+export const DEFAULT_LAYOUT = { rows: [{ cols: STAT_CARDS.map(([k]) => ({ w: 3, cards: [k] })) }, { cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'oncall', 'meetings', 'leave'] }] }, { cols: [{ w: 12, cards: ['teamleave'] }] }] };
 
 /** The body of the dashboard page (inside the common header). */
 export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }) {
@@ -1304,7 +1358,7 @@ export const DASHBOARD_CSS = [
   '.box.lifted{position:fixed;z-index:35;margin:0;pointer-events:none;box-shadow:var(--shadow-lg);transform:rotate(.6deg) scale(1.015);outline-color:var(--btn)!important;animation:none!important}.box.lifted>header{cursor:grabbing}',
   '.lcol-rs{position:absolute;top:0;bottom:0;right:calc(-.55rem - 5px);width:10px;cursor:col-resize;z-index:6;display:none}.dash.editing .lcol-rs{display:block}.lcol-rs::after{content:"";position:absolute;left:4px;top:15%;bottom:15%;width:2px;border-radius:1px;background:var(--line-strong);transition:background .15s}.lcol-rs:hover::after,.resizing-col>.lcol-rs::after{background:var(--btn)}',
   '.dash[data-view=overview] .lcol:not(:has(>.box:not(.is-hidden))):not(:has(>.box-ph)),.dash[data-view=overview] .lrow:not(:has(.box:not(.is-hidden))):not(:has(.box-ph)){display:none}',
-  '.dash[data-view=mrs] .lcol:not(:has([data-sec=mrs])),.dash[data-view=mrs] .lrow:not(:has([data-sec=mrs])),.dash[data-view=sprint] .lcol:not(:has([data-sec=sprint])),.dash[data-view=sprint] .lrow:not(:has([data-sec=sprint])),.dash[data-view=alerts] .lcol:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=alerts] .lrow:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=meetings] .lcol:not(:has([data-sec=meetings],[data-sec=leave])),.dash[data-view=meetings] .lrow:not(:has([data-sec=meetings],[data-sec=leave])){display:none}',
+  '.dash[data-view=mrs] .lcol:not(:has([data-sec=mrs])),.dash[data-view=mrs] .lrow:not(:has([data-sec=mrs])),.dash[data-view=sprint] .lcol:not(:has([data-sec=sprint])),.dash[data-view=sprint] .lrow:not(:has([data-sec=sprint])),.dash[data-view=alerts] .lcol:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=alerts] .lrow:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=meetings] .lcol:not(:has([data-sec=meetings],[data-sec=leave],[data-sec=teamleave])),.dash[data-view=meetings] .lrow:not(:has([data-sec=meetings],[data-sec=leave],[data-sec=teamleave])){display:none}',
   '.hidden-bar button.wiggle{animation:tl-wiggle .7s var(--ease),tl-chip 1.6s var(--ease)}@keyframes tl-wiggle{0%{transform:scale(.6)}25%{transform:scale(1.12) rotate(-6deg)}45%{transform:rotate(5deg)}65%{transform:rotate(-3deg)}85%{transform:rotate(1.5deg)}100%{transform:none}}@keyframes tl-chip{0%,40%{background:var(--run-bg);color:var(--run);border-color:var(--run)}}',
   '.lstrip{flex:none;height:44px;border:2px dashed var(--line-strong);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.8rem;animation:tl-fade .2s var(--ease);transition:background .15s,border-color .15s,color .15s}.lstrip.hot{border-color:var(--btn);background:var(--run-bg);color:var(--run)}',
   '.box-ph{flex:none;border:2px dashed var(--btn);border-radius:8px;background:var(--run-bg);opacity:.55}.tk-ph{list-style:none;border:2px dashed var(--btn);border-radius:6px;background:var(--run-bg);opacity:.6}.tk.lifted-tk{position:fixed;z-index:35;pointer-events:none;box-shadow:var(--shadow-lg);transform:rotate(1.5deg) scale(1.03);cursor:grabbing}',
@@ -1339,7 +1393,7 @@ export const DASHBOARD_CSS = [
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.dlink .dlogo{width:16px;height:16px;flex:none}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
-  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve],.appr-line [data-merge]{margin-left:auto}.pref{display:inline-flex;align-items:center;gap:0;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.pref:hover>b,.pref:hover{text-decoration:underline;text-underline-offset:2px}.pref:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}.pcard{display:flex;gap:.8rem;align-items:center;margin:.75rem 0 1rem}.pcard .av{width:48px;height:48px;flex:none;font-size:1rem}.pcard b{display:block;font-size:1.05rem}.pcard span{color:var(--muted);font-size:.85rem}.preach{display:flex;flex-wrap:wrap;gap:.4rem}.leave{padding:.75rem 1rem}.cals{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:1rem}.cal b{display:block;font-size:.82rem;margin:0 0 .35rem}.cal-g{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;text-align:center;font-size:.75rem;font-variant-numeric:tabular-nums}.cal-g i{font-style:normal;color:var(--muted);font-size:.68rem;padding:.1rem 0}.cal-g span{padding:.22rem 0;border-radius:4px}.cal-g .today{outline:1.5px solid var(--focus);outline-offset:-1.5px}.cal-g .ab{color:#fff;font-weight:600;cursor:default}.ab-leave{background:var(--run)}.ab-sick{background:var(--closed)}.ab-home{background:var(--ok)}.cal-legend{display:flex;gap:1rem;margin:.6rem 0 0;font-size:.76rem;color:var(--muted)}.cal-legend span{display:inline-flex;align-items:center;gap:.35rem}.cal-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}.myshift{display:flex;gap:.55rem;align-items:flex-start;margin:.75rem 1rem .25rem;padding:.55rem .7rem;border-radius:8px;background:var(--subtle);font-size:.86rem;line-height:1.5}.myshift .di{flex:none;margin-top:.15rem;color:var(--muted)}.myshift.now{background:var(--run-bg);color:var(--run)}.mpills{display:inline-flex;gap:.3rem;align-self:center}.mlist .none{display:none;padding:.75rem 1rem;color:var(--muted);font-size:.86rem}.dash[data-mtf=today] .mlist [data-md]:not([data-md=today]),.dash[data-mtf=tomorrow] .mlist [data-md]:not([data-md=tomorrow]){display:none}.dash[data-mtf=today] .mlist:not(:has(.mt[data-md=today])) .only-today,.dash[data-mtf=tomorrow] .mlist:not(:has(.mt[data-md=tomorrow])) .only-tomorrow{display:block}.llist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.35rem}.llist li{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:.86rem}.llist li small{color:var(--muted)}.llist li.now small{color:var(--text)}.llist .av{width:20px;height:20px;margin-right:.4rem}.appr-line [data-approve]+[data-merge]{margin-left:0}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
+  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve],.appr-line [data-merge]{margin-left:auto}.pref{display:inline-flex;align-items:center;gap:0;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.pref:hover>b,.pref:hover{text-decoration:underline;text-underline-offset:2px}.pref:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}.pcard{display:flex;gap:.8rem;align-items:center;margin:.75rem 0 1rem}.pcard .av{width:48px;height:48px;flex:none;font-size:1rem}.pcard b{display:block;font-size:1.05rem}.pcard span{color:var(--muted);font-size:.85rem}.preach{display:flex;flex-wrap:wrap;gap:.4rem}.leave{padding:.75rem 1rem}.tl{padding:.75rem 1rem;overflow-x:auto}.tl-grid{display:grid;grid-template-columns:minmax(10rem,14rem) repeat(var(--days),minmax(1.35rem,1fr));gap:2px 2px;min-width:max-content}.tl-row{display:contents}.tl-n{display:flex;align-items:center;font-size:.84rem;white-space:nowrap;overflow:hidden;padding-right:.5rem}.tl-n .av{width:20px;height:20px;margin-right:.4rem}.tl-here .tl-n{color:var(--muted)}.tl-d{font-size:.7rem;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums;align-self:end;line-height:1.2}.tl-d small{display:block;font-size:.62rem;text-transform:uppercase}.tl-d.today{color:var(--text);font-weight:700}.tl-c{height:1.35rem;border-radius:3px;background:var(--subtle)}.tl-c.wk,.tl-d.wk{margin-left:5px}.tl-c.today{outline:1.5px solid var(--focus);outline-offset:-1.5px}.cals{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:1rem}.cal b{display:block;font-size:.82rem;margin:0 0 .35rem}.cal-g{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;text-align:center;font-size:.75rem;font-variant-numeric:tabular-nums}.cal-g i{font-style:normal;color:var(--muted);font-size:.68rem;padding:.1rem 0}.cal-g span{padding:.22rem 0;border-radius:4px}.cal-g .today{outline:1.5px solid var(--focus);outline-offset:-1.5px}.cal-g .ab{color:#fff;font-weight:600;cursor:default}.ab-leave{background:var(--run)}.ab-sick{background:var(--closed)}.ab-home{background:var(--ok)}.cal-legend{display:flex;gap:1rem;margin:.6rem 0 0;font-size:.76rem;color:var(--muted)}.cal-legend span{display:inline-flex;align-items:center;gap:.35rem}.cal-legend i{width:9px;height:9px;border-radius:2px;display:inline-block}.myshift{display:flex;gap:.55rem;align-items:flex-start;margin:.75rem 1rem .25rem;padding:.55rem .7rem;border-radius:8px;background:var(--subtle);font-size:.86rem;line-height:1.5}.myshift .di{flex:none;margin-top:.15rem;color:var(--muted)}.myshift.now{background:var(--run-bg);color:var(--run)}.mpills{display:inline-flex;gap:.3rem;align-self:center}.mlist .none{display:none;padding:.75rem 1rem;color:var(--muted);font-size:.86rem}.dash[data-mtf=today] .mlist [data-md]:not([data-md=today]),.dash[data-mtf=tomorrow] .mlist [data-md]:not([data-md=tomorrow]){display:none}.dash[data-mtf=today] .mlist:not(:has(.mt[data-md=today])) .only-today,.dash[data-mtf=tomorrow] .mlist:not(:has(.mt[data-md=tomorrow])) .only-tomorrow{display:block}.llist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.35rem}.llist li{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:.86rem}.llist li small{color:var(--muted)}.llist li.now small{color:var(--text)}.llist .av{width:20px;height:20px;margin-right:.4rem}.appr-line [data-approve]+[data-merge]{margin-left:0}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
   '.rich .tbl{overflow-x:auto}.rich table{border-collapse:collapse;font-size:.82rem;margin:.5rem 0}.rich th,.rich td{border:1px solid var(--line);padding:.25rem .5rem;text-align:left;vertical-align:top}.rich th{background:var(--panel)}.rich a{overflow-wrap:anywhere}',
@@ -1373,7 +1427,7 @@ export const DASHBOARD_CSS = [
   '.toast{pointer-events:auto;background:var(--bar);color:var(--bar-text);padding:.6rem .85rem;border-radius:8px;box-shadow:var(--shadow-lg);font-weight:500;max-width:min(360px,calc(100vw - 2rem));animation:tl-toast .4s var(--spring)}.toast.out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform .3s}',
   '@keyframes tl-toast{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:none}}',
   // one section at a time when a section is picked; everything on the overview
-  '.box-st>header{padding:.55rem .95rem 0;border-bottom:0}.box-st>header h2{font-size:.82rem;font-weight:500;color:var(--muted)}.box-st .box-body{display:flex}.box-st .stat{flex:1;border:0;background:none;border-radius:0 0 8px 8px;padding:.2rem .95rem .75rem;animation:none}.box-st .stat:hover{transform:none;box-shadow:none;background:var(--subtle)}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]):not([data-sec=oncall]),.dash[data-view=meetings] .box:not([data-sec=meetings]):not([data-sec=leave]){display:none}',
+  '.box-st>header{padding:.55rem .95rem 0;border-bottom:0}.box-st>header h2{font-size:.82rem;font-weight:500;color:var(--muted)}.box-st .box-body{display:flex}.box-st .stat{flex:1;border:0;background:none;border-radius:0 0 8px 8px;padding:.2rem .95rem .75rem;animation:none}.box-st .stat:hover{transform:none;box-shadow:none;background:var(--subtle)}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]):not([data-sec=oncall]),.dash[data-view=meetings] .box:not([data-sec=meetings]):not([data-sec=leave]):not([data-sec=teamleave]){display:none}',
   '.dash:not([data-view=overview]) .box{height:auto!important}.dash:not([data-view=overview]) .lcol-rs,.dash:not([data-view=overview]) .tools,.dash:not([data-view=overview]) .rs{display:none}',
   // the settings view: one card of rows with switches; it replaces the cards while it is open
   '.settings{display:none;max-width:46rem}.dash[data-view=settings] .settings{display:block}.dash[data-view=settings] .layout,.dash[data-view=settings] .editbar{display:none!important}.set-title{font-size:1.25rem;margin:0 0 1rem}',

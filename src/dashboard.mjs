@@ -409,8 +409,11 @@ const when = (iso, ctx) => {
   if (!Number.isFinite(t)) return '';
   return `${new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: ctx.timeZone })} (${ago(iso, ctx.now)})`;
 };
-/** The "Open in …" row of a detail panel: the external link, with its icon, or nothing without a safe link. */
-const openRow = (url, label) => [label.replace(/^Open in /, ''), url ? `<a class="dlink" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}${ICONS.ext}</a>` : ''];
+/** The "Open in …" row of a detail panel: the service's logo and the external link, or nothing without a safe link. */
+const openRow = (url, label, service) => [
+  label.replace(/^Open in /, ''),
+  url ? `<a class="dlink" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${SERVICE_ICONS[service] ? `<img class="dlogo" src="${escapeHtml(SERVICE_ICONS[service])}" width="16" height="16" alt="">` : ''}${escapeHtml(label)}${ICONS.ext}</a>` : '',
+];
 
 const facts = (rows) => `<dl class="dfacts">${rows.filter(([, v]) => v).map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
 
@@ -703,7 +706,7 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
       ['Labels', (mr.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
       ['Created', escapeHtml(when(mr.created_at, ctx))],
       ['Updated', escapeHtml(when(mr.updated_at, ctx))],
-      openRow(url, 'Open in GitLab'),
+      openRow(url, 'Open in GitLab', 'gitlab'),
     ]) +
     (approve ? `<p class="dactions">${approve}</p>` : '') +
     '</div>' +
@@ -726,7 +729,7 @@ export function issueDetail(i, ctx) {
       ['Labels', (i.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
       ['Created', escapeHtml(when(i.created, ctx))],
       ['Updated', escapeHtml(when(i.updated, ctx))],
-      openRow(url, 'Open in Jira'),
+      openRow(url, 'Open in Jira', 'jira'),
     ]) +
     '</div>' +
     (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>');
@@ -750,7 +753,7 @@ export function alertDetail(a, ctx) {
       ['Created', escapeHtml(when(a.createdAt, ctx))],
       ['Last seen', escapeHtml(when(a.lastOccurredAt || a.updatedAt, ctx))],
       ['Tags', (a.tags || []).slice(0, 30).map((t) => `<span class="lbl">${escapeHtml(t)}</span>`).join(' ')],
-      openRow(url, 'Open in OpsGenie'),
+      openRow(url, 'Open in OpsGenie', 'opsgenie'),
     ]) +
     '</div>' +
     (a.description ? `<div class="dtext">${escapeHtml(clip(a.description, 4000))}</div>` : '') +
@@ -1056,7 +1059,7 @@ export const DASHBOARD_CSS = [
   '.drawer-panel>header{display:flex;gap:.35rem;align-items:center;padding:1rem 1.1rem .85rem;border-bottom:1px solid var(--line)}.drawer-panel h2{margin:0;font-size:1.05rem;line-height:1.35;flex:1;overflow-wrap:anywhere}',
   '.drawer-body{padding:0 1.1rem 1.5rem;overflow:auto;flex:1}.dmeta{position:sticky;top:0;z-index:2;background:var(--panel);padding-top:1rem;margin:0 -1.1rem 1rem;padding-inline:1.1rem;border-bottom:1px solid var(--line);box-shadow:0 8px 12px -12px rgba(0,0,0,.45)}.dmeta .dfacts{margin-bottom:.9rem}.dmeta .dactions{margin:0 0 .9rem}@media (max-height:600px){.dmeta{position:static}}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
-  '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
+  '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.dlink .dlogo{width:16px;height:16px;flex:none}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
   '.dactions{margin:0 0 1rem}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',

@@ -223,7 +223,7 @@ test('detail panels: the external link is a row of the panel, merge requests sho
   const mr = mrDetail({ mr: { iid: 7, state: 'merged', title: 'T', web_url: `https://${GL}/group/app/-/merge_requests/7`, references: { full: 'group/app!7' } } }, ctx);
   assert.match(mr.html, /<dt>Status<\/dt><dd><span class="pill pill-merged">Merged<\/span>/);
   assert.match(mr.html, /<dt>Repo<\/dt><dd><a class="dref" href="https:\/\/git\.example\.com\/group\/app"[^>]*>group\/app<\/a>/);
-  assert.match(mr.html, /<dt>GitLab<\/dt><dd><a class="dlink" href="https:\/\/git\.example\.com\/group\/app\/-\/merge_requests\/7"[^>]*>Open in GitLab<svg/);
+  assert.match(mr.html, /<dt>GitLab<\/dt><dd><a class="dlink" href="https:\/\/git\.example\.com\/group\/app\/-\/merge_requests\/7"[^>]*><img class="dlogo" src="[^"]+"[^>]*>Open in GitLab<svg/, 'with the service logo');
   assert.match(issueDetail({ key: 'ABC-1', summary: 's', status: 'Open', url: 'https://jira.example.com/browse/ABC-1' }, ctx).html, /<dt>Jira<\/dt><dd><a class="dlink" href="https:\/\/jira\.example\.com\/browse\/ABC-1"/);
   assert.match(alertDetail({ message: 'm', url: 'https://app.opsgenie.com/alert/detail/x' }, ctx).html, /<dt>OpsGenie<\/dt><dd><a class="dlink"/);
   assert.doesNotMatch(issueDetail({ key: 'ABC-1', summary: 's', status: 'Open', url: 'javascript:alert(1)' }, ctx).html, /dlink/, 'no unsafe link');

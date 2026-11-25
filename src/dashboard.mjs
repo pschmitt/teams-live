@@ -116,12 +116,59 @@ export function normalizeMr(n) {
 /** One merge request for the detail panel, read with the visitor's token: itself, its approvals, its pipeline's jobs. */
 export async function fetchMrDetail(host, token, project, iid) {
   const base = `v4/projects/${encodeURIComponent(project)}/merge_requests/${encodeURIComponent(iid)}`;
-  const [mr, approvals] = await Promise.all([gitlabRequest(host, token, base), gitlabRequest(host, token, `${base}/approvals`).catch(() => null)]);
+  const [mr, approvals, diffs] = await Promise.all([
+    gitlabRequest(host, token, base),
+    gitlabRequest(host, token, `${base}/approvals`).catch(() => null),
+    // GitLab 15.7+ lists the file diffs page by page; older versions only have /changes.
+    gitlabRequest(host, token, `${base}/diffs?per_page=${MAX_DIFF_FILES}`)
+      .catch(() => gitlabRequest(host, token, `${base}/changes`).then((c) => c?.changes))
+      .catch(() => null),
+  ]);
   let jobs = [];
   if (mr?.head_pipeline?.id) {
     jobs = await gitlabRequest(host, token, `v4/projects/${encodeURIComponent(project)}/pipelines/${encodeURIComponent(mr.head_pipeline.id)}/jobs?per_page=100`).catch(() => []);
   }
-  return { mr, approvals, jobs: Array.isArray(jobs) ? jobs : [] };
+  return { mr, approvals, jobs: Array.isArray(jobs) ? jobs : [], diffs: Array.isArray(diffs) ? diffs : null };
+}
+
+// The diff viewer of the merge request panel: at most this many files and lines, the rest is left to GitLab.
+const MAX_DIFF_FILES = 100;
+const MAX_DIFF_LINES_PER_FILE = 1500;
+const MAX_DIFF_LINES = 8000;
+
+/** The file diffs of a merge request as collapsible, escaped blocks; '' when GitLab gave none. */
+export function diffsSection(diffs, url) {
+  if (!Array.isArray(diffs)) return '';
+  if (!diffs.length) return '<h3 class="dsub">Changes</h3><p class="note">No changes.</p>';
+  let budget = MAX_DIFF_LINES;
+  const files = diffs.slice(0, MAX_DIFF_FILES).map((f) => {
+    const path = f.renamed_file && f.old_path !== f.new_path ? `${f.old_path} → ${f.new_path}` : f.new_path || f.old_path || '';
+    const lines = String(f.diff || '').replace(/\n$/, '').split('\n');
+    let add = 0;
+    let del = 0;
+    for (const l of lines) {
+      if (l.startsWith('+')) add++;
+      else if (l.startsWith('-')) del++;
+    }
+    const tag = f.new_file ? 'added' : f.deleted_file ? 'deleted' : f.renamed_file ? 'renamed' : '';
+    const head = `<summary><code>${escapeHtml(path)}</code>${tag ? `<span class="dtag">${tag}</span>` : ''}<span class="dstat"><span class="dadd">+${add}</span><span class="ddel">−${del}</span></span></summary>`;
+    let body;
+    if (f.too_large || f.collapsed || (!f.diff && !f.new_file && !f.deleted_file)) body = '<p class="note dnote">This diff is too large or binary. See it in GitLab.</p>';
+    else if (!f.diff) body = '<p class="note dnote">Empty file.</p>';
+    else if (lines.length > MAX_DIFF_LINES_PER_FILE || lines.length > budget) body = '<p class="note dnote">Too long to show here. See it in GitLab.</p>';
+    else {
+      budget -= lines.length;
+      body = `<pre class="diff">${lines
+        .map((l) => {
+          const cls = l.startsWith('@@') ? 'dl-hunk' : l.startsWith('+') ? 'dl-add' : l.startsWith('-') ? 'dl-del' : l.startsWith('\\') ? 'dl-meta' : '';
+          return `<span class="dl${cls ? ` ${cls}` : ''}">${escapeHtml(l) || ' '}</span>`;
+        })
+        .join('')}</pre>`;
+    }
+    return `<details class="dfile"${diffs.length <= 3 ? ' open' : ''}>${head}${body}</details>`;
+  });
+  const more = diffs.length > MAX_DIFF_FILES ? `<p class="note">${diffs.length - MAX_DIFF_FILES} more file(s)${url ? ` in <a href="${escapeHtml(url)}/diffs" target="_blank" rel="noopener noreferrer">GitLab</a>` : ''}.</p>` : '';
+  return `<h3 class="dsub">Changes</h3><div class="diffs">${files.join('')}</div>${more}`;
 }
 
 /** Bot-made merge requests (Renovate, service accounts, dependency updates): the same rules as `/mrs`. */
@@ -287,6 +334,8 @@ export function sprintSection(state, ctx) {
   const total = counts.reduce((a, b) => a + b, 0) || 1;
   const bar = `<div class="sbar" role="img" aria-label="${counts[2]} in review, ${counts[1]} in progress, ${counts[0]} to do"><i class="s-rev" style="width:${((100 * counts[2]) / total).toFixed(1)}%"></i><i class="s-prog" style="width:${((100 * counts[1]) / total).toFixed(1)}%"></i></div>`;
   const legend = `<p class="slegend"><span><i class="s-rev"></i>${counts[2]} in review</span><span><i class="s-prog"></i>${counts[1]} in progress</span><span><i class="s-todo"></i>${counts[0]} to do</span></p>`;
+  const mineCount = all.filter((t) => me && lower(t.assignee) === me).length;
+  const chips = `<div class="chips" role="group" aria-label="Filter sprint tickets"><button type="button" class="toggle" data-sprintmine-toggle aria-pressed="false" title="Show only the tickets assigned to you">Only mine<span class="n">${mineCount}</span></button></div>`;
   const cols = SPRINT_COLUMNS.map(([k, label]) => {
     const tickets = (sprint[k] || []).map((t) => {
       const url = webLink(t.url);
@@ -294,9 +343,10 @@ export function sprintSection(state, ctx) {
       const key = escapeHtml(t.key);
       return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}" data-issue="${escapeHtml(t.key)}" role="button" tabindex="0" aria-label="${escapeHtml(`${t.key}: ${t.summary}`)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
     });
-    return `<div class="col" data-col="${k}"><h4>${label}<span data-col-count>${tickets.length}</span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
+    const mine = (sprint[k] || []).filter((t) => me && lower(t.assignee) === me).length;
+    return `<div class="col" data-col="${k}"><h4>${label}<span data-col-count><span class="n-all">${tickets.length}</span><span class="n-mine">${mine}</span></span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
   }).join('');
-  return `${bar}${legend}<div class="board">${cols}</div>`;
+  return `${chips}${bar}${legend}<div class="board">${cols}</div>`;
 }
 
 const PRIORITY_ORDER = { P1: 1, P2: 2, P3: 3, P4: 4, P5: 5 };
@@ -606,7 +656,7 @@ const MR_STATE = { opened: ['ok', 'Open'], merged: ['merged', 'Merged'], closed:
 const MERGE_TEXT = { mergeable: 'Ready to merge', not_approved: 'Approval required', ci_still_running: 'Pipeline running', ci_must_pass: 'Pipeline must succeed', conflict: 'Merge conflicts', need_rebase: 'Needs a rebase', draft_status: 'Draft', discussions_not_resolved: 'Unresolved threads', checking: 'Checking', not_open: 'Not open', blocked_status: 'Blocked by another merge request', requested_changes: 'Changes requested' };
 
 /** A merge request for the detail panel: `{title, html, url}`; `approve` is the row's Approve button, if any. */
-export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
+export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
   const host = ctx.host;
   const url = safeLink(mr.web_url, host);
   const project = mr.references?.full ? mr.references.full.replace(/!\d+$/, '') : String(mr.web_url || '').replace(/^https?:\/\/[^/]+\//, '').replace(/\/-\/merge_requests\/.*$/, '');
@@ -633,8 +683,9 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
     return ss.every((x) => x === 'success' || x === 'skipped') ? 'success' : ss[0] || 'created';
   };
   const pipeline = pipe?.status
-    ? `<span class="pipe">${img(ciStatusIcon(pipe.status), `Pipeline: ${ciStatusInfo(pipe.status).label}`, 16, 'ci-ic')}${pipeUrl ? `<a href="${escapeHtml(pipeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ciStatusInfo(pipe.status).label)} #${escapeHtml(pipe.id)}</a>` : escapeHtml(ciStatusInfo(pipe.status).label)}</span>` +
-      (stages.length ? `<span class="stages">${stages.map((st) => `<span class="stage" title="${escapeHtml(`${st.name}: ${st.jobs.map((j) => `${j.name} (${j.status})`).join(', ')}`)}">${img(ciStatusIcon(stageStatus(st)), '', 14, 'ci-ic')}${escapeHtml(st.name)}</span>`).join('')}</span>` : '')
+    ? `<span class="pipe-row"><span class="pipe">${img(ciStatusIcon(pipe.status), `Pipeline: ${ciStatusInfo(pipe.status).label}`, 16, 'ci-ic')}${pipeUrl ? `<a href="${escapeHtml(pipeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(ciStatusInfo(pipe.status).label)} #${escapeHtml(pipe.id)}</a>` : escapeHtml(ciStatusInfo(pipe.status).label)}</span>` +
+      (stages.length ? `<span class="stages">${stages.map((st) => `<span class="stage" title="${escapeHtml(`${st.name}: ${st.jobs.map((j) => `${j.name} (${j.status})`).join(', ')}`)}">${img(ciStatusIcon(stageStatus(st)), '', 14, 'ci-ic')}${escapeHtml(st.name)}</span>`).join('')}</span>` : '') +
+      '</span>'
     : '<span class="note">No pipeline</span>';
   const branch = (b) => `<code>${escapeHtml(b)}</code>`;
   const html =
@@ -656,7 +707,8 @@ export function mrDetail({ mr, approvals, jobs }, ctx, approve = '') {
     ]) +
     (approve ? `<p class="dactions">${approve}</p>` : '') +
     '</div>' +
-    (mr.description && mr.description.trim() ? `<div class="dtext rich">${markdownToHtml(clip(mr.description, 20000))}</div>` : '<p class="note">No description.</p>');
+    (mr.description && mr.description.trim() ? `<div class="dtext rich">${markdownToHtml(clip(mr.description, 20000))}</div>` : '<p class="note">No description.</p>') +
+    diffsSection(diffs, url);
   return { title: mr.title || `Merge request !${mr.iid}`, html, url, urlLabel: 'Open in GitLab' };
 }
 
@@ -1005,7 +1057,7 @@ export const DASHBOARD_CSS = [
   '.drawer-body{padding:0 1.1rem 1.5rem;overflow:auto;flex:1}.dmeta{position:sticky;top:0;z-index:2;background:var(--panel);padding-top:1rem;margin:0 -1.1rem 1rem;padding-inline:1.1rem;border-bottom:1px solid var(--line);box-shadow:0 8px 12px -12px rgba(0,0,0,.45)}.dmeta .dfacts{margin-bottom:.9rem}.dmeta .dactions{margin:0 0 .9rem}@media (max-height:600px){.dmeta{position:static}}.dfacts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.45rem 1rem;margin:0 0 1rem;font-size:.88rem}.dfacts dt{color:var(--muted)}.dfacts dd{margin:0;overflow-wrap:anywhere}.dfacts .av{width:18px;height:18px}',
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
-  '.pipe{display:inline-flex;gap:.4rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
+  '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
   '.dactions{margin:0 0 1rem}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
@@ -1013,6 +1065,10 @@ export const DASHBOARD_CSS = [
   '.lbl{display:inline-block;font-size:.75rem;background:var(--subtle);border:1px solid var(--line);border-radius:999px;padding:0 .5rem;margin:0 .2rem .2rem 0}.drawer .sk{height:12px;border-radius:4px;background:var(--subtle);margin:.6rem 0}',
   '.tl-new{animation:tl-new 1.6s var(--ease)}@keyframes tl-new{0%,30%{background:var(--run-bg)}100%{background:transparent}}',
   '.btn-sm{padding:.2rem .6rem;font-size:.82rem;width:auto}.btn-sm .di{width:14px;height:14px}.btn-sm[data-busy]::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:tl-spin .7s linear infinite}.btn-sm[data-busy] .di{display:none}',
+  '.dash[data-sprintmine="1"] .board .tk:not(.mine){display:none}[data-col-count] .n-mine{display:none}.dash[data-sprintmine="1"] [data-col-count] .n-all{display:none}.dash[data-sprintmine="1"] [data-col-count] .n-mine{display:inline}',
+  '.diffs{display:grid;gap:.5rem}.dfile{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}.dfile summary{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;cursor:pointer;background:var(--subtle);font-size:.8rem;list-style-position:inside}.dfile summary code{font:.78rem var(--mono);overflow-wrap:anywhere;flex:1;min-width:0}',
+  '.dtag{font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 .4rem}.dstat{display:inline-flex;gap:.4rem;font:.75rem var(--mono);flex:none}.dadd{color:var(--ok)}.ddel{color:var(--closed)}.dnote{margin:0;padding:.5rem .7rem}',
+  '.diff{margin:0;overflow:auto;font:.74rem/1.5 var(--mono);max-height:70vh}.dl{display:block;white-space:pre;padding:0 .6rem;min-width:max-content}.dl-add{background:var(--ok-bg)}.dl-del{background:var(--closed-bg)}.dl-hunk{color:var(--muted);background:var(--subtle)}.dl-meta{color:var(--muted)}',
   '.mrlist .empty{display:none}.dash[data-nodraft="1"] .mrrow[data-f~=draft]{display:none}.chips-sep{flex:1}',
   '.chips .toggle[aria-pressed=true]{background:var(--run-bg);color:var(--run);border-color:var(--run)}',
   '.dash[data-mrf=review] .mrrow:not([data-f~=review]),.dash[data-mrf=mine] .mrrow:not([data-f~=mine]),.dash[data-mrf=human] .mrrow:not([data-f~=human]),.dash[data-mrf=bots] .mrrow:not([data-f~=bots]){display:none}',
@@ -1068,16 +1124,17 @@ export function dashboardScript(dashPath) {
   const B = JSON.stringify(dashPath);
   return `(function(){var B=${B},d=document.getElementById('dash');if(!d)return;var csrf=document.getElementById('dash-csrf'),busy=0;
 function theme(t){var root=document.documentElement,sec=location.protocol==='https:'?'; Secure':'';if(t==='light'||t==='dark'){root.setAttribute('data-theme',t);document.cookie='tl_theme='+t+'; Path=/; Max-Age=31536000; SameSite=Lax'+sec}else{root.removeAttribute('data-theme');document.cookie='tl_theme=; Path=/; Max-Age=0; SameSite=Lax'+sec}document.querySelectorAll('[data-theme-set]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-theme-set')===(t==='light'||t==='dark'?t:'auto')))})}
+function sprintmine(on){d.setAttribute('data-sprintmine',on?'1':'0');try{localStorage.setItem('tl-sprintmine',on?'1':'0')}catch(e){}mark()}
 function nodraft(on){d.setAttribute('data-nodraft',on?'1':'0');try{localStorage.setItem('tl-nodraft',on?'1':'0')}catch(e){}mark()}
-function mark(){document.querySelectorAll('[data-nodraft-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-nodraft')==='1'))});var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
+function mark(){document.querySelectorAll('[data-nodraft-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-nodraft')==='1'))});document.querySelectorAll('[data-sprintmine-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-sprintmine')==='1'))});var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
 function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e=document.createElement('div');e.className='toast';e.textContent=t;r.appendChild(e);setTimeout(function(){e.classList.add('out');setTimeout(function(){e.remove()},320)},3600)}
 function view(v){d.setAttribute('data-view',v);mark();document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')});try{sessionStorage.setItem('tl-view',v)}catch(e){}if(!rbusy&&dr&&!dr.hidden){rbusy=true;closeDetail();rbusy=false}route();window.scrollTo({top:0,behavior:'smooth'})}
 var tk=null;
-function colCount(c){var n=c.querySelectorAll('.tk').length,s=c.querySelector('[data-col-count]');if(s)s.textContent=n;var ul=c.querySelector('ul'),none=ul&&ul.querySelector('.none');if(n&&none)none.remove()}
+function colCount(c){var n=c.querySelectorAll('.tk').length,s=c.querySelector('[data-col-count]');if(s)s.innerHTML='<span class="n-all">'+n+'</span><span class="n-mine">'+c.querySelectorAll('.tk.mine').length+'</span>';var ul=c.querySelector('ul'),none=ul&&ul.querySelector('.none');if(n&&none)none.remove()}
 d.addEventListener('pointerdown',function(e){if(editing()||e.button>0||tk)return;var t=e.target.closest&&e.target.closest('.tk[data-issue]');if(!t||!t.closest('[data-col]'))return;tk={t:t,x:e.clientX,y:e.clientY,on:false,pid:e.pointerId}});
 d.addEventListener('pointermove',function(e){if(!tk)return;var t=tk.t;if(!tk.on){if(Math.abs(e.clientX-tk.x)+Math.abs(e.clientY-tk.y)<6)return;var r=t.getBoundingClientRect(),ph=mk('tk-ph');ph.style.height=r.height+'px';tk.from=t.closest('[data-col]');tk.list=t.parentNode;tk.index=arr(tk.list.children).indexOf(t);t.parentNode.insertBefore(ph,t);tk.ph=ph;tk.on=true;tk.dx=tk.x-r.left;tk.dy=tk.y-r.top;t.style.width=r.width+'px';t.style.left=r.left+'px';t.style.top=r.top+'px';t.classList.add('lifted-tk');d.appendChild(t);d.classList.add('layouting');try{t.setPointerCapture(tk.pid)}catch(x){}}
 autoAt(e.clientY);t.style.left=(e.clientX-tk.dx)+'px';t.style.top=(e.clientY-tk.dy)+'px';var col=null;d.querySelectorAll('[data-col]').forEach(function(c){if(inRect(c.getBoundingClientRect(),e.clientX,e.clientY))col=c});if(!col)return;d.querySelectorAll('.col.drop-here').forEach(function(x){if(x!==col)x.classList.remove('drop-here')});if(col!==tk.from)col.classList.add('drop-here');var ul=col.querySelector('ul'),items=arr(ul.querySelectorAll('.tk')).filter(function(x){return x!==t}),ref=null;for(var i=0;i<items.length;i++){var ir=items[i].getBoundingClientRect();if(e.clientY<ir.top+ir.height/2){ref=items[i];break}}var cur=tk.ph.nextSibling;while(cur&&cur===t)cur=cur.nextSibling;if(tk.ph.parentNode===ul&&cur===ref)return;var none=ul.querySelector('.none');if(none)none.hidden=true;ul.insertBefore(tk.ph,ref)});
-function tkDrop(){if(!tk)return;var m=tk;tk=null;asp=0;if(!m.on)return;if(!online()){m.t.classList.remove('lifted-tk');['left','top','width'].forEach(function(p){m.t.style[p]=''});m.ph.parentNode.insertBefore(m.t,m.ph);m.ph.remove();d.classList.remove('layouting');d.querySelectorAll('.col.drop-here').forEach(function(x){x.classList.remove('drop-here')});toast('You are offline. Move the ticket again once you are back online.');return}var t=m.t,to=m.ph.closest('[data-col]'),pr=m.ph.getBoundingClientRect();t.dataset.dragged='1';setTimeout(function(){delete t.dataset.dragged},60);t.style.transition='left .16s var(--ease),top .16s var(--ease)';t.style.left=pr.left+'px';t.style.top=pr.top+'px';setTimeout(function(){m.ph.parentNode.insertBefore(t,m.ph);m.ph.remove();t.classList.remove('lifted-tk');['transition','left','top','width'].forEach(function(p){t.style[p]=''});d.classList.remove('layouting');d.querySelectorAll('.col.drop-here').forEach(function(x){x.classList.remove('drop-here')});d.querySelectorAll('.board .none[hidden]').forEach(function(x){x.hidden=false});colCount(to);colCount(m.from);if(to===m.from)return;function back(){m.list.insertBefore(t,m.list.children[m.index]||null);colCount(to);colCount(m.from)}busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('key',t.getAttribute('data-issue'));body.set('to',to.getAttribute('data-col'));
+function tkDrop(){if(!tk)return;var m=tk;tk=null;asp=0;if(!m.on)return;if(!online()){m.t.classList.remove('lifted-tk');['left','top','width'].forEach(function(p){m.t.style[p]=''});m.ph.parentNode.insertBefore(m.t,m.ph);m.ph.remove();d.classList.remove('layouting');d.querySelectorAll('.col.drop-here').forEach(function(x){x.classList.remove('drop-here')});toast('You are offline. Move the ticket again once you are back online.');return}var t=m.t,to=m.ph.closest('[data-col]'),pr=m.ph.getBoundingClientRect();t.dataset.dragged='1';setTimeout(function(){delete t.dataset.dragged},60);t.style.transition='left .16s var(--ease),top .16s var(--ease)';t.style.left=pr.left+'px';t.style.top=pr.top+'px';setTimeout(function(){m.ph.parentNode.insertBefore(t,m.ph);m.ph.remove();t.classList.remove('lifted-tk');['transition','left','top','width'].forEach(function(p){t.style[p]=''});d.classList.remove('layouting');d.querySelectorAll('.col.drop-here').forEach(function(x){x.classList.remove('drop-here')});d.querySelectorAll('.board .none[hidden]').forEach(function(x){x.hidden=false});colCount(to);colCount(m.from);var sib=function(x,dir){x=x[dir];while(x&&!(x.classList&&x.classList.contains('tk')&&x.offsetParent!==null))x=x[dir];return x},nx=sib(t,'nextElementSibling'),pv=sib(t,'previousElementSibling');if(to===m.from&&m.list.children[m.index]===t)return;function back(){m.list.insertBefore(t,m.list.children[m.index]||null);colCount(to);colCount(m.from)}busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('key',t.getAttribute('data-issue'));body.set('to',to.getAttribute('data-col'));if(nx)body.set('before',nx.getAttribute('data-issue'));else if(pv)body.set('after',pv.getAttribute('data-issue'));
 fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'failed',text:'The answer could not be read. Reload the board.'}})}).then(function(r){if(r.status==='moved')t.classList.add('moved');else flip(back);toast(r.text)}).catch(function(){back();toast('The connection was lost. Reload the board to see where the ticket is now.')}).then(function(){busy--;setTimeout(refresh,800)})},170)}
 d.addEventListener('pointerup',tkDrop);d.addEventListener('pointercancel',tkDrop);
 var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0,dkey=null,dpush=false,rbusy=false;
@@ -1134,7 +1191,7 @@ d.addEventListener('pointermove',function(e){if(rz){rz.b.style.height=Math.max(1
 function endRz(){if(!rz&&!cz)return;if(rz)rz.b.classList.remove('resizing');if(cz)cz.c.classList.remove('resizing-col');rz=null;cz=null;d.classList.remove('layouting');saveL()}
 d.addEventListener('pointerup',endRz);d.addEventListener('pointercancel',endRz);
 d.addEventListener('dblclick',function(e){if(!editing())return;var h=e.target.closest&&e.target.closest('[data-resize]');if(h){h.closest('[data-sec]').style.height='';saveL();return}var ch=e.target.closest&&e.target.closest('[data-col-resize]');if(ch){var c=ch.parentNode,cs=colsOf(c.parentNode),n=cs[cs.indexOf(c)+1];if(n){var t=wOf(c)+wOf(n);c.style.setProperty('--w',String(t/2));n.style.setProperty('--w',String(t/2));saveL()}}});
-try{if(localStorage.getItem('tl-nodraft')==='1')d.setAttribute('data-nodraft','1')}catch(e){}
+try{if(localStorage.getItem('tl-nodraft')==='1')d.setAttribute('data-nodraft','1')}catch(e){}try{if(localStorage.getItem('tl-sprintmine')==='1')d.setAttribute('data-sprintmine','1')}catch(e){}
 try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}var ROUTE=/^#(overview|mrs|sprint|alerts|meetings|settings)(?:\\?(.*))?$/;
 function here(){var v=d.getAttribute('data-view'),q=new URLSearchParams();if(v==='overview'||v==='mrs')q.set('f',d.getAttribute('data-mrf')||'');if(dkey&&dr&&!dr.hidden)q.set(dkey[0],dkey[1]);var s=q.toString();return '#'+v+(s?'?'+s:'')}
 function route(){if(rbusy)return;var h=here();if(h===location.hash)return;try{history.pushState(null,'',location.pathname+location.search+h)}catch(e){}}
@@ -1142,7 +1199,7 @@ function unroute(){if(rbusy)return;try{history.replaceState(null,'',location.pat
 function apply(){var m=ROUTE.exec(location.hash);if(!m)return false;rbusy=true;try{var q=new URLSearchParams(m[2]||''),f=q.get('f');if(f&&/^[a-z]+$/.test(f)&&d.querySelector('[data-mrf-to="'+f+'"]')){d.setAttribute('data-mrf',f);try{sessionStorage.setItem('tl-mrf',f)}catch(e){}}if(d.getAttribute('data-view')!==m[1])view(m[1]);else mark();var o=null;['mr','issue','alert'].forEach(function(k){var x=q.get(k);if(x&&!o)o=[k,x]});if(!o)closeDetail();else if(!dkey||dr.hidden||dkey[0]!==o[0]||dkey[1]!==o[1]){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1].replace(/["\\\\]/g,''))+'"]');if(el)openDetail(el);else closeDetail()}dpush=false}finally{rbusy=false}unroute();return true}
 if(!apply())unroute();window.addEventListener('popstate',apply);window.addEventListener('hashchange',apply);mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;if(!online()){toast('You are offline. Approve again once you are back online.');return}b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}

@@ -71,6 +71,15 @@ function dashboardSources({ jira, opsgenie }) {
           return pick.to?.name || pick.name;
         }
       : null,
+    // Ranks a sprint ticket directly above `before` or below `after` (Jira Software's board order).
+    rank: jira.isConfigured()
+      ? async (key, { before, after }) => {
+          const body = { issues: [key], ...(before ? { rankBeforeIssue: before } : { rankAfterIssue: after }) };
+          const res = await jira.request('rest/agile/1.0/issue/rank', { method: 'PUT', body, resource: true });
+          const bad = (res?.entries || []).find((e) => e.status >= 400);
+          if (bad) throw new Error((bad.errors || []).join(' ') || `HTTP ${bad.status}`);
+        }
+      : null,
     alerts: opsgenie.isConfigured()
       ? async () => {
           const r = await opsgenie.getAllOpenAlerts();

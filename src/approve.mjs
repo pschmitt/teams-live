@@ -1894,8 +1894,9 @@ export class ApproveServer {
 
   /**
    * POST <dash>/move: moves one ticket of the active sprint to another board column (a Jira transition, made with
-   * the bot's Jira account; the server log names who asked). Same checks as an approval: Origin, CSRF, the ticket
-   * must be on this visitor's board. Answers `{status: moved|failed, text}`.
+   * the bot's Jira account; the server log names who asked) and, with `before` or `after` (the ticket it now sits
+   * above or below), ranks it there, also within its own column. Same checks as an approval: Origin, CSRF, the
+   * tickets must be on this visitor's board. Answers `{status: moved|failed, text}`.
    */
   async dashboardMove(req, res, session) {
     const answer = (status, text, code = 200) => this.json(res, code, { status, text });
@@ -1907,20 +1908,44 @@ export class ApproveServer {
     const column = String(parsed.form.get('to') || '');
     const labels = { todo: 'To do', inProgress: 'In progress', inReview: 'In review' };
     if (!/^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(key) || !labels[column]) return answer('failed', 'The request was rejected. Nothing was changed.', 400);
+    const near = (name) => String(parsed.form.get(name) || '').toUpperCase();
+    const [before, after] = [near('before'), near('after')];
+    if ([before, after].some((k) => k && (!/^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(k) || k === key))) return answer('failed', 'The request was rejected. Nothing was changed.', 400);
     const data = await this.dashboardData(session);
-    const onBoard = ['todo', 'inProgress', 'inReview'].some((k) => (data.sprint.data?.[k] || []).some((t) => String(t.key).toUpperCase() === key));
-    if (!onBoard) return answer('failed', `${key} is not on the sprint board. Nothing was changed.`, 404);
+    const columnOf = (k) => ['todo', 'inProgress', 'inReview'].find((c) => (data.sprint.data?.[c] || []).some((t) => String(t.key).toUpperCase() === k));
+    const from = columnOf(key);
+    if (!from) return answer('failed', `${key} is not on the sprint board. Nothing was changed.`, 404);
+    if ([before, after].some((k) => k && !columnOf(k))) return answer('failed', 'The neighbouring ticket is not on the sprint board. Nothing was changed.', 404);
     const fn = this.dashboard.sources?.move;
-    if (typeof fn !== 'function') return answer('failed', 'Moving tickets is not available. Nothing was changed.', 404);
+    const rank = this.dashboard.sources?.rank;
+    const reorder = (before || after) && typeof rank === 'function';
+    if (from === column && !reorder) return answer('failed', 'Ordering tickets is not available. Nothing was changed.', 404);
+    if (from !== column && typeof fn !== 'function') return answer('failed', 'Moving tickets is not available. Nothing was changed.', 404);
+    let status = '';
     try {
-      const status = await this.withLock(`jira:${key}`, () => fn(key, column));
-      log(`Dashboard: ${session.user.username} moved ${key} to ${status || labels[column]}`);
-      this.dashSourceCache.delete('sprint');
-      this.dashData.clear();
-      return answer('moved', `${key} moved to ${status || labels[column]}.`);
+      if (from !== column) {
+        status = (await this.withLock(`jira:${key}`, () => fn(key, column))) || labels[column];
+        log(`Dashboard: ${session.user.username} moved ${key} to ${status}`);
+      }
     } catch (err) {
       log(`Dashboard: moving ${key} for ${session.user.username} failed: ${err.message}`);
       return answer('failed', err.userFacing ? `${key}: ${err.message} Nothing was changed.` : `Jira did not move ${key}. Reload the board to see its current state.`);
+    } finally {
+      this.dashSourceCache.delete('sprint');
+      this.dashData.clear();
+    }
+    if (!reorder) return answer('moved', `${key} moved to ${status}.`);
+    try {
+      await this.withLock(`jira:${key}`, () => rank(key, before ? { before } : { after }));
+      log(`Dashboard: ${session.user.username} ranked ${key} ${before ? `above ${before}` : `below ${after}`}`);
+      return answer('moved', status ? `${key} moved to ${status}.` : `${key} ranked ${before ? `above ${before}` : `below ${after}`}.`);
+    } catch (err) {
+      log(`Dashboard: ranking ${key} for ${session.user.username} failed: ${err.message}`);
+      if (status) return answer('moved', `${key} moved to ${status}, but Jira kept its old order.`);
+      return answer('failed', `Jira did not reorder ${key}. Reload the board to see its current order.`);
+    } finally {
+      this.dashSourceCache.delete('sprint');
+      this.dashData.clear();
     }
   }
 

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, issueDetail, mrDetail, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, diffsSection, issueDetail, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -349,6 +349,55 @@ test('moving a ticket: one transition for a ticket on the board, after Origin an
     assert.deepEqual(ok, { status: 'moved', text: 'ABC-1 moved to In Review.' });
     assert.deepEqual(moves, [['ABC-1', 'inReview']]);
   });
+});
+
+test('ordering a ticket: a rank next to a ticket on the board, also within its column, and with a move', async () => {
+  const moves = [];
+  const ranks = [];
+  const sources = {
+    sprint: async () => ({ total: 3, todo: [{ key: 'ABC-1', summary: 'S', assignee: 'A', status: 'Open' }], inProgress: [], inReview: [{ key: 'ABC-2', summary: 'S', assignee: 'A', status: 'In Review' }, { key: 'ABC-3', summary: 'S', assignee: 'A', status: 'In Review' }] }),
+    move: async (key, to) => { moves.push([key, to]); return 'In Review'; },
+    rank: async (key, at) => { ranks.push([key, at]); },
+  };
+  await withDashboard({ sources }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const post = (body) => fetch(`${base}/approve/dashboard/move`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: ORIGIN }, body: new URLSearchParams(body).toString() });
+    assert.equal((await post({ csrf, key: 'ABC-3', to: 'inReview', before: 'ABC-9' })).status, 404, 'the neighbour must be on the board');
+    assert.equal((await post({ csrf, key: 'ABC-3', to: 'inReview', before: 'x' })).status, 400);
+    assert.deepEqual(await (await post({ csrf, key: 'ABC-3', to: 'inReview', before: 'ABC-2' })).json(), { status: 'moved', text: 'ABC-3 ranked above ABC-2.' });
+    assert.deepEqual(moves, [], 'no transition within a column');
+    assert.deepEqual(await (await post({ csrf, key: 'ABC-1', to: 'inReview', after: 'ABC-3' })).json(), { status: 'moved', text: 'ABC-1 moved to In Review.' });
+    assert.deepEqual(moves, [['ABC-1', 'inReview']]);
+    assert.deepEqual(ranks, [['ABC-3', { before: 'ABC-2' }], ['ABC-1', { after: 'ABC-3' }]]);
+  });
+});
+
+test('sprint board: an "Only mine" toggle with per-column counts of the visitor’s tickets', () => {
+  const html = sprintSection({ data: { todo: [{ key: 'ABC-1', summary: 's', assignee: 'Alice' }, { key: 'ABC-2', summary: 's', assignee: 'Bob' }], inProgress: [], inReview: [] } }, { name: 'Alice', avatars: {} });
+  assert.match(html, /data-sprintmine-toggle aria-pressed="false"[^>]*>Only mine<span class="n">1<\/span>/);
+  assert.match(html, /data-col="todo"><h4>To do<span data-col-count><span class="n-all">2<\/span><span class="n-mine">1<\/span>/);
+  assert.match(dashboardScript('/dashboard'), /tl-sprintmine/);
+});
+
+test('merge request panel: the pipeline and its stages on one row, the diff of each file below', () => {
+  const ctx = { host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const mr = { iid: 7, state: 'opened', title: 'T', web_url: `https://${GL}/group/app/-/merge_requests/7`, head_pipeline: { id: 5, status: 'running', web_url: `https://${GL}/group/app/-/pipelines/5` } };
+  const diffs = [
+    { old_path: 'a.js', new_path: 'a.js', diff: '@@ -1,2 +1,2 @@\n-old <b>\n+new\n same\n' },
+    { old_path: 'big.bin', new_path: 'big.bin', diff: '', too_large: true },
+    { old_path: 'n.txt', new_path: 'n.txt', new_file: true, diff: '@@ -0,0 +1 @@\n+x\n' },
+  ];
+  const { html } = mrDetail({ mr, jobs: [{ stage: 'test', name: 'unit', status: 'running' }], diffs }, ctx);
+  assert.match(html, /<span class="pipe-row"><span class="pipe">[\s\S]*?<\/span><span class="stages">/, 'stages sit next to the pipeline link');
+  assert.match(html, /<h3 class="dsub">Changes<\/h3><div class="diffs"><details class="dfile" open><summary><code>a\.js<\/code><span class="dstat"><span class="dadd">\+1<\/span><span class="ddel">−1<\/span>/);
+  assert.match(html, /<span class="dl dl-hunk">@@ -1,2 \+1,2 @@<\/span><span class="dl dl-del">-old &lt;b&gt;<\/span><span class="dl dl-add">\+new<\/span><span class="dl"> same<\/span><\/pre>/, 'escaped, one line each');
+  assert.match(html, /big\.bin[\s\S]*?too large or binary/);
+  assert.match(html, /n\.txt<\/code><span class="dtag">added<\/span>/);
+  assert.equal(diffsSection(null), '', 'nothing when GitLab gave no diffs');
+  const many = Array.from({ length: 4 }, (_, i) => ({ new_path: `f${i}`, diff: '+a\n' }));
+  assert.doesNotMatch(diffsSection(many), /open>/, 'collapsed when there are many files');
 });
 
 test('the page script parses (a syntax error would leave the whole page inert)', () => {

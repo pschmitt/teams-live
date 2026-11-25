@@ -565,11 +565,24 @@ export function teamLeaveSection(leave, ctx) {
   }).join('');
   const rows = team.slice(0, 40).map((name) => {
     const own = byName.get(name) || [];
-    const cells = days.map((d, i) => {
-      const a = own.find((x) => x.startDate <= d && x.endDate >= d);
-      const cls = ['tl-c', a ? `ab ab-${absenceKind(a.category)}` : ''].filter(Boolean).join(' ');
-      return `${i > 0 && i % 5 === 0 ? '<span class="tl-gap"></span>' : ''}<span class="${cls}"${a ? ` title="${escapeHtml(`${name}: ${a.category}${a.status ? `, ${a.status}` : ''} (${a.startDate === a.endDate ? a.startDate : `${a.startDate} – ${a.endDate}`})`)}"` : ''}></span>`;
-    }).join('');
+    // A run of days of the same absence is one bar: it spans those day columns and the week spacers between them.
+    let cells = '';
+    for (let i = 0; i < days.length; ) {
+      const gap = i > 0 && i % 5 === 0 ? '<span class="tl-gap"></span>' : '';
+      const a = own.find((x) => x.startDate <= days[i] && x.endDate >= days[i]);
+      if (!a) {
+        cells += `${gap}<span class="tl-c"></span>`;
+        i += 1;
+        continue;
+      }
+      let j = i + 1;
+      while (j < days.length && own.find((x) => x.startDate <= days[j] && x.endDate >= days[j]) === a) j += 1;
+      let columns = j - i;
+      for (let k = i + 1; k < j; k++) if (k % 5 === 0) columns += 1;
+      const title = `${name}: ${a.category}${a.status ? `, ${a.status}` : ''} (${a.startDate === a.endDate ? a.startDate : `${a.startDate} – ${a.endDate}`})`;
+      cells += `${gap}<span class="tl-c ab ab-${absenceKind(a.category)}"${columns > 1 ? ` style="grid-column:span ${columns}"` : ''} title="${escapeHtml(title)}"></span>`;
+      i = j;
+    }
     return `<div class="tl-row${own.length ? '' : ' tl-here'}" data-key="${escapeHtml(`tl:${name}`)}"><span class="tl-n">${personRef(name, ctx.avatars)}</span>${cells}</div>`;
   }).join('');
   const kinds = [...new Set(absences.map((a) => absenceKind(a.category)))];

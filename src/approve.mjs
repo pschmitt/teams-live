@@ -1915,7 +1915,12 @@ export class ApproveServer {
   dashSourceNow(name) {
     const read = this.dashSource(name, { retryMs: 120_000 });
     read.then((r) => this.dashSourceSettled.set(name, r)).catch(() => {});
-    return Promise.resolve(this.dashSourceSettled.get(name) || { pending: true });
+    const settled = this.dashSourceSettled.get(name);
+    if (settled) return Promise.resolve(settled);
+    // Nothing settled yet (a restart): the source may answer at once from its saved data, so give it a moment.
+    let timer;
+    return Promise.race([read, new Promise((resolve) => { timer = setTimeout(() => resolve({ pending: true }), 1_500); timer.unref?.(); })])
+      .finally(() => clearTimeout(timer));
   }
 
   dashSource(name, { retryMs = 10_000 } = {}) {

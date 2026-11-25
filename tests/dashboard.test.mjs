@@ -694,6 +694,15 @@ test('the Team leave card: a row per team member over four weeks of weekdays, ab
   assert.ok(dashboardPeople({ leave }).has('Alice Example'));
 });
 
+test('after a restart the Leave card shows saved HR WORKS data at once, not "Reading HR WORKS"', async () => {
+  await withDashboard({ sources: { leave: async () => [{ name: 'Erin Example', category: 'Vacation', startDate: '2000-01-01', endDate: '2999-01-01' }] } }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const page = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(page, /data-person="Erin Example"/);
+    assert.doesNotMatch(page, /Reading HR WORKS/);
+  });
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

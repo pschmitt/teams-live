@@ -6,37 +6,38 @@ const lookup = (results, hrworks = null) => MergeRequestWatcher.prototype.person
   userDirectory: { searchDirectory: async () => results },
   hrworks,
 });
+const absenceOf = (hrworks) => MergeRequestWatcher.prototype.personAbsence.bind({ hrworks });
 
-test('person info: one exact directory match, with its HR WORKS absence', async () => {
-  const hrworks = { findPersonAbsence: async () => ({ checked: true, absence: { category: 'Vacation', startDate: '2026-11-24', endDate: '2026-11-28' } }) };
+test('person info: one exact directory match, keeping its entry for HR WORKS', async () => {
   const info = await lookup([
     { displayName: 'Bob Example-Other', email: 'other@example.com' },
     { displayName: 'Bob Example', email: 'bob@example.com', jobTitle: 'Engineer', department: 'Platform', companyName: 'Example Corp' },
-  ], hrworks)('Bob Example');
+  ])('Bob Example');
   assert.equal(info.found, true);
   assert.equal(info.email, 'bob@example.com');
   assert.equal(info.company, 'Example Corp');
   assert.equal(info.presence, null, 'no presence without an MRI');
-  assert.deepEqual(info.absence, { state: 'away', current: { category: 'Vacation', startDate: '2026-11-24', endDate: '2026-11-28' } });
+  assert.equal(info.directory.email, 'bob@example.com');
+  assert.equal('absence' in info && info.absence !== null, false, 'the absence is not part of the cached answer');
 });
 
-test('person info: an ambiguous name is not guessed, a single result is taken, HR WORKS failures read as unavailable', async () => {
+test('person info: an ambiguous name is not guessed, a single result is taken', async () => {
   const twins = await lookup([{ displayName: 'Bob Example', mri: '8:orgid:a' }, { displayName: 'Bob Example', mri: '8:orgid:b' }])('Bob Example');
   assert.equal(twins.found, false);
   assert.match(twins.reason, /Several people/);
   assert.equal((await lookup([])('Nobody Example')).found, false);
-  const failing = { findPersonAbsence: async () => { throw new Error('down'); } };
-  const single = await lookup([{ displayName: 'Robert Example', email: 'r@example.com' }], failing)('Bob Example');
-  assert.equal(single.found, true);
-  assert.deepEqual(single.absence, { state: 'unavailable' });
+  assert.equal((await lookup([{ displayName: 'Robert Example', email: 'r@example.com' }])('Bob Example')).found, true);
 });
 
-test('person info: the panel reads HR WORKS offline only and does not wait for a slow source', async () => {
+test('person absence: read offline from HR WORKS for every panel; pending until the calendar is loaded', async () => {
+  const info = { found: true, directory: { displayName: 'Bob Example' } };
   const calls = [];
-  const hrworks = { findPersonAbsence: (person, opts) => { calls.push(opts); return new Promise(() => {}); } };
-  const started = Date.now();
-  const info = await lookup([{ displayName: 'Bob Example', email: 'bob@example.com' }], hrworks)('Bob Example');
-  assert.deepEqual(calls, [{ offline: true }]);
-  assert.deepEqual(info.absence, { state: 'pending' });
-  assert.ok(Date.now() - started < 4_000);
+  const away = absenceOf({ findPersonAbsence: async (person, opts) => { calls.push([person.displayName, opts]); return { absence: { category: 'Vacation' } }; } });
+  assert.deepEqual(await away(info), { state: 'away', current: { category: 'Vacation' } });
+  assert.deepEqual(calls, [['Bob Example', { offline: true }]]);
+  assert.deepEqual(await absenceOf({ findPersonAbsence: async () => ({ reason: 'calendar_unavailable' }) })(info), { state: 'pending' });
+  assert.deepEqual(await absenceOf({ findPersonAbsence: async () => ({ reason: 'not_found' }) })(info), { state: 'not_found' });
+  assert.deepEqual(await absenceOf({ findPersonAbsence: async () => { throw new Error('x'); } })(info), { state: 'unavailable' });
+  assert.equal(await absenceOf(null)(info), null, 'no HR WORKS');
+  assert.equal(await away({ found: false }), null);
 });

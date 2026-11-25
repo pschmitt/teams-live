@@ -424,6 +424,7 @@ async function main() {
         avatarOf: (name) => watcher.webAvatarOf(name),
         avatarWarm: (names) => watcher.webAvatarWarm(names),
         personInfo: (name) => watcher.personInfo(name),
+        personAbsence: (info) => watcher.personAbsence(info),
         // A cached photo of a person ({name, email}) or null, without the initials fallback.
         avatarPeek: (person) => (watcher.suppressAvatars ? null : watcher.avatarService?.peek?.(person)) || null,
         recordApprover: (project, iid, user) => watcher.recordWebApprover(project, iid, user),

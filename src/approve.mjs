@@ -634,6 +634,7 @@ export class ApproveServer {
     avatarWarm = null,
     avatarPeek = null,
     personInfo = null,
+    personAbsence = null,
     recordApprover = null,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
@@ -682,6 +683,8 @@ export class ApproveServer {
     this.avatarWarm = typeof avatarWarm === 'function' ? avatarWarm : null;
     // Who a person is and whether they are around (Teams directory and presence, HR WORKS): `(name) => info`.
     this.personInfo = typeof personInfo === 'function' ? personInfo : null;
+    // Their HR WORKS absence, read fresh for every panel (it comes from memory): `(info) => absence`.
+    this.personAbsence = typeof personAbsence === 'function' ? personAbsence : null;
     // (person) => cached photo or null: for people known by email (the on-duty responders from OpsGenie).
     this.avatarPeek = typeof avatarPeek === 'function' ? avatarPeek : null;
     // (project, iid, {username, name}) => void: who really approved, so the card can show them instead of the bot.
@@ -2118,11 +2121,14 @@ export class ApproveServer {
       hit.promise.catch(() => { if (this.dashSourceCache.get(key) === hit) this.dashSourceCache.delete(key); });
     }
     try {
-      const info = await hit.promise;
+      const cached = await hit.promise;
+      // The absence is not cached with the rest: it is read from memory for every panel, so it matches the Leave card.
+      let absence = cached?.absence ?? null;
+      if (this.personAbsence) { try { absence = await this.personAbsence(cached); } catch { absence = { state: 'unavailable' }; } }
+      const info = { ...(cached || {}), absence };
       const t2 = performance.now();
-      // HR WORKS did not answer within its budget: keep this answer only briefly, the page asks again.
-      const pending = info?.absence?.state === 'pending';
-      if (pending && this.dashSourceCache.get(key) === hit) hit.at = Math.min(hit.at, this.now() - 120_000 + 2_500);
+      // HR WORKS is not loaded yet: the page asks again in a moment.
+      const pending = absence?.state === 'pending';
       await this.warmBriefly([name]);
       const avatars = {};
       try { const u = this.avatarOf?.(name); if (u) avatars[name] = u; } catch { /* initials */ }

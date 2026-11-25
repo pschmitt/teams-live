@@ -37,7 +37,7 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now, mergeEnabled = false, personInfo = null } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now, mergeEnabled = false, personInfo = null, personAbsence = null } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
@@ -50,6 +50,7 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     now,
     mergeEnabled,
     personInfo,
+    personAbsence,
     mergePollMs: 0,
     mergePollAttempts: 2,
     sleep: async () => {},
@@ -594,6 +595,24 @@ test('a slow or failing HR WORKS never holds up the dashboard: the Leave card sh
     assert.match(page, /Reading HR WORKS/);
     assert.match(data.sections.leave, /Reading HR WORKS/);
     assert.equal(calls, 1, 'one read in flight, not one per refresh');
+  });
+});
+
+test('the person panel reads the absence fresh for every request, while the directory answer stays cached', async () => {
+  let state = 'pending';
+  const asked = [];
+  const personInfo = async (name) => { asked.push(name); return { found: true, name, directory: { displayName: name } }; };
+  const personAbsence = async () => (state === 'pending' ? { state } : { state: 'away', current: { category: 'Vacation', startDate: '2026-11-25' } });
+  await withDashboard({ personInfo, personAbsence }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const get = async () => (await fetch(`${base}/approve/dashboard/person?name=${encodeURIComponent('Bob Example')}`, { headers: { Cookie: cookie } })).json();
+    const first = await get();
+    assert.equal(first.pending, true);
+    state = 'away';
+    const second = await get();
+    assert.equal(second.pending, false);
+    assert.match(second.html, /pill-bad">Away<\/span><span class="note">Vacation/);
+    assert.deepEqual(asked, ['Bob Example'], 'the directory was asked once');
   });
 });
 

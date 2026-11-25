@@ -1960,18 +1960,29 @@ export class MergeRequestWatcher {
           return pr ? { availability: pr.availability || '', activity: pr.activity || '', outOfOffice: pr.calendarData?.isOutOfOffice === true } : null;
         }).catch(() => null), 4_000)
       : Promise.resolve(null);
-    const absence = this.hrworks
-      ? within(Promise.resolve(this.hrworks.findPersonAbsence(person, { offline: true })).then((r) => {
-          if (!r) return null;
-          if (r.error) return { state: 'unavailable' };
-          if (r.absence) return { state: 'away', current: r.absence };
-          if (r.reason === 'not_found') return { state: 'not_found' };
-          if (r.reason === 'calendar_unavailable') return { state: 'unavailable' };
-          return { state: 'present', upcoming: r.upcomingAbsence || null };
-        }).catch(() => ({ state: 'unavailable' })), 3_000).then((v) => (v === undefined ? { state: 'pending' } : v))
-      : Promise.resolve(null);
-    [info.presence, info.absence] = await Promise.all([presence, absence]);
+    info.presence = await presence;
+    // The directory entry, for matching the person in HR WORKS (see personAbsence).
+    info.directory = person;
     return info;
+  }
+
+  /**
+   * The HR WORKS absence of a person `personInfo` found, from the calendar the background prefetch keeps in memory
+   * (never a call to Home Assistant, so it costs nothing and is read fresh for every panel). `pending` while that
+   * calendar is not loaded yet.
+   */
+  async personAbsence(info) {
+    if (!this.hrworks || !info?.found || !info.directory) return null;
+    try {
+      const r = await this.hrworks.findPersonAbsence(info.directory, { offline: true });
+      if (!r) return null;
+      if (r.absence) return { state: 'away', current: r.absence };
+      if (r.reason === 'not_found') return { state: 'not_found' };
+      if (r.reason === 'calendar_unavailable') return { state: 'pending' };
+      return { state: 'present', upcoming: r.upcomingAbsence || null };
+    } catch {
+      return { state: 'unavailable' };
+    }
   }
 
   /** Loads the photos of the people an approval page shows (bounded by the picture service). */

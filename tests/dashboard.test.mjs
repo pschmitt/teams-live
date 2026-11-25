@@ -141,6 +141,8 @@ test('the page shows the merge requests read as the visitor, escaped, with the b
     assert.match(html, /data-approve data-project="group\/app" data-iid="7"/);
     assert.match(html, /data-f="human review"/);
     assert.match(html, /data-mrf="review"/, 'what waits for the visitor is shown first');
+    assert.match(html, /<h2 id="h-mrs">[\s\S]*?<\/h2><div class="chips hchips"[^>]*><button type="button" data-mrf-to="review">/, 'the filters sit in the card header');
+    assert.match(html, /<h2 id="h-sprint">[\s\S]*?<\/h2><button type="button" class="toggle chip-h" data-sprintmine-toggle/, 'Only mine sits in the sprint header, outside the edit tools');
     assert.ok(html.includes('Rotate &lt;keys&gt;'));
     assert.match(html, /<li class="tk mine"/, 'the visitor’s own ticket is marked');
     assert.match(html, /Could not read OpsGenie right now/, 'a failing source is named, not its error');

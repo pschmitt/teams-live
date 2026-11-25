@@ -169,9 +169,27 @@ test('the signed-in profile fills an omitted directory result and preserves ambi
       fetchPhoto: async (mri) => (fetched.push(mri), photo()),
     });
     await service.avatarsFor([name]);
-    assert.deepEqual(fetched, expected);
+    // The signed-in photo may be fetched speculatively, but ambiguity must
+    // still prevent it from being displayed.
+    if (name === self.displayName) assert.ok(fetched.includes(DAVE));
     assert.equal(Boolean(service.peek(name)), expected.length > 0);
   }
+});
+
+test('fetches the signed-in photo while directory search is still running', async () => {
+  let finishSearch;
+  let photoStarted;
+  const started = new Promise((resolve) => { photoStarted = resolve; });
+  const service = new AvatarService({
+    getSelfProfile: () => ({ displayName: 'Frank Example', mri: DAVE }),
+    searchFn: () => new Promise((resolve) => { finishSearch = resolve; }),
+    fetchPhoto: async () => { photoStarted(); return photo(); },
+  });
+  const result = service.avatarsFor(['Frank Example']);
+  await started;
+  assert.equal(service.peek('Frank Example'), null, 'speculative photo is not displayed before identity is confirmed');
+  finishSearch([]);
+  assert.ok((await result)['Frank Example']);
 });
 
 test('search fallback fails closed when the result page is full (truncated)', async () => {

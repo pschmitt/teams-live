@@ -2761,6 +2761,21 @@ export class MergeRequestWatcher {
     return avatars;
   }
 
+  // Record the photos available when a status card was rendered. A later poll
+  // can then upgrade a placeholder after a lookup exceeded the card deadline.
+  mrAvatarSnapshot(mr, details) {
+    if (!this.avatarService || this.suppressAvatars) return null;
+    return new Map(collectCardPeople(this.mrCardPeopleData(mr, details))
+      .map((name) => [name, Boolean(this.avatarService.peek(name))]));
+  }
+
+  mrAvatarAvailable(mr, details) {
+    if (!mr.cardAvatarSnapshot || !this.avatarService) return false;
+    return collectCardPeople(this.mrCardPeopleData(mr, details)).some((name) =>
+      mr.cardAvatarSnapshot.has(name) && !mr.cardAvatarSnapshot.get(name) && this.avatarService.peek(name)
+    );
+  }
+
   /**
    * The author an MR card shows: this check's, else the one last seen for the
    * merge request (a failed lookup must not drop the row from a refresh).
@@ -2908,6 +2923,7 @@ export class MergeRequestWatcher {
       mrDetails?.titleChanged ||
       mrDetails?.draftChanged ||
       mrDetails?.jiraChanged ||
+      mrDetails?.avatarChanged ||
       (!entry.isHistory && !mr.ciMessageServerId)
     ) {
       shouldNotify = true;
@@ -2929,6 +2945,7 @@ export class MergeRequestWatcher {
         pipeline: this.mrCardPipeline(mr, pipeline),
       })
     );
+    const avatarSnapshot = this.mrAvatarSnapshot(mr, mrDetails);
 
     const mrUrl = mrDetails?.web_url || this.gitlab.mrLink(mr.project, mr.iid);
 
@@ -2936,6 +2953,7 @@ export class MergeRequestWatcher {
       log(`editing original message with status (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
       const editResult = await editOriginalMessage(entry.conversationId, entry.messageId, mrUrl, msg);
       if (editResult.ok) {
+        mr.cardAvatarSnapshot = avatarSnapshot;
         entry.editedOriginal = true;
         mr.lastReportedClosed = false;
         await this.dropPendingReaction(entry);
@@ -2950,6 +2968,7 @@ export class MergeRequestWatcher {
       log(`updating status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid} (msg ${mr.ciMessageServerId})`);
       const updateResult = await updateReply(entry.conversationId, mr.ciMessageServerId, entry, msg, { preserveCard: true });
       if (updateResult.ok) {
+        mr.cardAvatarSnapshot = avatarSnapshot;
         mr.lastReportedClosed = false;
         this.saveState();
         return;
@@ -2960,6 +2979,7 @@ export class MergeRequestWatcher {
     log(`posting new status comment (CI: ${pipeline?.status}, approved: ${isApproved}) for ${mr.project}!${mr.iid}`);
     const result = await sendReply(entry.conversationId, entry, msg);
     if (result.ok && (result.value?.timestamp || result.value?.messageId)) {
+      mr.cardAvatarSnapshot = avatarSnapshot;
       mr.ciMessageServerId = String(result.value.timestamp || result.value.messageId);
       mr.lastReportedClosed = false;
       this.saveState();
@@ -3897,6 +3917,7 @@ export class MergeRequestWatcher {
           ? (mr.lastReportedApprovedBy ?? null)
           : (mrState.approvedBy || []).filter(Boolean).slice().sort().join(', ');
         const approversChanged = mr.lastReportedApprovedBy !== approversKey;
+        const avatarChanged = this.isRecentMrMessage(entry, mr) && this.mrAvatarAvailable(mr, mrState);
         const needsRebase = Boolean(mrState.needsRebase);
         const rebaseChanged = mr.lastReportedNeedsRebase !== needsRebase;
         const isAutoMerge =
@@ -3914,6 +3935,7 @@ export class MergeRequestWatcher {
           (pipelineChanged ||
             approvalChanged ||
             approversChanged ||
+            avatarChanged ||
             rebaseChanged ||
             autoMergeChanged ||
             autoMergeUserChanged ||
@@ -3937,6 +3959,7 @@ export class MergeRequestWatcher {
               ...mrState,
               approvalChanged,
               approversChanged,
+              avatarChanged,
               rebaseChanged,
               autoMergeChanged,
               autoMergeUserChanged,

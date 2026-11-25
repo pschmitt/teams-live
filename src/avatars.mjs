@@ -485,6 +485,13 @@ export class AvatarService {
       const name = typeof person === 'string' ? person : person?.name;
       if (!name || seen.has(name)) continue;
       seen.add(name);
+      // Directory search often omits the signed-in user. Start their photo request
+      // alongside the search, but do not use it until the search confirms that
+      // the full name is unambiguous.
+      const self = this.getSelfProfile?.();
+      if (norm(name).split(' ').length >= 2 && norm(self?.displayName) === norm(name) && isOrgIdMri(self?.mri)) {
+        this.#load(self.mri, size).catch(() => {});
+      }
       jobs.push(
         this.#resolve(person)
           .then((mri) => (mri ? this.#load(mri, size) : null))

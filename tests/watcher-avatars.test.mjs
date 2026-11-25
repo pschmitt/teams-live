@@ -157,6 +157,66 @@ test('MR cards show the pictures of the approvers once they are prefetched', asy
   assert.deepEqual(names, ['Alice Example', 'Bob Example']);
 });
 
+test('a late approver photo refreshes the existing MR card once on the next poll', async () => {
+  const watcher = richWatcher();
+  watcher.config.gitlab.notify = { ci: { enable: true, on_success: true, on_failure: true } };
+  watcher.isRecentMrMessage = () => true;
+  watcher.refreshBotNames = async () => {};
+  watcher.setCommandReaction = async () => {};
+  let finishPhoto;
+  watcher.avatarService = new AvatarService({
+    directory,
+    deadlineMs: 10,
+    fetchPhoto: () => new Promise((resolve) => { finishPhoto = resolve; }),
+  });
+  const state = {
+    title: 'Example', state: 'opened', status: 'approved', approved: true, approvalKnown: true,
+    approvedBy: ['Alice Example'], needsRebase: false, autoMerge: false,
+    pipeline: { id: 7, status: 'running' },
+  };
+  watcher.gitlab.getMrStatus = async () => ({ ...state });
+  watcher.gitlab.pipelineLink = (project, id) => `https://gitlab.example.com/${project}/-/pipelines/${id}`;
+  const messageId = String(Date.now());
+  const mr = { project: 'group/app', iid: 7, title: 'Example', status: 'approved' };
+  const entry = { conversationId: CONV, messageId, createdAt: Date.now(), from: 'Bob Example', mrs: [mr] };
+  const key = `${CONV}/${messageId}`;
+  watcher.watched.set(key, entry);
+  const original = { ...transport };
+  const calls = [];
+  let rejectEdit = true;
+  transport.sendMessage = async (...args) => {
+    calls.push({ kind: 'send', args });
+    return { ok: true, value: { timestamp: '1700000000001' } };
+  };
+  transport.editMessage = async (...args) => {
+    calls.push({ kind: 'edit', args });
+    if (rejectEdit) return { ok: false, error: new Error('temporary failure') };
+    return { ok: true, value: {} };
+  };
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await watcher.checkWatchedKey(key);
+    assert.equal(calls.length, 1);
+    assert.equal(personImages(sentCard(calls[0].args)).length, 0);
+    await watcher.checkWatchedKey(key);
+    assert.equal(calls.length, 1, 'no repeated edit while lookup is pending');
+    finishPhoto({ kind: 'photo', bytes: fakeJpeg() });
+    await new Promise((resolve) => setImmediate(resolve));
+    await watcher.checkWatchedKey(key);
+    assert.deepEqual(calls.map((call) => call.kind), ['send', 'edit']);
+    rejectEdit = false;
+    await watcher.checkWatchedKey(key);
+    assert.deepEqual(calls.map((call) => call.kind), ['send', 'edit', 'edit'], 'a failed edit is retried');
+    const editedCard = JSON.parse(calls[2].args[4].properties.cards)[0].content;
+    assert.deepEqual(personImages(editedCard).map((image) => image.altText), ['Alice Example']);
+    await watcher.checkWatchedKey(key);
+    assert.equal(calls.length, 3, 'the same photo does not trigger further edits');
+  } finally {
+    clearTimeout(keepAlive);
+    Object.assign(transport, original);
+  }
+});
+
 test('MR merged and closed cards fall back to the last reported approvers', async () => {
   const watcher = richWatcher();
   const mr = { project: 'group/app', iid: 7, title: 'Example', lastReportedApprovalStatus: true, lastReportedApprovedBy: 'Alice Example' };

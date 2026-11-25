@@ -52,7 +52,7 @@
 // read back, and the link is used up only when that read confirms it.
 
 import { buildApprovalNote } from './approval-note.mjs';
-import { userApprovalPreflight, userApprovalWrite } from './user-approval.mjs';
+import { userApprovalPreflight, userApprovalWrite, userMergePreflight, userMergeWrite, userMrRead } from './user-approval.mjs';
 import { BATCH_APPROVAL_SCRIPT } from './batch-approval-page.mjs';
 import { teamsMessageLink } from './message-links.mjs';
 import { formatPlace } from './geoip.mjs';
@@ -234,7 +234,7 @@ export class ApprovalStore {
       for (const r of Array.isArray(data?.mergeRecords) ? data.mergeRecords : []) this.adopt(r, 'merge');
       for (const r of Array.isArray(data?.rebaseRecords) ? data.rebaseRecords : []) this.adopt(r, 'rebase');
       for (const r of Array.isArray(data?.batchRecords) ? data.batchRecords : []) {
-        if (typeof r?.id === 'string' && ID_PATTERN.test(r.id) && ['batch-approve', 'batch-open'].includes(r.action) &&
+        if (typeof r?.id === 'string' && ID_PATTERN.test(r.id) && ['batch-approve', 'batch-open', 'batch-merge'].includes(r.action) &&
             Array.isArray(r.items) && r.items.length > 0 && r.items.length <= 20 &&
             r.items.every((item) => typeof item.project === 'string' && typeof item.iid === 'string' && typeof item.sha === 'string') &&
             Number.isFinite(r.createdAt) && Number.isFinite(r.expiresAt) && r.status === 'open') this.records.set(r.id, r);
@@ -296,10 +296,10 @@ export class ApprovalStore {
       // key and would otherwise load a merge link as an approval link.
       const state = {
         version: 5,
-        records: all.filter((r) => !['merge', 'rebase', 'batch-approve', 'batch-open'].includes(r.action)),
+        records: all.filter((r) => !['merge', 'rebase', 'batch-approve', 'batch-open', 'batch-merge'].includes(r.action)),
         mergeRecords: all.filter((r) => r.action === 'merge'),
         rebaseRecords: all.filter((r) => r.action === 'rebase'),
-        batchRecords: all.filter((r) => r.action === 'batch-approve' || r.action === 'batch-open'),
+        batchRecords: all.filter((r) => ['batch-approve', 'batch-open', 'batch-merge'].includes(r.action)),
         approvedHeads: [...this.approvedHeads].map(([key, at]) => ({ key, at })),
       };
       fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
@@ -371,9 +371,9 @@ export class ApprovalStore {
 
   /** A bounded capability for a fixed list. Tokens remain in memory, hashes are persisted. */
   batchLinkFor(items, action) {
-    if (!['batch-approve', 'batch-open'].includes(action) || !Array.isArray(items) || !items.length || items.length > 20) return null;
+    if (!['batch-approve', 'batch-open', 'batch-merge'].includes(action) || !Array.isArray(items) || !items.length || items.length > 20) return null;
     const clean = items.map(({ project, iid, sha }) => ({ project: String(project || ''), iid: String(iid || ''), sha: String(sha || '') }));
-    if (clean.some((item) => !item.project || !item.iid || (action === 'batch-approve' && !item.sha))) return null;
+    if (clean.some((item) => !item.project || !item.iid || (action !== 'batch-open' && !item.sha))) return null;
     const key = `${action}:${JSON.stringify(clean)}`;
     this.prune();
     const cached = this.minted.get(key);
@@ -749,8 +749,10 @@ export class ApproveServer {
     }
   }
 
+  /** A link for a fixed list: `approve`, `open` or (while merging is on) `merge`, each pinned to its head commit. */
   batchLinkFor(items, action) {
-    const token = this.store.batchLinkFor(items, action === 'open' ? 'batch-open' : 'batch-approve');
+    if (action === 'merge' && !this.mergeEnabled) return null;
+    const token = this.store.batchLinkFor(items, action === 'open' ? 'batch-open' : action === 'merge' ? 'batch-merge' : 'batch-approve');
     return token ? `${this.origin}${this.basePath}${action === 'open' ? '/open' : '/'}#${token}` : null;
   }
 
@@ -894,12 +896,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/merge', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/merge', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1059,6 +1061,7 @@ export class ApproveServer {
     // Old open-all links still lead here after bootstrap.
     if (session.record.action === 'batch-open') return this.showBatchOpen(res, session.record);
     if (session.record.action === 'batch-approve') return method === 'GET' ? this.showBatchApproval(res, session) : this.approveBatch(req, res, session);
+    if (session.record.action === 'batch-merge') return method === 'GET' ? this.showBatchMerge(res, session) : this.mergeBatch(req, res, session);
     if (method === 'GET') return this.showConfirmation(res, session);
     return this.approve(req, res, session);
   }
@@ -1787,6 +1790,11 @@ export class ApproveServer {
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was approved.' });
       return this.dashboardApprove(req, res, session);
     }
+    if (route === '/dashboard/merge') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was merged.' });
+      return this.dashboardMerge(req, res, session);
+    }
     if (route === '/dashboard/signout') {
       if (method !== 'POST') return notAllowed('POST');
       if (!this.originAllowed(req)) return this.send(res, 403, this.page('Not allowed', '<p>Nothing was changed.</p>', { tone: 'warn' }));
@@ -2025,7 +2033,7 @@ export class ApproveServer {
       if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
-      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost };
+      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost, merge: this.mergeEnabled };
       return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)));
     } catch (err) {
       log(`Dashboard could not read ${ref} for ${session.user.username}: ${err.message}`);
@@ -2090,7 +2098,7 @@ export class ApproveServer {
         if (uri) avatars[p.name] = uri;
       } catch { /* initials */ }
     }
-    return { username: session.user.username, name: session.user.name, host: this.gitlabHost, avatars, now: this.now(), timeZone: this.dashboard.timeZone };
+    return { username: session.user.username, name: session.user.name, host: this.gitlabHost, avatars, now: this.now(), timeZone: this.dashboard.timeZone, merge: this.mergeEnabled };
   }
 
   dashboardUpdated(at) {
@@ -2153,6 +2161,74 @@ export class ApproveServer {
     } catch {
       return answer('unknown', `The outcome for ${ref} is unknown. Check it in GitLab before retrying.`);
     }
+  }
+
+  /**
+   * Merge from the dashboard, as the visitor's own GitLab account: one merge pinned to the head commit the
+   * page showed, only while GitLab reports the merge request as mergeable. Never retried; an unclear answer
+   * is read back a few times before it is called unknown.
+   */
+  async dashboardMerge(req, res, session) {
+    const answer = (status, text, code = 200) => this.json(res, code, { status, text });
+    if (!this.originAllowed(req)) return answer('failed', 'The request did not come from the dashboard. Nothing was merged.', 403);
+    if (!this.mergeEnabled) return answer('failed', 'Merging is turned off. Nothing was merged.', 409);
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return answer('failed', 'The request was rejected. Nothing was merged.', parsed.status);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) return answer('failed', 'The page expired. Reload it and try again. Nothing was merged.', 403);
+    const project = String(parsed.form.get('project') || '');
+    const iid = String(parsed.form.get('iid') || '');
+    const sha = String(parsed.form.get('sha') || '');
+    if (!/^[A-Za-z0-9_.\/-]{1,255}$/.test(project) || !/^[1-9]\d{0,9}$/.test(iid) || !/^[0-9a-f]{40,64}$/i.test(sha)) return answer('failed', 'The request was rejected. Nothing was merged.', 400);
+    if (!project.toLowerCase().startsWith(`${this.dashboard.group.toLowerCase()}/`)) return answer('failed', 'This merge request is not in the dashboard’s group. Nothing was merged.', 403);
+    const ref = `${project}!${iid}`;
+    const item = { project, iid: Number(iid), sha };
+    try {
+      const outcome = await this.withLock(keyOf(project, iid), async () => {
+        const checked = await userMergePreflight(this.gitlabHost, item, session);
+        if (checked.status === 'already') return ['already', `${ref} is already merged.`];
+        if (checked.status !== 'ready') return ['failed', `${ref}: ${checked.reason || 'cannot be merged.'} Nothing was merged.`];
+        const denied = this.signInDenied(session.user, checked.mr, 'merge');
+        if (denied) return ['failed', `${denied} Nothing was merged.`];
+        let status = null;
+        let accepted = false;
+        try {
+          const response = await userMergeWrite(this.gitlabHost, item, session);
+          if (response?.state === 'merged') return this.dashboardMerged(item, ref, session);
+          accepted = true;
+        } catch (err) {
+          status = typeof err?.status === 'number' ? err.status : null;
+          log(`Dashboard merge of ${ref} by ${session.user.username} failed${status ? ` (HTTP ${status})` : ' (no response)'}`);
+        }
+        const rejected = !accepted && status !== null && status < 500;
+        const attempts = rejected ? 1 : this.mergePollAttempts;
+        let mr = null;
+        for (let i = 0; i < attempts; i++) {
+          if (i > 0) await this.sleep(this.mergePollMs);
+          mr = await userMrRead(this.gitlabHost, item, session).catch(() => null);
+          if (mr && mr.state !== 'opened' && mr.state !== 'locked') break;
+        }
+        if (mr?.state === 'merged') {
+          if ((mr.sha || mr.diff_refs?.head_sha) === sha) return this.dashboardMerged(item, ref, session);
+          return ['unknown', `${ref} is merged, but not at the head commit shown. Check it in GitLab.`];
+        }
+        if (mr?.state === 'opened' && rejected) return ['failed', `GitLab rejected the merge of ${ref} (HTTP ${status}). It is still open; nothing was merged.`];
+        return ['unknown', `GitLab did not confirm the merge of ${ref}. Check it in GitLab before retrying.`];
+      });
+      this.dashData.delete(sha256Hex(session.sid));
+      this.dashSourceCache.delete(`mr:${sha256Hex(session.sid)}:${ref}`);
+      return answer(outcome[0], outcome[1]);
+    } catch {
+      return answer('unknown', `The outcome for ${ref} is unknown. Check it in GitLab before retrying.`);
+    }
+  }
+
+  /** A confirmed dashboard merge: the cards stop offering actions for it and are refreshed in the background. */
+  dashboardMerged(item, ref, session) {
+    this.store.markMerged(item.project, item.iid);
+    this.store.invalidate(item.project, item.iid, 'approve');
+    void this.refresh(item);
+    log(`Dashboard: ${session.user.username} merged ${ref}`);
+    return ['merged', `Merged ${ref} as ${session.user.username}.`];
   }
 
   usedPage(record) {
@@ -2405,6 +2481,97 @@ export class ApproveServer {
       return `<section class="batch-item">${summary}<div class="batch-status" data-status="${escapeHtml(status)}">${status === 'unknown' ? '⚠️' : status === 'failed' ? '❌' : '✅'} ${escapeHtml(text)}</div></section>`;
     }).join('');
     return this.send(res, 200, this.page('Approval results', `<p class="callout">${heading}</p><div class="batch-list">${rows}</div>`, { kind: 'approve', tone: incomplete ? 'warn' : 'ok' }));
+  }
+
+  /** The merge record of one member of a "Merge all" link (pinned to its head commit), or null. */
+  batchMergeRecord(item) {
+    const link = this.store.linkFor({ project: item.project, iid: Number(item.iid), sha: item.sha, action: 'merge' });
+    return link ? this.store.byId(link.record.id) : null;
+  }
+
+  /** "Merge all": every member checked like the single Merge page; only the ones GitLab calls mergeable are offered. */
+  async showBatchMerge(res, session) {
+    if (!this.mergeEnabled) return this.send(res, 409, this.page('Merging is off', '<p>Merging from cards is turned off. Nothing was merged.</p>', { tone: 'warn', kind: 'merge' }));
+    if (this.oauth && !session.user) return this.signInPage(res);
+    const items = [];
+    for (const item of session.record.items) {
+      const record = this.batchMergeRecord(item);
+      if (!record) { items.push({ item, status: 'blocked', reason: 'Merge link unavailable.' }); continue; }
+      let result;
+      try { result = await this.evaluate(record); } catch { result = { status: 'blocked', reason: 'GitLab could not be reached. Nothing was merged.' }; }
+      const actor = result.status === 'ready' ? actorOf(result) : null;
+      const denied = result.status === 'ready' && session.user ? this.signInDenied(session.user, result.mr, 'merge') : '';
+      const status = result.status === 'used' ? 'already' : result.status === 'ready' && (denied || !actor) ? 'blocked' : result.status;
+      items.push({ item, record, result, actor, status, reason: denied || (result.status === 'ready' && !actor ? UNVERIFIED_ACCOUNT : result.reason || '') });
+    }
+    const ready = items.filter((i) => i.status === 'ready');
+    const blocked = items.filter((i) => i.status === 'blocked');
+    const actors = ready.map(({ record, actor }) => ({ id: record.id, user: actor.user, cred: actor.cred }));
+    const encoded = Buffer.from(JSON.stringify(actors)).toString('base64url');
+    const csrf = this.csrf.issue(session.sid, session.record.id, this.bindOf({ user: 'batch-merge', cred: encoded }, session.user));
+    const rows = items.map(({ item, result, status, reason }) => {
+      const label = status === 'ready' ? 'Ready to merge' : status === 'already' ? 'Already merged' : reason || status;
+      const icon = status === 'ready' ? '⏳' : status === 'already' ? '✅' : '❌';
+      const mr = result?.mr;
+      const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) } : null, host: this.gitlabHost, kind: 'merge', avatars: this.avatarsFor(mr, null), live: false });
+      return `<section class="batch-item" data-status="${escapeHtml(status)}">${summary}<div class="batch-status" data-status="${escapeHtml(status)}">${icon} ${escapeHtml(label)}</div></section>`;
+    }).join('');
+    const who = ready[0]?.result?.user?.username || ready[0]?.result?.user?.name || '';
+    const warning = blocked.length ? `<p class="callout">❌ ${blocked.length} of ${items.length} merge request(s) cannot be merged right now.</p>` : '';
+    const action = ready.length
+      ? `<p>Merge ${ready.length} merge request(s)${who ? ` with the configured GitLab account <code>${escapeHtml(who)}</code>` : ''}, one after the other? Each one is merged at the head commit shown and checked again right before; GitLab's own rules still apply. Every merge is one request to GitLab and is never repeated automatically.</p><button class="btn" type="submit" data-busy="Merging…">🔀 Merge ${ready.length === items.length ? 'all' : `${ready.length} eligible`}</button>`
+      : '<p>Nothing was merged. None of these merge requests can be merged right now.</p>';
+    const form = `<form method="post" action="${escapeHtml(`${this.origin}${this.basePath}/confirm`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="actors" value="${escapeHtml(encoded)}"><div class="batch-list">${rows}</div><div class="batch-bar">${action}</div></form>`;
+    return this.send(res, 200, this.page('Merge merge requests', `${warning}${form}`, { kind: 'merge', tone: blocked.length ? 'warn' : 'neutral' }));
+  }
+
+  async mergeBatch(req, res, session) {
+    const reject = (code, title) => this.send(res, code, this.page(title, '<p>Nothing was merged.</p>', { tone: 'warn', kind: 'merge' }));
+    if (!this.originAllowed(req)) return reject(403, 'Not allowed');
+    if (!this.mergeEnabled) return reject(409, 'Merging is off');
+    if (this.oauth && !session.user) return reject(401, 'Sign in required');
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return reject(parsed.status, 'Request rejected');
+    const encoded = parsed.form.get('actors') || '';
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, session.record.id, this.bindOf({ user: 'batch-merge', cred: encoded }, session.user))) return reject(403, 'Page expired');
+    let actors;
+    try { actors = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')); } catch { actors = null; }
+    if (!Array.isArray(actors) || actors.length > session.record.items.length) return reject(400, 'Request rejected');
+    const outcomes = [];
+    for (const item of session.record.items) {
+      let outcome;
+      try {
+        outcome = await this.withLock(keyOf(item.project, item.iid), async () => {
+          const record = this.batchMergeRecord(item);
+          if (!record) return { status: 'failed', text: 'Merge link unavailable' };
+          this.readCache.delete(record.id);
+          const result = await this.evaluate(record);
+          if (result.status === 'used') return { status: 'already', text: 'Already merged', mr: result.mr };
+          if (result.status === 'already') { this.store.markMerged(item.project, Number(item.iid)); return { status: 'already', text: 'Already merged', mr: result.mr }; }
+          if (result.status !== 'ready') return { status: 'skipped', text: result.reason || 'Cannot be merged right now', mr: result.mr };
+          const shown = actors.find((a) => a.id === record.id);
+          if (!shown) return { status: 'skipped', text: 'Not offered on the confirmation page; open the link again', mr: result.mr };
+          const actor = actorOf(result);
+          if (!actor || actor.user !== shown.user || actor.cred !== shown.cred) return { status: 'failed', text: 'The GitLab account changed; review again', mr: result.mr };
+          const denied = session.user ? this.signInDenied(session.user, result.mr, 'merge') : '';
+          if (denied) return { status: 'failed', text: denied, mr: result.mr };
+          result.ctx = { ip: this.clientIp(req), signedIn: session.user };
+          const sent = await this.sendMerge(record, result);
+          return { status: sent.code === 200 ? 'merged' : sent.code >= 500 ? 'unknown' : 'failed', text: sent.code === 200 ? 'Merged' : sent.title, mr: result.mr };
+        });
+      } catch {
+        outcome = { status: 'unknown', text: 'Outcome unknown; check this merge request in GitLab before retrying' };
+      }
+      outcomes.push({ item, ...outcome });
+    }
+    const incomplete = outcomes.filter(({ status }) => status === 'failed' || status === 'unknown' || status === 'skipped').length;
+    const heading = incomplete ? `❌ ${incomplete} of ${outcomes.length} merge request(s) were not merged.` : '✅ All merge requests are merged.';
+    const rows = outcomes.map(({ item, status, text, mr }) => {
+      const summary = renderSummary({ record: item, mr: mr ? { ...mr, web_url: mr.web_url || this.gitlab.mrLink?.(item.project, item.iid) } : null, host: this.gitlabHost, kind: 'merge', avatars: this.avatarsFor(mr, null), live: false });
+      const icon = status === 'merged' || status === 'already' ? '✅' : status === 'unknown' ? '⚠️' : '❌';
+      return `<section class="batch-item">${summary}<div class="batch-status" data-status="${escapeHtml(status)}">${icon} ${escapeHtml(text)}</div></section>`;
+    }).join('');
+    return this.send(res, 200, this.page('Merge results', `<p class="callout">${heading}</p><div class="batch-list">${rows}</div>`, { kind: 'merge', tone: incomplete ? 'warn' : 'ok' }));
   }
 
   async showConfirmation(res, session) {

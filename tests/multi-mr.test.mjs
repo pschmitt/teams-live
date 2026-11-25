@@ -27,6 +27,57 @@ test('multi-MR card links titles and references, shows people, merged progress a
   assert.match(content, /merge_requests\/2/);
 });
 
+test('multi-MR card offers Merge all only with a merge link', () => {
+  assert.doesNotMatch(JSON.stringify(buildMultiMrCard(rows, { approveUrl: 'https://example.com/approve' })), /Merge all/);
+  const content = JSON.stringify(buildMultiMrCard(rows, { approveUrl: 'https://example.com/approve', mergeUrl: 'https://example.com/merge', openUrl: 'https://example.com/open' }));
+  assert.match(content, /👍 Approve all[\s\S]*🔀 Merge all[\s\S]*🔗 Open all/);
+});
+
+test('Merge all checks every member again and merges only the mergeable ones at their head', async () => {
+  const merges = [];
+  const mrs = {
+    1: { state: 'opened', sha, draft: false, title: 'Change 1', author: { username: 'author' }, detailed_merge_status: 'mergeable' },
+    2: { state: 'opened', sha, draft: false, title: 'Change 2', author: { username: 'author' }, detailed_merge_status: 'mergeable' },
+  };
+  const gitlab = {
+    host: 'gitlab.example.com',
+    mrLink: (project, iid) => `https://gitlab.example.com/${project}/-/merge_requests/${iid}`,
+    getMr: async (_project, iid) => mrs[iid],
+    getCurrentUser: async () => ({ id: 1, username: 'bot' }),
+    getUserApprovalState: async () => ({ known: true, hasApproved: false, canApprove: true, user: { id: 1, username: 'bot' } }),
+    mergeMrOnce: async (project, iid, opts) => { merges.push({ project, iid: String(iid), sha: opts.sha }); mrs[iid] = { ...mrs[iid], state: 'merged' }; return mrs[iid]; },
+    addMrNote: async () => ({}),
+  };
+  const off = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, oauth: { clientId: 'cid', clientSecret: 'secret' } });
+  assert.equal(off.batchLinkFor(items, 'merge'), null, 'no Merge all while merging is off');
+  const server = new ApproveServer({ gitlab, baseUrl: `${origin}/approve`, port: 0, mergeEnabled: true, mergePollMs: 0, mergePollAttempts: 1, sleep: async () => {}, oauth: { clientId: 'cid', clientSecret: 'secret' } });
+  await server.start();
+  const base = `http://127.0.0.1:${server.port}/approve`;
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin };
+  try {
+    const url = server.batchLinkFor(items, 'merge');
+    assert.equal(server.store.byToken(url.split('#')[1]).action, 'batch-merge');
+    const boot = await fetch(`${base}/session`, { method: 'POST', headers, body: new URLSearchParams({ token: url.split('#')[1] }) });
+    const sid = /tl_approve=([^;]+)/.exec(boot.headers.get('set-cookie'))[1];
+    const cookie = `tl_approve=${sid}`;
+    for (const s of server.sessions.values()) s.user = { id: 9, username: 'alice', name: 'Alice Example' };
+    mrs[2] = { ...mrs[2], detailed_merge_status: 'not_approved' };
+    const page = await (await fetch(`${base}/confirm`, { headers: { Cookie: cookie } })).text();
+    assert.match(page, /❌ 1 of 2 merge request\(s\) cannot be merged right now/);
+    assert.match(page, /🔀 Merge 1 eligible/);
+    assert.deepEqual(merges, [], 'opening the page merges nothing');
+    const fields = Object.fromEntries([...page.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map((m) => [m[1], m[2]]));
+    assert.equal((await fetch(`${base}/confirm`, { method: 'POST', headers: { ...headers, Cookie: cookie }, body: new URLSearchParams({ ...fields, actors: 'W10' }) })).status, 403);
+    mrs[2] = { ...mrs[2], detailed_merge_status: 'mergeable' };
+    const response = await fetch(`${base}/confirm`, { method: 'POST', headers: { ...headers, Cookie: cookie }, body: new URLSearchParams(fields) });
+    const result = await response.text();
+    assert.equal(response.status, 200);
+    assert.deepEqual(merges, [{ project: 'group/app', iid: '1', sha }], 'only what the page offered is merged');
+    assert.match(result, /❌ 1 of 2 merge request\(s\) were not merged/);
+    assert.match(result, /Not offered on the confirmation page/);
+  } finally { await server.stop(); }
+});
+
 test('bulk confirmation rechecks heads and approves only the still-valid item', async () => {
   const writes = [];
   const heads = { 1: sha, 2: sha };

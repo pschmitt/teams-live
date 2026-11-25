@@ -11,7 +11,7 @@ const link = (value) => { try { const url = new URL(value); return ['http:', 'ht
 const escapeText = (value) => String(value ?? '').replace(/([\\`*_{}\[\]()<>#!|])/g, '\\$1');
 
 /** Build a combined status card from already fetched MR data. */
-export function buildMultiMrCard(mrs, { approveUrl = null, openUrl = null, fallbackText = '', images = true, listMode = false, headline = '', part = null } = {}) {
+export function buildMultiMrCard(mrs, { approveUrl = null, mergeUrl = null, openUrl = null, fallbackText = '', images = true, listMode = false, headline = '', part = null } = {}) {
   const people = mrs.flatMap((mr) => [mr.author, ...(mr.approvedBy || [])].filter(Boolean).map((name) => ({ name, avatar: mr.avatars?.[name], compact: true })));
   const planned = planCardAvatars(people, 3500);
   const rows = mrs.map((mr) => {
@@ -59,7 +59,7 @@ export function buildMultiMrCard(mrs, { approveUrl = null, openUrl = null, fallb
       row,
       ...(mrs[index].sectionNote ? [textBlock(mrs[index].sectionNote, { size: 'Small', isSubtle: true })] : []),
     ])] : rows,
-    actions: [{ title: '👍 Approve all', url: approveUrl }, { title: '🔗 Open all', url: openUrl }],
+    actions: [{ title: '👍 Approve all', url: approveUrl }, { title: '🔀 Merge all', url: mergeUrl }, { title: '🔗 Open all', url: openUrl }],
     fallbackText,
   });
 }

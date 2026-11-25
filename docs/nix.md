@@ -350,7 +350,14 @@ action opens a confirmation page
 which checks each eligible request separately and reports the result for each.
 **Open all** opens a separate page that immediately attempts to open the links
 in tabs, then closes itself when the browser permits it. If the browser blocks
-pop-ups, the page retains the unopened links and a retry button. Both actions
+pop-ups, the page retains the unopened links and a retry button. **Merge all**
+is shown with `gitlab.approve.merge_enabled` while at least one of the merge
+requests is open, not a draft and reported by GitLab as `mergeable`. Its page
+checks every one again like the single Merge page and offers only those that are
+still mergeable at the head commit the card showed; confirming merges them one
+after the other with the configured account, each once, never repeated. A merge
+request that GitLab no longer calls mergeable by its turn (for example one that
+needs a rebase after the previous merge) is skipped and reported. The actions
 use the optional
 approval server; **Approve all** also requires GitLab OAuth. Each action accepts
 at most 20 requests. For large groups, the card falls back to a lighter
@@ -558,6 +565,9 @@ signed-in start page:
   (the same rules as `/mrs`). Each row has the pipeline, the approvals and, where GitLab lets the visitor approve,
   an inline **Approve**: one POST pinned to the head commit the page showed, with the same checks as the approval
   page (identity, head, draft, author, GitLab's rules), never repeated, leaving the usual comment and card refresh.
+  With `gitlab.approve.merge_enabled`, a merge request that GitLab reports as `mergeable` for the visitor also has
+  **Merge** (in the row and on the Approvals row of the detail panel): after a confirmation prompt, one merge as the
+  visitor's own GitLab account, pinned to the head commit the page showed and checked again first, never repeated.
 - **Active sprint** (Jira), **alerts and on-call** (OpsGenie) and the **next meetings** (the Teams calendar of the
   account teams-live runs as). These are read by the bot with its own accounts, at most once a minute for everyone.
 

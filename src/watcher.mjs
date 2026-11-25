@@ -1969,6 +1969,22 @@ export class MergeRequestWatcher {
   }
 
   /**
+   * "Merge all" link of a multi merge request card, or null: only the open, non-draft merge requests GitLab
+   * reports as mergeable right now, each pinned to its head commit (the page checks every one again).
+   */
+  batchMergeUrl(rows) {
+    if (!this.approveFlow?.batchLinkFor || !this.richMessages) return null;
+    const ready = rows.filter((row) => row.state === 'open' && !row.draft && row.sha && row.mergeable === true);
+    if (!ready.length) return null;
+    try {
+      return this.approveFlow.batchLinkFor(ready, 'merge');
+    } catch (err) {
+      log(`Merge-all link failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Link to the rebase confirmation page, or null when the button must not be shown: flow disabled, rich mode
    * off, not an open merge request, not behind its target branch, or with merge conflicts (a rebase cannot
    * fix those).
@@ -3867,6 +3883,7 @@ export class MergeRequestWatcher {
             draft: mrState.draft === true, pipeline: this.mrCardPipeline(mr, mrState.pipeline),
             autoMerge: mrState.autoMerge, sha: mrState.sha, needsRebase: mrState.needsRebase,
             hasConflicts: mrState.hasConflicts, jira: this.findMrJiraTicket(mrState, mrState.title || mr.title),
+            mergeable: mrState.detailedMergeStatus === 'mergeable',
           });
         }
 
@@ -4029,9 +4046,10 @@ export class MergeRequestWatcher {
         const approveUrl = eligible.length && this.approveFlow?.batchLinkFor
           ? this.approveFlow.batchLinkFor(eligible, 'approve') : null;
         const openUrl = this.approveFlow?.batchLinkFor ? this.approveFlow.batchLinkFor(multiRows, 'open') : null;
+        const mergeUrl = this.batchMergeUrl(multiRows);
         const message = this.richMessage(markdown, () => buildMultiMrCard(multiRows.map((row) => ({
           ...row, avatars: this.suppressAvatars ? {} : row.avatars,
-        })), { fallbackText: markdown, approveUrl, openUrl, images: !this.suppressAvatars }));
+        })), { fallbackText: markdown, approveUrl, mergeUrl, openUrl, images: !this.suppressAvatars }));
         const fingerprint = JSON.stringify(message);
         if (fingerprint !== entry.multiMrFingerprint) {
           const result = entry.multiMrMessageServerId
@@ -5767,6 +5785,7 @@ export class MergeRequestWatcher {
           autoMerge: Boolean(autoMerge), needsRebase,
           hasConflicts: mr.has_conflicts || mr.detailed_merge_status === 'conflict',
           rebaseInProgress: mr.rebase_in_progress, jira: jiraTicket,
+          mergeable: mr.detailed_merge_status === 'mergeable',
         },
         line: `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`,
         project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
@@ -5970,12 +5989,13 @@ export class MergeRequestWatcher {
         ? this.approveFlow.batchLinkFor(eligible, 'approve') : null;
       const openUrl = withActions && this.approveFlow?.batchLinkFor
         ? this.approveFlow.batchLinkFor(actionRows, 'open') : null;
+      const mergeUrl = withActions ? this.batchMergeUrl(actionRows) : null;
       const card = buildMultiMrCard(sections.flatMap((section) => section.rows.map((row, index) => ({
         ...row.multiMr, showAuthorAvatar: Boolean(avatars && row.avatarSlot),
         avatars: row.avatar && row.multiMr.author ? { [row.multiMr.author]: row.avatar } : {},
         sectionHeading: index === 0 ? section.heading : null,
         sectionNote: index === section.rows.length - 1 ? section.note : null,
-      }))), { fallbackText: markdown, images: images && ciIcons, listMode: true, headline: listing.headline, part, approveUrl, openUrl });
+      }))), { fallbackText: markdown, images: images && ciIcons, listMode: true, headline: listing.headline, part, approveUrl, mergeUrl, openUrl });
       return card ? makeRichMessage(markdown, card) : null;
     };
     // The card label ("2/3") is measured at its widest, so the final numbers cannot overflow.

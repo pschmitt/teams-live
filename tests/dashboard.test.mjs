@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, diffsSection, issueDetail, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, diffsSection, issueDetail, mergeButton, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -37,7 +37,7 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now, mergeEnabled = false } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
@@ -48,6 +48,10 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     dashSessionFile,
     pushFile,
     now,
+    mergeEnabled,
+    mergePollMs: 0,
+    mergePollAttempts: 2,
+    sleep: async () => {},
   });
   await server.start();
   const base = `http://127.0.0.1:${server.port}`;
@@ -415,7 +419,7 @@ test('detail panels open from a prefetched copy: on hover, focus, touch and when
   assert.match(script, /addEventListener\('focusin'[\s\S]*?prefetch\(el\)/);
   assert.match(script, /requestIdleCallback/);
   assert.match(script, /if\(c0&&c0\.x\)show\(c0\.x\)/, 'a cached copy shows at once');
-  assert.equal((script.match(/busy--;DC=\{\}/g) || []).length, 2, 'approving or moving drops the cache');
+  assert.equal((script.match(/busy--;DC=\{\}/g) || []).length, 3, 'approving, merging or moving drops the cache');
 });
 
 test('the page script parses (a syntax error would leave the whole page inert)', () => {
@@ -479,6 +483,66 @@ test('an approval drops the cached detail panel, so it no longer shows the old c
     const after = await detail();
     assert.match(after, /alt="Approved"/);
     assert.doesNotMatch(after, /0 of 1/);
+  });
+});
+
+test('Merge buttons: only while merging is on and GitLab reports the merge request as mergeable for the visitor', () => {
+  const ready = normalizeMr(node({ detailedMergeStatus: 'MERGEABLE', userPermissions: { canApprove: true, canMerge: true } }));
+  assert.match(mergeButton(ready, { merge: true }), /data-merge data-project="group\/app" data-iid="7" data-sha="b{40}"/);
+  assert.equal(mergeButton(ready, { merge: false }), '', 'merging off');
+  assert.equal(mergeButton({ ...ready, canMerge: false }, { merge: true }), '', 'not allowed to merge');
+  assert.equal(mergeButton({ ...ready, mergeStatus: 'not_approved' }, { merge: true }), '', 'not mergeable');
+  assert.equal(mergeButton({ ...ready, draft: true }, { merge: true }), '');
+  const ctx = { host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC', merge: true };
+  const detail = (over) => mrDetail({ mr: { iid: 7, state: 'opened', sha: SHA, title: 'T', detailed_merge_status: 'mergeable', web_url: `https://${GL}/group/app/-/merge_requests/7`, references: { full: 'group/app!7' }, ...over }, approvals: { approved: true, approvals_required: 1, approved_by: [{ user: { username: 'alice', name: 'Alice' } }] } }, ctx).html;
+  assert.match(detail(), /<dt>Approvals<\/dt><dd><span class="appr-line">[\s\S]*?<button[^>]*data-merge data-project="group\/app" data-iid="7"/, 'Merge sits on the Approvals row');
+  assert.doesNotMatch(detail({ detailed_merge_status: 'ci_still_running' }), /data-merge/);
+  assert.doesNotMatch(detail({ user: { can_merge: false } }), /data-merge/);
+  assert.match(dashboardScript('/dashboard'), /B\+'\/merge'/);
+});
+
+test('a dashboard merge is one PUT as the visitor, pinned to the head, only when mergeable', async () => {
+  await withDashboard({ mergeEnabled: true }, async ({ base, seen }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const mock = globalThis.fetch;
+    let mr = { state: 'opened', draft: false, sha: SHA, author: { username: 'bob' }, detailed_merge_status: 'not_approved', user: { can_merge: true } };
+    globalThis.fetch = async (url, options = {}) => {
+      const u = String(url);
+      if (u.endsWith('/merge_requests/7/merge') && options.method === 'PUT') {
+        seen.push({ url: u, options });
+        mr = { ...mr, state: 'merged' };
+        return Response.json(mr);
+      }
+      if (u.endsWith('/merge_requests/7')) return Response.json(mr);
+      return mock(url, options);
+    };
+    const post = (body, headers = { Origin: ORIGIN }) =>
+      fetch(`${base}/approve/dashboard/merge`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, ...headers }, body: new URLSearchParams(body).toString() });
+    const writes = () => seen.filter((c) => c.url.endsWith('/merge') && c.options.method === 'PUT');
+    assert.equal((await post({ csrf, project: 'group/app', iid: '7', sha: SHA }, { Origin: 'https://evil.example.com' })).status, 403);
+    assert.equal((await post({ csrf: 'x', project: 'group/app', iid: '7', sha: SHA })).status, 403);
+    const blocked = await (await post({ csrf, project: 'group/app', iid: '7', sha: SHA })).json();
+    assert.equal(blocked.status, 'failed');
+    assert.match(blocked.text, /not report it as mergeable/);
+    mr = { ...mr, detailed_merge_status: 'mergeable' };
+    assert.equal((await (await post({ csrf, project: 'group/app', iid: '7', sha: 'c'.repeat(40) })).json()).status, 'failed', 'a moved head is refused');
+    assert.equal(writes().length, 0);
+    const ok = await (await post({ csrf, project: 'group/app', iid: '7', sha: SHA })).json();
+    assert.equal(ok.status, 'merged');
+    assert.equal(writes().length, 1);
+    assert.equal(writes()[0].options.headers.Authorization, 'Bearer tok');
+    assert.deepEqual(JSON.parse(writes()[0].options.body), { sha: SHA });
+    assert.equal((await (await post({ csrf, project: 'group/app', iid: '7', sha: SHA })).json()).status, 'already');
+    assert.equal(writes().length, 1, 'never sent twice');
+  });
+  await withDashboard({}, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const res = await fetch(`${base}/approve/dashboard/merge`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: ORIGIN }, body: new URLSearchParams({ csrf, project: 'group/app', iid: '7', sha: SHA }).toString() });
+    assert.equal(res.status, 409, 'merging off');
   });
 });
 

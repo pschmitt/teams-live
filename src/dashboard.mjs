@@ -66,7 +66,7 @@ const MRS_QUERY = `query($group: ID!, $after: String) {
         reviewers { nodes { username } }
         approvedBy { nodes { username name } }
         headPipeline { status }
-        userPermissions { canApprove }
+        userPermissions { canApprove canMerge }
       }
     }
   }
@@ -110,6 +110,7 @@ export function normalizeMr(n) {
     approvedBy: (n.approvedBy?.nodes || []).map((u) => ({ username: lower(u.username), name: u.name || u.username })).filter((u) => u.username),
     pipeline: lower(n.headPipeline?.status),
     canApprove: n.userPermissions?.canApprove === true,
+    canMerge: n.userPermissions?.canMerge === true,
   };
 }
 
@@ -249,6 +250,7 @@ export const ICONS = {
   cross: svg('<path d="M7 7l10 10M17 7L7 17"/>'),
   run: svg('<path d="M12 3a9 9 0 1 0 9 9"/>', 'di spin'),
   clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+  merge: svg('<circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 7.2c0 3 2.5 4.8 9.8 4.8"/>'),
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
   video: svg('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>'),
   ext: svg('<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>'),
@@ -308,7 +310,20 @@ export function approveButton(mr, username) {
   return `<button class="btn btn-secondary btn-sm" type="button" data-approve data-project="${escapeHtml(mr.project)}" data-iid="${escapeHtml(mr.iid)}" data-sha="${escapeHtml(mr.sha)}" aria-label="Approve ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}">${ICONS.thumb}Approve</button>`;
 }
 
-function mrRow(mr, { username, host, avatars, now }) {
+/**
+ * The inline Merge button of a listed merge request, or '' unless merging is on (`merge`) and GitLab reports
+ * it as mergeable for the visitor right now. The head commit is bound to the button; the server checks again.
+ */
+export function mergeButton(mr, { merge = false } = {}) {
+  if (!merge || mr.draft || !mr.canMerge || !mr.sha || mr.mergeStatus !== 'mergeable') return '';
+  return mergeButtonHtml(mr.project, mr.iid, mr.sha);
+}
+
+function mergeButtonHtml(project, iid, sha) {
+  return `<button class="btn btn-sm" type="button" data-merge data-project="${escapeHtml(project)}" data-iid="${escapeHtml(iid)}" data-sha="${escapeHtml(sha)}" aria-label="Merge ${escapeHtml(project)}!${escapeHtml(iid)}">${ICONS.merge}Merge</button>`;
+}
+
+function mrRow(mr, { username, host, avatars, now, merge }) {
   const me = lower(username);
   const filters = mrFilters(mr, username);
   const url = safeLink(mr.url, host);
@@ -322,7 +337,7 @@ function mrRow(mr, { username, host, avatars, now }) {
   const state = required > 0 ? mr.approved || given >= required : given > 0;
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
-  const action = approveButton(mr, username);
+  const action = approveButton(mr, username) + mergeButton(mr, { merge });
   // The title opens the detail panel (the row's click); the small icon next to it goes straight to GitLab.
   const open = url ? `<a class="mr-ext" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in GitLab" aria-label="Open ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)} in GitLab">${ICONS.ext}</a>` : '';
   const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="tt">${escapeHtml(mr.title)}</span>${open}`;
@@ -696,6 +711,10 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
   const given = approvedBy.length;
   const ok = required > 0 ? approvals?.approved === true || given >= required : given > 0;
   const badge = img(approvalBadge({ approved: ok, approvalsGiven: given, approvalsRequired: required }), ok ? 'Approved' : `${given} of ${required} approvals`, 18, 'appr-badge');
+  // Merge sits on the Approvals row next to Approve, read from this fresh answer (not the minute-old list).
+  const sha = mr.sha || mr.diff_refs?.head_sha || '';
+  const merge = ctx.merge && mr.state === 'opened' && !draft && sha && mr.user?.can_merge !== false && String(mr.detailed_merge_status || '').toLowerCase() === 'mergeable' && project
+    ? mergeButtonHtml(project, mr.iid, sha) : '';
   const pipe = mr.head_pipeline;
   const pipeUrl = safeLink(pipe?.web_url, host);
   const stages = [];
@@ -723,7 +742,7 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
       ['Repo', !project ? '' : projectUrl ? `<a class="dref" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(project)}</a>` : `<span class="dref">${escapeHtml(project)}</span>`],
       ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
       ['Author', person(mr.author)],
-      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}${approve}</span>`],
+      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}${approve}${merge}</span>`],
       ['Pipeline', pipeline],
       ['Created', escapeHtml(`${when(mr.created_at, ctx)}${mr.updated_at && mr.updated_at !== mr.created_at ? ` · updated ${ago(mr.updated_at, ctx.now)}` : ''}`)],
       openRow(url, 'Open in GitLab', 'gitlab'),
@@ -1084,7 +1103,7 @@ export const DASHBOARD_CSS = [
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.dlink .dlogo{width:16px;height:16px;flex:none}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
-  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve]{margin-left:auto}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
+  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve],.appr-line [data-merge]{margin-left:auto}.appr-line [data-approve]+[data-merge]{margin-left:0}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
   '.rich .tbl{overflow-x:auto}.rich table{border-collapse:collapse;font-size:.82rem;margin:.5rem 0}.rich th,.rich td{border:1px solid var(--line);padding:.25rem .5rem;text-align:left;vertical-align:top}.rich th{background:var(--panel)}.rich a{overflow-wrap:anywhere}',
@@ -1238,10 +1257,12 @@ function unroute(){if(rbusy)return;try{history.replaceState(null,'',location.pat
 function apply(){var m=ROUTE.exec(location.hash);if(!m)return false;rbusy=true;try{var q=new URLSearchParams(m[2]||''),f=q.get('f');if(f&&/^[a-z]+$/.test(f)&&d.querySelector('[data-mrf-to="'+f+'"]')){d.setAttribute('data-mrf',f);try{sessionStorage.setItem('tl-mrf',f)}catch(e){}}if(d.getAttribute('data-view')!==m[1])view(m[1]);else mark();var o=null;['mr','issue','alert'].forEach(function(k){var x=q.get(k);if(x&&!o)o=[k,x]});if(!o)closeDetail();else if(!dkey||dr.hidden||dkey[0]!==o[0]||dkey[1]!==o[1]){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1].replace(/["\\\\]/g,''))+'"]');if(el)openDetail(el);else closeDetail()}dpush=false}finally{rbusy=false}unroute();return true}
 if(!apply())unroute();window.addEventListener('popstate',apply);window.addEventListener('hashchange',apply);mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var ds=e.target.closest('[data-diff-step]');if(ds){var bx=ds.closest('[data-diffs]'),sl=bx.querySelector('[data-diff-sel]');diffShow(bx,Number(sl.value)+Number(ds.getAttribute('data-diff-step')));return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var ds=e.target.closest('[data-diff-step]');if(ds){var bx=ds.closest('[data-diffs]'),sl=bx.querySelector('[data-diff-sel]');diffShow(bx,Number(sl.value)+Number(ds.getAttribute('data-diff-step')));return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a){approve(a);return}var mg=e.target.closest('[data-merge]');if(mg)merge(mg)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;var ref=b.getAttribute('data-project')+'!'+b.getAttribute('data-iid'),done=false;if(!online()){toast('You are offline. Approve again once you are back online.');return}b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';if(ok){done=true;var ln=b.closest('.appr-line'),ob=ln&&ln.querySelector('.appr-badge');if(ob)ob.remove()}b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;DC={};setTimeout(function(){refresh();if(done)redetail(ref)},1500)})}
+function merge(b){if(b.disabled)return;if(!online()){toast('You are offline. Merge again once you are back online.');return}var ref=b.getAttribute('data-project')+'!'+b.getAttribute('data-iid'),done=false;if(!window.confirm('Merge '+ref+' now, as your GitLab account?'))return;b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
+fetch(B+'/merge',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='merged'||r.status==='already';done=ok;b.replaceWith(ok?pill('pill-merged','Merged',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not merged',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;DC={};setTimeout(function(){refresh();if(done)redetail(ref)},1500)})}
 function redetail(ref){if(!dr||dr.hidden||!dkey||dkey[0]!=='mr'||dkey[1]!==ref)return;var n=dreq,body=dr.querySelector('[data-drawer-body]');dget('/mr?ref='+encodeURIComponent(ref),true).then(function(x){if(!x||n!==dreq||dr.hidden)return;var st=body.scrollTop;body.innerHTML=x.html||'';body.scrollTop=st}).catch(function(){})}
 function refresh(){if((document.hidden&&!(non()&&!npush))||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){nc=!!r.headers.get('X-TL-From-Cache');net(!nc&&r.status!==503);if(r.status===401){forget();var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;if(x.events&&!nc)nupdate(x.events);var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(k==='sprint')smn();if(k==='mrs'){mrn();pfIdle()}if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){net(false)}).then(function(){if(rb)rb.classList.remove('busy')})}
 var pal=document.querySelector('[data-palette]'),pin=pal&&pal.querySelector('[data-pal-in]'),plist=pal&&pal.querySelector('[data-pal-list]'),pall=[],pshow=[],psel=0,plast=null;

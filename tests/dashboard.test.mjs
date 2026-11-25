@@ -685,7 +685,8 @@ test('the Team leave card: a row per team member over four weeks of weekdays, ab
   assert.equal((html.match(/<div class="tl-row[^"]*" data-key="tl:/g) || []).length, 3, 'every team member');
   assert.match(html, /<div class="tl-row tl-here" data-key="tl:Alice Example"><span class="tl-n"><button[^>]*data-person="Alice Example"/, 'present people are rows too');
   assert.equal((html.match(/tl-c ab ab-leave/g) || []).length, 4, 'Erin: Tuesday to Friday');
-  assert.match(html, /tl-c ab ab-leave today" title="Erin Example: Urlaub \(2026-11-24 – 2026-11-27\)"/);
+  assert.match(html, /tl-c ab ab-leave" title="Erin Example: Urlaub \(2026-11-24 – 2026-11-27\)"/);
+  assert.doesNotMatch(html, /tl-c[^"]*today/, 'today is marked in the header only, no outlined empty cells');
   assert.match(html, /tl-c ab ab-sick" title="Bob Example: Krankheit \(2026-12-01\)"/);
   assert.match(teamLeaveSection({ pending: true }, ctx), /Reading HR WORKS/);
   assert.match(leaveSection(leave, ctx), /Erin Example/, 'the Leave card reads the same data');

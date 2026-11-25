@@ -713,6 +713,16 @@ test('drafts are hidden by default; the Drafts button shows them and is remember
   assert.match(script, /aria-pressed',String\(d\.getAttribute\('data-nodraft'\)!=='1'\)/, 'pressed means shown');
 });
 
+test('mobile: Team leave keeps the people pinned while scrolling; tickets move only after a long press', () => {
+  assert.match(DASHBOARD_CSS, /\.tl-n\{[^}]*position:sticky;left:0/, 'the people column stays put');
+  assert.match(DASHBOARD_CSS, /@media \(max-width:40rem\)\{\.tl-grid\{grid-template-columns:2rem/, 'only the photos on a narrow screen');
+  assert.match(DASHBOARD_CSS, /@media \(hover:hover\) and \(pointer:fine\)\{\.tk\[data-issue\]\{touch-action:none\}\}/, 'touch scrolls over tickets');
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /if\(tk\.touch\)\{var me=tk;me\.timer=setTimeout\([\s\S]*?,450\)/, 'a touch arms the ticket after a long press');
+  assert.match(script, /if\(tk\.touch&&!tk\.armed\)\{if\(Math\.abs[^}]*>8\)\{clearTimeout\(tk\.timer\);tk=null\}return\}/, 'moving before that is a scroll');
+  assert.match(script, /addEventListener\('touchmove',function\(e\)\{if\(tk&&tk\.touch&&tk\.armed\)e\.preventDefault\(\)\},\{passive:false\}\)/, 'an armed ticket does not scroll the page');
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

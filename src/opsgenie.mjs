@@ -228,12 +228,50 @@ export class OpsGenieClient {
     return data.data?.onCallRecipients || [];
   }
 
+  /**
+   * The shifts of a schedule from now for `weeks` weeks (OpsGenie's final timeline: rotations with overrides
+   * applied), as `{start, end, recipient}` with adjacent periods of the same person merged.
+   */
+  async fetchShifts(key, scheduleId, { weeks = 4 } = {}) {
+    if (!key || !scheduleId) return [];
+    const url = `${this.baseUrl}/schedules/${scheduleId}/timeline?intervalUnit=weeks&interval=${weeks}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `GenieKey ${key}`, Accept: 'application/json', 'User-Agent': 'teams-live/1.0' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const errStr = `OpsGenie timeline HTTP ${res.status}: ${text || res.statusText}`;
+      if (res.status === 401 || res.status === 403) this.onAuthError?.(errStr);
+      throw new Error(errStr);
+    }
+    const data = await res.json();
+    const periods = [];
+    for (const rotation of data.data?.finalTimeline?.rotations || []) {
+      for (const p of rotation.periods || []) {
+        const who = p.recipient?.type === 'user' ? p.recipient.name : '';
+        if (who && p.startDate && p.endDate) periods.push({ start: p.startDate, end: p.endDate, recipient: who });
+      }
+    }
+    periods.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    const merged = [];
+    for (const p of periods) {
+      const last = merged.at(-1);
+      if (last && last.recipient === p.recipient && Date.parse(p.start) <= Date.parse(last.end)) {
+        if (Date.parse(p.end) > Date.parse(last.end)) last.end = p.end;
+      } else merged.push({ ...p });
+    }
+    return merged;
+  }
+
   async getAllOpenAlerts() {
-    const [onCallRes, supportRes, onCallDutyRes, supportDutyRes] = await Promise.allSettled([
+    const [onCallRes, supportRes, onCallDutyRes, supportDutyRes, onCallShiftsRes, supportShiftsRes] = await Promise.allSettled([
       this.fetchQueueAlerts(this.onCallKey, 'On-Call'),
       this.fetchQueueAlerts(this.supportKey, 'Support'),
       this.fetchOnDuty(this.onCallKey, this.onCallScheduleId),
       this.fetchOnDuty(this.supportKey, this.supportScheduleId),
+      this.fetchShifts(this.onCallKey, this.onCallScheduleId),
+      this.fetchShifts(this.supportKey, this.supportScheduleId),
     ]);
 
     const onCallAlerts = onCallRes.status === 'fulfilled' ? onCallRes.value : [];
@@ -244,11 +282,17 @@ export class OpsGenieClient {
     const onCallError = onCallRes.status === 'rejected' ? onCallRes.reason.message : null;
     const supportError = supportRes.status === 'rejected' ? supportRes.reason.message : null;
 
+    // The upcoming shifts per queue; null when the timeline could not be read (unknown, not "no shifts").
+    const onCallShifts = onCallShiftsRes.status === 'fulfilled' ? onCallShiftsRes.value : null;
+    const supportShifts = supportShiftsRes.status === 'fulfilled' ? supportShiftsRes.value : null;
+
     return {
       onCallAlerts,
       supportAlerts,
       onCallDuty,
       supportDuty,
+      onCallShifts,
+      supportShifts,
       onCallError,
       supportError,
     };

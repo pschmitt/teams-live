@@ -270,6 +270,8 @@ export const ICONS = {
   cross: svg('<path d="M7 7l10 10M17 7L7 17"/>'),
   run: svg('<path d="M12 3a9 9 0 1 0 9 9"/>', 'di spin'),
   clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+  oncall: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
+  leave: svg('<path d="M12 3v18M12 3a8 8 0 0 0-8 8h16a8 8 0 0 0-8-8z"/><path d="M8 21h8"/>'),
   merge: svg('<circle cx="6" cy="5" r="2.2"/><circle cx="6" cy="19" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 7.2v9.6M6 7.2c0 3 2.5 4.8 9.8 4.8"/>'),
   thumb: svg('<path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7"/>'),
   video: svg('<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>'),
@@ -365,7 +367,7 @@ function mrRow(mr, { username, host, avatars, now, merge }) {
   return (
     `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}" data-mr="${escapeHtml(`${mr.project}!${mr.iid}`)}" tabindex="0" aria-label="${escapeHtml(`Details of ${mr.project}!${mr.iid}: ${mr.title}`)}">` +
     `${avatarImg(mr.author.name, avatars)}` +
-    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}<span>${ref}</span><span>· ${escapeHtml(mr.author.name)}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
+    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}<span>${ref}</span><span>· ${personRef(mr.author.name, avatars, { avatar: false })}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
     `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
     '</li>'
   );
@@ -392,20 +394,17 @@ export function sprintSection(state, ctx) {
   if (!all.length) return '<p class="empty">No open tickets in the active sprint.</p>';
   const me = lower(ctx.name);
   const counts = SPRINT_COLUMNS.map(([k]) => (sprint[k] || []).length);
-  const total = counts.reduce((a, b) => a + b, 0) || 1;
-  const bar = `<div class="sbar" role="img" aria-label="${counts[2]} in review, ${counts[1]} in progress, ${counts[0]} to do"><i class="s-rev" style="width:${((100 * counts[2]) / total).toFixed(1)}%"></i><i class="s-prog" style="width:${((100 * counts[1]) / total).toFixed(1)}%"></i></div>`;
-  const legend = `<p class="slegend"><span><i class="s-rev"></i>${counts[2]} in review</span><span><i class="s-prog"></i>${counts[1]} in progress</span><span><i class="s-todo"></i>${counts[0]} to do</span></p>`;
   const cols = SPRINT_COLUMNS.map(([k, label]) => {
     const tickets = (sprint[k] || []).map((t) => {
       const url = webLink(t.url);
       const mine = me && lower(t.assignee) === me;
       const key = escapeHtml(t.key);
-      return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}" data-issue="${escapeHtml(t.key)}" role="button" tabindex="0" aria-label="${escapeHtml(`${t.key}: ${t.summary}`)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${avatarImg(t.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(t.assignee || 'Unassigned')}</span></li>`;
+      return `<li class="tk${mine ? ' mine' : ''}" data-key="${escapeHtml(t.key)}" data-issue="${escapeHtml(t.key)}" role="button" tabindex="0" aria-label="${escapeHtml(`${t.key}: ${t.summary}`)}"><span class="key">${key}<span>${escapeHtml(t.status || '')}</span></span><span class="sum">${escapeHtml(t.summary)}</span><span class="who">${personRef(t.assignee || 'Unassigned', ctx.avatars)}</span></li>`;
     });
     const mine = (sprint[k] || []).filter((t) => me && lower(t.assignee) === me).length;
     return `<div class="col" data-col="${k}"><h4>${label}<span data-col-count><span class="n-all">${tickets.length}</span><span class="n-mine">${mine}</span></span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
   }).join('');
-  return `${bar}${legend}<div class="board">${cols}</div>`;
+  return `<div class="board">${cols}</div>`;
 }
 
 const PRIORITY_ORDER = { P1: 1, P2: 2, P3: 3, P4: 4, P5: 5 };
@@ -424,16 +423,78 @@ export function alertsSection(state, ctx) {
   });
   const more = alerts.length > 12 ? `<li class="none">${alerts.length - 12} more in OpsGenie</li>` : '';
   const list = rows.length ? `<ul class="alist">${rows.join('')}${more}</ul>` : `<p class="empty ok">${ICONS.check}No open alerts.</p>`;
-  // Who is on duty, per queue: their photo (initials without one) and name; nobody on duty reads "Off-duty".
+  return list;
+}
+
+/** A YYYY-MM-DD day as "Fri 28 Nov". */
+function shortDay(day) {
+  const d = new Date(`${day}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+/** Who of the HR WORKS team is on leave from today for a week (the Leave card); a note while HR WORKS loads. */
+export function leaveSection(leave, ctx) {
+  if (!leave || leave.off) return '<p class="empty">HR WORKS is not configured.</p>';
+  const wrap = (inner) => `<div class="leave">${inner}</div>`;
+  if (leave.pending) return wrap('<p class="note">Reading HR WORKS…</p>');
+  if (leave.error) return wrap(`<p class="note">${escapeHtml(leave.error)}</p>`);
+  const items = Array.isArray(leave.data) ? leave.data.slice(0, 20) : [];
+  if (!items.length) return wrap('<p class="note">Nobody on leave this week.</p>');
+  const today = new Date(ctx.now).toLocaleDateString('en-CA', { timeZone: ctx.timeZone || 'Europe/Berlin' });
+  const rows = items.map((ab) => {
+    const range = ab.startDate <= today
+      ? (ab.endDate === today ? 'today' : `until ${shortDay(ab.endDate)}`)
+      : ab.endDate && ab.endDate !== ab.startDate ? `${shortDay(ab.startDate)} – ${shortDay(ab.endDate)}` : shortDay(ab.startDate);
+    return `<li class="${ab.startDate <= today ? 'now' : ''}" data-key="${escapeHtml(`leave:${ab.name}@${ab.startDate}`)}">${personRef(ab.name, ctx.avatars)}<small>${escapeHtml(ab.category || 'Leave')} · ${escapeHtml(range)}</small></li>`;
+  });
+  return wrap(`<ul class="llist">${rows.join('')}</ul>${leave.data.length > items.length ? `<p class="note">${leave.data.length - items.length} more</p>` : ''}`);
+}
+
+/** Folds a name for comparing people across services: case, accents and German umlaut spellings. */
+function foldName(name) {
+  return String(name || '').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').normalize('NFD').replace(/[^a-z]/g, '');
+}
+
+/** A time as "Mon 1 Dec 09:00" in the dashboard's time zone. */
+function shiftTime(at, tz) {
+  const d = new Date(at);
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: tz })} ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz })}`;
+}
+
+/**
+ * Who is on duty per OpsGenie queue (the people open the person panel) and the visitor's own current or next
+ * shift from the schedules' timelines (four weeks ahead). Matched by name, since OpsGenie knows the address.
+ */
+export function oncallSection(state, ctx) {
+  if (state.error) return `<p class="empty">${escapeHtml(state.error)}</p>`;
+  const data = state.data || {};
   const duty = (data.duty || [])
     .filter(Boolean)
     .map((d) => {
       const people = Array.isArray(d.people) ? d.people.filter((p) => p?.name) : d.who ? [{ name: d.who }] : [];
-      const who = people.length ? people.map((p) => `<span class="duty-p">${avatarImg(p.name, ctx.avatars)}<b>${escapeHtml(p.name)}</b></span>`).join('') : '<span class="note">Off-duty</span>';
+      const who = people.length ? people.map((p) => `<span class="duty-p">${personRef(p.name, ctx.avatars, { bold: true })}</span>`).join('') : '<span class="note">Off-duty</span>';
       return `<li>${ICONS.phone}<span class="duty-who">${who}<small>${escapeHtml(d.queue)}</small></span></li>`;
     })
     .join('');
-  return `${list}${duty ? `<ul class="duty">${duty}</ul>` : ''}`;
+  const tz = ctx.timeZone;
+  const me = foldName(ctx.name);
+  const known = (data.shifts || []).filter((q) => Array.isArray(q.shifts));
+  let mine = '';
+  if (me && known.length) {
+    const shifts = known
+      .flatMap((q) => q.shifts.map((sh) => ({ ...sh, queue: q.queue })))
+      .filter((sh) => foldName(sh.name) === me && Date.parse(sh.end) > ctx.now)
+      .sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    const now = shifts.find((sh) => Date.parse(sh.start) <= ctx.now);
+    const next = shifts.find((sh) => Date.parse(sh.start) > ctx.now);
+    const parts = [];
+    if (now) parts.push(`<b>You are on duty now</b> · ${escapeHtml(now.queue)} until ${escapeHtml(shiftTime(now.end, tz))}`);
+    if (next) parts.push(`<b>Your next shift</b> · ${escapeHtml(next.queue)} · ${escapeHtml(shiftTime(next.start, tz))} – ${escapeHtml(shiftTime(next.end, tz))}`);
+    if (!parts.length) parts.push('<span class="note">No shift for you in the next four weeks.</span>');
+    mine = `<div class="myshift${now ? ' now' : ''}">${ICONS.clock}<span>${parts.join('<br>')}</span></div>`;
+  }
+  if (!duty && !mine) return '<p class="empty">No on-call schedules.</p>';
+  return `${mine}${duty ? `<ul class="duty">${duty}</ul>` : ''}`;
 }
 
 export function meetingsSection(state, ctx) {
@@ -454,7 +515,7 @@ export function meetingsSection(state, ctx) {
     const now = Date.parse(m.startTime) <= ctx.now && Date.parse(m.endTime) > ctx.now;
     const join = webLink(m.joinUrl);
     const button = join ? `<a class="btn ${now ? '' : 'btn-secondary '}btn-sm" href="${escapeHtml(join)}" target="_blank" rel="noopener noreferrer">${ICONS.video}${now ? 'Join' : '<span class="sr">Join</span>'}</a>` : '';
-    return `${head}<li class="mt${now ? ' now' : ''}" data-key="${escapeHtml(`${m.subject}@${m.startTime}`)}"><time>${escapeHtml(time(m.startTime))}</time><div><b>${escapeHtml(m.subject || 'Meeting')}</b><small>${now ? 'Now · ' : ''}${escapeHtml(time(m.startTime))}–${escapeHtml(time(m.endTime))}${m.organizer ? ` · ${escapeHtml(m.organizer)}` : ''}</small></div>${button}</li>`;
+    return `${head}<li class="mt${now ? ' now' : ''}" data-key="${escapeHtml(`${m.subject}@${m.startTime}`)}"><time>${escapeHtml(time(m.startTime))}</time><div><b>${escapeHtml(m.subject || 'Meeting')}</b><small>${now ? 'Now · ' : ''}${escapeHtml(time(m.startTime))}–${escapeHtml(time(m.endTime))}${m.organizer ? ` · ${personRef(m.organizer, ctx.avatars, { avatar: false })}` : ''}</small></div>${button}</li>`;
   });
   return `<ul class="mlist">${rows.join('')}</ul>`;
 }
@@ -725,7 +786,7 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
   const projectUrl = safeLink(String(mr.web_url || '').replace(/\/-\/merge_requests\/.*$/, ''), host);
   const draft = mr.draft || mr.work_in_progress;
   const [tone, stateText] = MR_STATE[mr.state] || ['idle', mr.state || 'Unknown'];
-  const person = (u) => (u ? `<span class="who">${avatarImg(u.name || u.username, ctx.avatars)}${escapeHtml(u.name || u.username)}</span>` : '');
+  const person = (u) => (u ? `<span class="who">${personRef(u.name || u.username, ctx.avatars)}</span>` : '');
   const approvedBy = (approvals?.approved_by || []).map((a) => a.user).filter(Boolean);
   const required = Number(approvals?.approvals_required) || 0;
   const given = approvedBy.length;
@@ -762,7 +823,7 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
       ['Repo', !project ? '' : projectUrl ? `<a class="dref" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(project)}</a>` : `<span class="dref">${escapeHtml(project)}</span>`],
       ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
       ['Author', person(mr.author)],
-      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}${approve}${merge}</span>`],
+      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => personRef(u.name || u.username, ctx.avatars, { avatar: false })).join(', ')}</span>` : ''}${approve}${merge}</span>`],
       ['Pipeline', pipeline],
       ['Created', escapeHtml(`${when(mr.created_at, ctx)}${mr.updated_at && mr.updated_at !== mr.created_at ? ` · updated ${ago(mr.updated_at, ctx.now)}` : ''}`)],
       openRow(url, 'Open in GitLab', 'gitlab'),
@@ -782,8 +843,8 @@ export function issueDetail(i, ctx) {
       ['Status', `<span class="pill pill-${i.statusCategory === 'done' ? 'ok' : i.statusCategory === 'indeterminate' ? 'run' : 'idle'}">${escapeHtml(i.status)}</span>`],
       ['Type', escapeHtml(i.issueType)],
       ['Priority', escapeHtml(i.priority)],
-      ['Assignee', `${avatarImg(i.assignee || 'Unassigned', ctx.avatars)}${escapeHtml(i.assignee || 'Unassigned')}`],
-      ['Reporter', i.reporter ? `${avatarImg(i.reporter, ctx.avatars)}${escapeHtml(i.reporter)}` : ''],
+      ['Assignee', personRef(i.assignee || 'Unassigned', ctx.avatars)],
+      ['Reporter', i.reporter ? personRef(i.reporter, ctx.avatars) : ''],
       ['Labels', (i.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
       ['Created', escapeHtml(when(i.created, ctx))],
       ['Updated', escapeHtml(when(i.updated, ctx))],
@@ -795,6 +856,93 @@ export function issueDetail(i, ctx) {
 }
 
 /** An OpsGenie alert for the drawer: `{title, html}`. */
+/**
+ * A person as a button that opens the person panel (`data-person` carries the display name). `avatar` puts the
+ * photo (initials without one) in front, `bold` sets the name in bold. A placeholder name stays plain text.
+ */
+export function personRef(name, avatars = {}, { avatar = true, bold = false } = {}) {
+  const n = String(name || '').trim();
+  if (!n) return '';
+  const label = bold ? `<b>${escapeHtml(n)}</b>` : escapeHtml(n);
+  if (/^unassigned$/i.test(n)) return `${avatar ? avatarImg(n, avatars) : ''}${label}`;
+  return `<button type="button" class="pref" data-person="${escapeHtml(n)}" title="About ${escapeHtml(n)}">${avatar ? avatarImg(n, avatars) : ''}${label}</button>`;
+}
+
+/** Every person the dashboard data names: authors, approvers, assignees, people on duty, meeting organizers. */
+export function dashboardPeople(data) {
+  const names = new Set();
+  const add = (n) => { const v = String(n || '').trim(); if (v && v.length <= 120) names.add(v); };
+  for (const mr of data?.mrs?.items || []) { add(mr.author?.name); for (const u of mr.approvedBy || []) add(u.name); }
+  for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data?.sprint?.data?.[k] || []) { add(t.assignee); add(t.reporter); }
+  for (const d of data?.alerts?.data?.duty || []) { if (d?.who) add(d.who); for (const p of d?.people || []) add(p?.name); }
+  for (const m of Array.isArray(data?.meetings?.data) ? data.meetings.data : []) add(m.organizer);
+  for (const ab of Array.isArray(data?.leave?.data) ? data.leave.data : []) add(ab.name);
+  return names;
+}
+
+const PRESENCE = {
+  Available: ['ok', 'Available'],
+  AvailableIdle: ['ok', 'Available'],
+  Busy: ['bad', 'Busy'],
+  BusyIdle: ['bad', 'Busy'],
+  DoNotDisturb: ['bad', 'Do not disturb'],
+  BeRightBack: ['idle', 'Be right back'],
+  Away: ['idle', 'Away'],
+  Offline: ['idle', 'Offline'],
+};
+const ACTIVITY = { InAMeeting: 'In a meeting', InACall: 'In a call', Presenting: 'Presenting', OffWork: 'Off work', InAConferenceCall: 'In a call' };
+
+function absenceText(ab) {
+  if (!ab) return '';
+  const range = ab.startDate ? (ab.endDate && ab.endDate !== ab.startDate ? `${ab.startDate} – ${ab.endDate}` : ab.startDate) : '';
+  return `${ab.category || 'Leave'}${range ? ` (${range})` : ''}${ab.status ? `, ${ab.status}` : ''}`;
+}
+
+/**
+ * The person panel: who they are (Teams directory), whether they are around (Teams presence, HR WORKS absence)
+ * and how to reach them (Teams chat and call, email). `p` is what the watcher's person lookup returned.
+ */
+export function personDetail(p, ctx) {
+  const name = p?.name || 'Person';
+  if (!p?.found) {
+    return { title: name, html: `<div class="dmeta">${facts([['Name', `<span class="who">${avatarImg(name, ctx.avatars)}${escapeHtml(name)}</span>`]])}</div><p class="note">${escapeHtml(p?.reason || 'This person was not found in the Teams directory.')}</p>` };
+  }
+  const email = /^[^\s@<>"]+@[^\s@<>"]+$/.test(p.email || '') ? p.email : '';
+  const target = email || (/^8:orgid:[0-9a-f-]{36}$/i.test(p.mri || '') ? p.mri : '');
+  const pr = p.presence || {};
+  let status = '';
+  if (pr.outOfOffice) status = '<span class="pill pill-idle">Out of office</span>';
+  else if (pr.availability) {
+    const [tone, text] = PRESENCE[pr.availability] || ['idle', pr.availability];
+    status = `<span class="pill pill-${tone}">${escapeHtml(text)}</span>${ACTIVITY[pr.activity] ? `<span class="note">${escapeHtml(ACTIVITY[pr.activity])}</span>` : ''}`;
+  }
+  const ab = p.absence || null;
+  let hr = '';
+  if (ab?.state === 'away') hr = `<span class="pill pill-bad">Away</span><span class="note">${escapeHtml(absenceText(ab.current))}</span>`;
+  else if (ab?.state === 'present') hr = `<span class="pill pill-ok">Present</span>${ab.upcoming ? `<span class="note">Next: ${escapeHtml(absenceText(ab.upcoming))}</span>` : ''}`;
+  else if (ab?.state === 'not_found') hr = '<span class="note">Not in the HR WORKS calendar</span>';
+  else if (ab?.state === 'unavailable') hr = '<span class="note">HR WORKS is unavailable right now</span>';
+  const teams = (kind) => `https://teams.microsoft.com/l/${kind}/0/0?users=${encodeURIComponent(target)}`;
+  const reach = [
+    target ? `<a class="btn btn-secondary btn-sm" href="${escapeHtml(teams('chat'))}" target="_blank" rel="noopener noreferrer">Chat in Teams</a>` : '',
+    target ? `<a class="btn btn-secondary btn-sm" href="${escapeHtml(teams('call'))}" target="_blank" rel="noopener noreferrer">${ICONS.phone}Call</a>` : '',
+    email ? `<a class="btn btn-secondary btn-sm" href="mailto:${escapeHtml(email)}">Email</a>` : '',
+  ].filter(Boolean).join('');
+  const html =
+    `<div class="pcard">${avatarImg(name, ctx.avatars)}<div><b>${escapeHtml(name)}</b>${p.jobTitle ? `<span>${escapeHtml(p.jobTitle)}</span>` : ''}</div></div>` +
+    (reach ? `<div class="dactions preach">${reach}</div>` : '') +
+    '<div class="dmeta">' +
+    facts([
+      ['Teams', status ? `<span class="dstate">${status}</span>` : ''],
+      ['HR WORKS', hr ? `<span class="dstate">${hr}</span>` : ''],
+      ['Email', email ? `<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : ''],
+      ['Department', escapeHtml(p.department || '')],
+      ['Company', escapeHtml(p.company || '')],
+    ]) +
+    '</div>';
+  return { title: name, html };
+}
+
 export function alertDetail(a, ctx) {
   const url = webLink(a.url);
   const prio = /^P[1-5]$/.test(a.priority) ? a.priority : 'P?';
@@ -847,7 +995,9 @@ export function renderSections(data, ctx) {
     mrs: mrsSection(data.mrs, ctx),
     sprint: sprintSection(data.sprint, ctx),
     alerts: alertsSection(data.alerts, ctx),
+    oncall: oncallSection(data.alerts, ctx),
     meetings: meetingsSection(data.meetings, ctx),
+    leave: leaveSection(data.leave, ctx),
   };
 }
 
@@ -961,13 +1111,15 @@ const NAV = [
 // move and resize them; the layout is kept in their browser (localStorage), never on the server.
 const SECTIONS = [
   ['mrs', 'Merge requests'],
-  ['alerts', 'Alerts and on-call'],
+  ['alerts', 'Alerts'],
+  ['oncall', 'On-call'],
   ['sprint', 'Active sprint'],
   ['meetings', 'Meetings'],
+  ['leave', 'Leave'],
 ];
 
 // The default layout: rows of columns (relative widths) holding stacks of cards. Each visitor can rearrange it.
-export const DEFAULT_LAYOUT = { rows: [{ cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'meetings'] }] }] };
+export const DEFAULT_LAYOUT = { rows: [{ cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'oncall', 'meetings', 'leave'] }] }] };
 
 /** The body of the dashboard page (inside the common header). */
 export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }) {
@@ -1088,7 +1240,7 @@ export const DASHBOARD_CSS = [
   '.box.lifted{position:fixed;z-index:35;margin:0;pointer-events:none;box-shadow:var(--shadow-lg);transform:rotate(.6deg) scale(1.015);outline-color:var(--btn)!important;animation:none!important}.box.lifted>header{cursor:grabbing}',
   '.lcol-rs{position:absolute;top:0;bottom:0;right:calc(-.55rem - 5px);width:10px;cursor:col-resize;z-index:6;display:none}.dash.editing .lcol-rs{display:block}.lcol-rs::after{content:"";position:absolute;left:4px;top:15%;bottom:15%;width:2px;border-radius:1px;background:var(--line-strong);transition:background .15s}.lcol-rs:hover::after,.resizing-col>.lcol-rs::after{background:var(--btn)}',
   '.dash[data-view=overview] .lcol:not(:has(>.box:not(.is-hidden))):not(:has(>.box-ph)),.dash[data-view=overview] .lrow:not(:has(.box:not(.is-hidden))):not(:has(.box-ph)){display:none}',
-  '.dash[data-view=mrs] .lcol:not(:has([data-sec=mrs])),.dash[data-view=mrs] .lrow:not(:has([data-sec=mrs])),.dash[data-view=sprint] .lcol:not(:has([data-sec=sprint])),.dash[data-view=sprint] .lrow:not(:has([data-sec=sprint])),.dash[data-view=alerts] .lcol:not(:has([data-sec=alerts])),.dash[data-view=alerts] .lrow:not(:has([data-sec=alerts])),.dash[data-view=meetings] .lcol:not(:has([data-sec=meetings])),.dash[data-view=meetings] .lrow:not(:has([data-sec=meetings])){display:none}',
+  '.dash[data-view=mrs] .lcol:not(:has([data-sec=mrs])),.dash[data-view=mrs] .lrow:not(:has([data-sec=mrs])),.dash[data-view=sprint] .lcol:not(:has([data-sec=sprint])),.dash[data-view=sprint] .lrow:not(:has([data-sec=sprint])),.dash[data-view=alerts] .lcol:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=alerts] .lrow:not(:has([data-sec=alerts],[data-sec=oncall])),.dash[data-view=meetings] .lcol:not(:has([data-sec=meetings],[data-sec=leave])),.dash[data-view=meetings] .lrow:not(:has([data-sec=meetings],[data-sec=leave])){display:none}',
   '.hidden-bar button.wiggle{animation:tl-wiggle .7s var(--ease),tl-chip 1.6s var(--ease)}@keyframes tl-wiggle{0%{transform:scale(.6)}25%{transform:scale(1.12) rotate(-6deg)}45%{transform:rotate(5deg)}65%{transform:rotate(-3deg)}85%{transform:rotate(1.5deg)}100%{transform:none}}@keyframes tl-chip{0%,40%{background:var(--run-bg);color:var(--run);border-color:var(--run)}}',
   '.lstrip{flex:none;height:44px;border:2px dashed var(--line-strong);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.8rem;animation:tl-fade .2s var(--ease);transition:background .15s,border-color .15s,color .15s}.lstrip.hot{border-color:var(--btn);background:var(--run-bg);color:var(--run)}',
   '.box-ph{flex:none;border:2px dashed var(--btn);border-radius:8px;background:var(--run-bg);opacity:.55}.tk-ph{list-style:none;border:2px dashed var(--btn);border-radius:6px;background:var(--run-bg);opacity:.6}.tk.lifted-tk{position:fixed;z-index:35;pointer-events:none;box-shadow:var(--shadow-lg);transform:rotate(1.5deg) scale(1.03);cursor:grabbing}',
@@ -1123,7 +1275,7 @@ export const DASHBOARD_CSS = [
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.dlink .dlogo{width:16px;height:16px;flex:none}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
-  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve],.appr-line [data-merge]{margin-left:auto}.appr-line [data-approve]+[data-merge]{margin-left:0}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
+  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve],.appr-line [data-merge]{margin-left:auto}.pref{display:inline-flex;align-items:center;gap:0;background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.pref:hover>b,.pref:hover{text-decoration:underline;text-underline-offset:2px}.pref:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}.pcard{display:flex;gap:.8rem;align-items:center;margin:0 0 1rem}.pcard .av{width:56px;height:56px;font-size:1.1rem}.pcard b{display:block;font-size:1.05rem}.pcard span{color:var(--muted);font-size:.85rem}.preach{display:flex;flex-wrap:wrap;gap:.4rem}.leave{padding:.75rem 1rem}.myshift{display:flex;gap:.55rem;align-items:flex-start;margin:.75rem 1rem .25rem;padding:.55rem .7rem;border-radius:8px;background:var(--subtle);font-size:.86rem;line-height:1.5}.myshift .di{flex:none;margin-top:.15rem;color:var(--muted)}.myshift.now{background:var(--run-bg);color:var(--run)}.llist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.35rem}.llist li{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:.86rem}.llist li small{color:var(--muted)}.llist li.now small{color:var(--text)}.llist .av{width:20px;height:20px;margin-right:.4rem}.appr-line [data-approve]+[data-merge]{margin-left:0}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
   '.rich .tbl{overflow-x:auto}.rich table{border-collapse:collapse;font-size:.82rem;margin:.5rem 0}.rich th,.rich td{border:1px solid var(--line);padding:.25rem .5rem;text-align:left;vertical-align:top}.rich th{background:var(--panel)}.rich a{overflow-wrap:anywhere}',
@@ -1141,8 +1293,6 @@ export const DASHBOARD_CSS = [
   '.chips .toggle[aria-pressed=true]{background:var(--run-bg);color:var(--run);border-color:var(--run)}',
   '.dash[data-mrf=review] .mrrow:not([data-f~=review]),.dash[data-mrf=mine] .mrrow:not([data-f~=mine]),.dash[data-mrf=human] .mrrow:not([data-f~=human]),.dash[data-mrf=bots] .mrrow:not([data-f~=bots]){display:none}',
   '.dash[data-mrf=review] .mrlist:not(:has([data-f~=review])) .only-review,.dash[data-mrf=mine] .mrlist:not(:has([data-f~=mine])) .only-mine,.dash[data-mrf=human] .mrlist:not(:has([data-f~=human])) .only-human,.dash[data-mrf=bots] .mrlist:not(:has([data-f~=bots])) .only-bots{display:block}',
-  '.sbar{display:flex;height:6px;margin:.85rem 1rem 0;border-radius:3px;background:var(--line);overflow:hidden}.sbar i{display:block;height:100%;transition:width .6s var(--ease)}.s-rev{background:var(--ok)}.s-prog{background:var(--run)}.s-todo{background:var(--line-strong)}',
-  '.slegend{display:flex;flex-wrap:wrap;gap:.2rem 1rem;margin:.4rem 1rem 0;font-size:.78rem;color:var(--muted)}.slegend span{display:inline-flex;gap:.35rem;align-items:center}.slegend i{width:8px;height:8px;border-radius:2px;display:inline-block}',
   '.box-sprint .box-body{display:flex;flex-direction:column}.box-sprint .board{flex:1 1 auto}.board{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.6rem;padding:.75rem 1rem 1rem}.col{background:var(--subtle);border-radius:8px;padding:.5rem;min-width:0}',
   '.col h4{margin:0 0 .45rem;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);display:flex;justify-content:space-between;padding:.1rem .2rem}.col ul{display:grid;gap:.4rem}',
   '.tk{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.5rem .55rem;font-size:.82rem;display:grid;gap:.25rem;transition:transform .15s,box-shadow .15s}.tk:hover{transform:translateY(-1px);box-shadow:var(--shadow)}.tk.mine .who{color:var(--text)}.tk.mine .who .av{border-radius:50%;box-shadow:0 0 0 1.5px var(--panel),0 0 0 3px var(--run);margin-right:.5rem}',
@@ -1159,7 +1309,7 @@ export const DASHBOARD_CSS = [
   '.toast{pointer-events:auto;background:var(--bar);color:var(--bar-text);padding:.6rem .85rem;border-radius:8px;box-shadow:var(--shadow-lg);font-weight:500;max-width:min(360px,calc(100vw - 2rem));animation:tl-toast .4s var(--spring)}.toast.out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform .3s}',
   '@keyframes tl-toast{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:none}}',
   // one section at a time when a section is picked; everything on the overview
-  '.dash:not([data-view=overview]) .stats{display:none}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]),.dash[data-view=meetings] .box:not([data-sec=meetings]){display:none}',
+  '.dash:not([data-view=overview]) .stats{display:none}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]):not([data-sec=oncall]),.dash[data-view=meetings] .box:not([data-sec=meetings]):not([data-sec=leave]){display:none}',
   '.dash:not([data-view=overview]) .box{height:auto!important}.dash:not([data-view=overview]) .lcol-rs,.dash:not([data-view=overview]) .tools,.dash:not([data-view=overview]) .rs{display:none}',
   // the settings view: one card of rows with switches; it replaces the cards while it is open
   '.settings{display:none;max-width:46rem}.dash[data-view=settings] .settings{display:block}.dash[data-view=settings] .layout,.dash[data-view=settings] .editbar{display:none!important}.set-title{font-size:1.25rem;margin:0 0 1rem}',
@@ -1211,13 +1361,13 @@ fetch(B+'/move',{method:'POST',credentials:'same-origin',cache:'no-store',header
 d.addEventListener('pointerup',tkDrop);d.addEventListener('pointercancel',tkDrop);
 var dr=d.querySelector('[data-drawer]'),dlast=null,dreq=0,dkey=null,dpush=false,rbusy=false;
 function closeDetail(){if(!dr||dr.hidden)return;dr.hidden=true;document.body.style.overflow='';if(dlast&&dlast.focus)dlast.focus();dkey=null;if(!rbusy){if(dpush)try{history.back()}catch(e){}else unroute()}dpush=false}
-var DC={},pft=null;function dq(el){var m=el.getAttribute('data-mr'),i=el.getAttribute('data-issue'),a=el.getAttribute('data-alert');return m?'/mr?ref='+encodeURIComponent(m):i?'/issue?key='+encodeURIComponent(i):a?'/alert?id='+encodeURIComponent(a):null}
+var DC={},pft=null;function dq(el){var m=el.getAttribute('data-mr'),i=el.getAttribute('data-issue'),a=el.getAttribute('data-alert'),pp=el.getAttribute('data-person');return pp?'/person?name='+encodeURIComponent(pp):m?'/mr?ref='+encodeURIComponent(m):i?'/issue?key='+encodeURIComponent(i):a?'/alert?id='+encodeURIComponent(a):null}
 function dget(q,fresh){var c=DC[q],now=Date.now();if(c&&c.p&&(!fresh||now-c.t<30000))return c.p;var e={t:now,x:c&&c.x};e.p=fetch(B+q,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(x){e.x=x;e.t=Date.now()}else if(DC[q]===e&&!e.x)delete DC[q];return x},function(err){if(DC[q]===e){if(e.x)e.p=null;else delete DC[q]}throw err});DC[q]=e;return e.p}
 function prefetch(el){var q=el&&dq(el);if(!q||!online())return;var c=DC[q];if(c&&Date.now()-c.t<30000)return;dget(q,true).catch(function(){})}
 function pfIdle(){var go=function(){var els=[].slice.call(d.querySelectorAll('.mrlist .mrrow[data-mr]')).filter(function(x){return x.offsetParent!==null}).slice(0,5).concat([].slice.call(d.querySelectorAll('.board .tk.mine[data-issue]')).slice(0,5));els.forEach(function(x,k){setTimeout(function(){prefetch(x)},k*400)})};if(window.requestIdleCallback)requestIdleCallback(go,{timeout:4000});else setTimeout(go,1500)}
-d.addEventListener('pointerover',function(e){var el=e.target.closest&&e.target.closest('.mrrow[data-mr],[data-issue],[data-alert]');clearTimeout(pft);if(el)pft=setTimeout(function(){prefetch(el)},120)});d.addEventListener('pointerout',function(){clearTimeout(pft)});d.addEventListener('focusin',function(e){var el=e.target.closest&&e.target.closest('.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)});d.addEventListener('touchstart',function(e){var el=e.target.closest&&e.target.closest('.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)},{passive:true});
+d.addEventListener('pointerover',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');clearTimeout(pft);if(el)pft=setTimeout(function(){prefetch(el)},120)});d.addEventListener('pointerout',function(){clearTimeout(pft)});d.addEventListener('focusin',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)});d.addEventListener('touchstart',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)},{passive:true});
 pfIdle();
-function openDetail(el){if(!dr)return;var issue=el.getAttribute('data-issue'),alertId=el.getAttribute('data-alert'),mrk=el.getAttribute('data-mr'),n=++dreq,was=!dr.hidden;dlast=el;dkey=issue?['issue',issue]:alertId?['alert',alertId]:['mr',mrk];var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';if(!rbusy){if(was)unroute();else{route();dpush=true}}var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
+function openDetail(el){if(!dr)return;var who=el.getAttribute('data-person'),issue=who?null:el.getAttribute('data-issue'),alertId=who?null:el.getAttribute('data-alert'),mrk=who?null:el.getAttribute('data-mr'),n=++dreq,was=!dr.hidden;dlast=el;dkey=who?['person',who]:issue?['issue',issue]:alertId?['alert',alertId]:['mr',mrk];var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=who||issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';dr.hidden=false;document.body.style.overflow='hidden';if(!rbusy){if(was)unroute();else{route();dpush=true}}var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();
 var q=dq(el),c0=DC[q],show=function(x){if(n!==dreq)return;if(!x){body.innerHTML='';var p=document.createElement('p');p.className='note';p.textContent='Could not load the details right now.';body.appendChild(p);return}t.textContent=x.title||'';body.innerHTML=x.html||'';};if(c0&&c0.x)show(c0.x);if(c0&&c0.x&&Date.now()-c0.t<30000)return;dget(q,true).then(function(x){if(c0&&c0.x&&!x)return;if(c0&&c0.x&&x&&x.html===c0.x.html)return;var st=body.scrollTop,sv=body.querySelector('[data-diff-sel]');sv=sv&&sv.value;show(x);if(c0&&c0.x&&n===dreq){body.scrollTop=st;var bx=sv&&body.querySelector('[data-diffs]');if(bx)diffShow(bx,Number(sv))}}).catch(function(){if(n===dreq&&!(c0&&c0.x))body.textContent='Could not load the details right now.'})}
 d.addEventListener('keydown',function(e){if(e.key==='Escape'&&dr&&!dr.hidden){closeDetail();return}if(e.key==='Escape'&&editing()&&!mv&&!rz){setEdit(false);return}var el=e.target;if((e.key==='Enter'||e.key===' ')&&el&&el.matches&&el.matches('[role=button][data-issue],[role=button][data-alert],.mrrow[data-mr]')){e.preventDefault();openDetail(el)}});
 function collapse(on){d.classList.toggle('collapsed',on);var c=document.querySelector('[data-collapse]');if(c){c.setAttribute('aria-expanded',String(!on));c.title=on?'Expand sidebar':'Collapse sidebar'}try{localStorage.setItem('tl-side',on?'1':'0')}catch(e){}}
@@ -1274,10 +1424,10 @@ try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf')
 function here(){var v=d.getAttribute('data-view'),q=new URLSearchParams();if(v==='overview'||v==='mrs')q.set('f',d.getAttribute('data-mrf')||'');if(dkey&&dr&&!dr.hidden)q.set(dkey[0],dkey[1]);var s=q.toString();return '#'+v+(s?'?'+s:'')}
 function route(){if(rbusy)return;var h=here();if(h===location.hash)return;try{history.pushState(null,'',location.pathname+location.search+h)}catch(e){}}
 function unroute(){if(rbusy)return;try{history.replaceState(null,'',location.pathname+location.search+here())}catch(e){}}
-function apply(){var m=ROUTE.exec(location.hash);if(!m)return false;rbusy=true;try{var q=new URLSearchParams(m[2]||''),f=q.get('f');if(f&&/^[a-z]+$/.test(f)&&d.querySelector('[data-mrf-to="'+f+'"]')){d.setAttribute('data-mrf',f);try{sessionStorage.setItem('tl-mrf',f)}catch(e){}}if(d.getAttribute('data-view')!==m[1])view(m[1]);else mark();var o=null;['mr','issue','alert'].forEach(function(k){var x=q.get(k);if(x&&!o)o=[k,x]});if(!o)closeDetail();else if(!dkey||dr.hidden||dkey[0]!==o[0]||dkey[1]!==o[1]){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1].replace(/["\\\\]/g,''))+'"]');if(el)openDetail(el);else closeDetail()}dpush=false}finally{rbusy=false}unroute();return true}
+function apply(){var m=ROUTE.exec(location.hash);if(!m)return false;rbusy=true;try{var q=new URLSearchParams(m[2]||''),f=q.get('f');if(f&&/^[a-z]+$/.test(f)&&d.querySelector('[data-mrf-to="'+f+'"]')){d.setAttribute('data-mrf',f);try{sessionStorage.setItem('tl-mrf',f)}catch(e){}}if(d.getAttribute('data-view')!==m[1])view(m[1]);else mark();var o=null;['person','mr','issue','alert'].forEach(function(k){var x=q.get(k);if(x&&!o)o=[k,x]});if(!o)closeDetail();else if(!dkey||dr.hidden||dkey[0]!==o[0]||dkey[1]!==o[1]){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1].replace(/["\\\\]/g,''))+'"]');if(el)openDetail(el);else closeDetail()}dpush=false}finally{rbusy=false}unroute();return true}
 if(!apply())unroute();window.addEventListener('popstate',apply);window.addEventListener('hashchange',apply);mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var ds=e.target.closest('[data-diff-step]');if(ds){var bx=ds.closest('[data-diffs]'),sl=bx.querySelector('[data-diff-sel]');diffShow(bx,Number(sl.value)+Number(ds.getAttribute('data-diff-step')));return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a){approve(a);return}var mg=e.target.closest('[data-merge]');if(mg)merge(mg)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var pr=e.target.closest('[data-person]');if(pr){e.preventDefault();openDetail(pr);return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var ds=e.target.closest('[data-diff-step]');if(ds){var bx=ds.closest('[data-diffs]'),sl=bx.querySelector('[data-diff-sel]');diffShow(bx,Number(sl.value)+Number(ds.getAttribute('data-diff-step')));return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a){approve(a);return}var mg=e.target.closest('[data-merge]');if(mg)merge(mg)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;var ref=b.getAttribute('data-project')+'!'+b.getAttribute('data-iid'),done=false;if(!online()){toast('You are offline. Approve again once you are back online.');return}b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';if(ok){done=true;var ln=b.closest('.appr-line'),ob=ln&&ln.querySelector('.appr-badge');if(ob)ob.remove()}b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;DC={};setTimeout(function(){refresh();if(done)redetail(ref)},1500)})}

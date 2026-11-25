@@ -7,7 +7,7 @@ import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
 import { OpsGenieClient, humanizeRecipient } from './opsgenie.mjs';
 import { getCalendarView } from './teams.mjs';
-import { HRWorksClient } from './hrworks.mjs';
+import { HRWorksClient, getInclusiveDateRange } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
@@ -28,7 +28,7 @@ const log = createLogger('main');
  * What the dashboard shows besides the merge requests, read by the bot with its own accounts: the active sprint,
  * the open alerts with who is on duty, and the rest of the week's meetings (declined ones left out).
  */
-function dashboardSources({ jira, opsgenie }) {
+function dashboardSources({ jira, opsgenie, hrworks }) {
   return {
     sprint: jira.isConfigured() ? () => jira.getActiveSprintTasks() : null,
     // A ticket for the preview drawer, with what the sprint list leaves out (description, reporter, labels, dates).
@@ -92,7 +92,30 @@ function dashboardSources({ jira, opsgenie }) {
               { queue: 'On-call', people: (r.onCallDuty || []).map((p) => ({ name: humanizeRecipient(p), email: String(p).includes('@') ? String(p) : '' })) },
               { queue: 'Support', people: (r.supportDuty || []).map((p) => ({ name: humanizeRecipient(p), email: String(p).includes('@') ? String(p) : '' })) },
             ],
+            // The next four weeks of each schedule (null: the timeline could not be read).
+            shifts: [['On-call', r.onCallShifts], ['Support', r.supportShifts]].map(([queue, list]) => ({
+              queue,
+              shifts: Array.isArray(list) ? list.map((s) => ({ name: humanizeRecipient(s.recipient), email: String(s.recipient).includes('@') ? String(s.recipient) : '', start: s.start, end: s.end })) : null,
+            })),
           };
+        }
+      : null,
+    // Who of the HR WORKS team is on leave from today for the next seven days (the meetings card shows it).
+    leave: hrworks && (hrworks.token || hrworks.tokenFile)
+      ? async () => {
+          const data = await hrworks.getTeamAbsences();
+          if (!data) throw new Error('the HR WORKS team calendar is unavailable');
+          const day = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(d);
+          const today = day(new Date());
+          const until = day(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+          const names = new Map((data.employees || []).map((e) => [e.id, e.displayName]));
+          return (data.absences || [])
+            .map((ab) => {
+              const { start, end } = getInclusiveDateRange(ab.start, ab.end);
+              return { name: names.get(ab.resourceId) || ab.employee || '', category: ab.category || 'Leave', startDate: start, endDate: end, status: ab.status || '' };
+            })
+            .filter((ab) => ab.name && ab.startDate && ab.endDate >= today && ab.startDate <= until)
+            .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
         }
       : null,
     meetings: async () => {
@@ -400,6 +423,7 @@ async function main() {
         rebaseEnabled: apCfg.rebase_enabled !== false,
         avatarOf: (name) => watcher.webAvatarOf(name),
         avatarWarm: (names) => watcher.webAvatarWarm(names),
+        personInfo: (name) => watcher.personInfo(name),
         // A cached photo of a person ({name, email}) or null, without the initials fallback.
         avatarPeek: (person) => (watcher.suppressAvatars ? null : watcher.avatarService?.peek?.(person)) || null,
         recordApprover: (project, iid, user) => watcher.recordWebApprover(project, iid, user),
@@ -417,7 +441,7 @@ async function main() {
               path: apCfg.dashboard.path,
               timeZone: apCfg.dashboard.time_zone,
               push: apCfg.dashboard.push,
-              sources: dashboardSources({ jira, opsgenie }),
+              sources: dashboardSources({ jira, opsgenie, hrworks }),
             }
           : null,
       });

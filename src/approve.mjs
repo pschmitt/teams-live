@@ -69,7 +69,7 @@ import { FAVICON } from './favicon.mjs';
 /** The page footer: just the project on GitHub. */
 const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer>`;
 import { ICON_192, ICON_512 } from './pwa-icons.mjs';
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardPeople, personDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
 import { generateVapidKeys, parseSubscription, sendPush, validVapidKeys } from './webpush.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
@@ -115,7 +115,7 @@ const DASH_TOKEN_MARGIN_MS = 2 * 60 * 1000;
 const MAX_DASH_SESSIONS = 200;
 const DASH_DATA_CACHE_MS = 20_000;
 const DASH_SOURCE_CACHE_MS = 60_000;
-const DASH_SOURCES = { sprint: 'Jira', alerts: 'OpsGenie', meetings: 'the calendar' };
+const DASH_SOURCES = { sprint: 'Jira', alerts: 'OpsGenie', meetings: 'the calendar', leave: 'HR WORKS' };
 // Push notifications: how often the server looks for new events of the subscribed browsers, how many browsers
 // one person and everyone together may subscribe, how long a seen event is remembered after it disappeared.
 const PUSH_POLL_MS = 60_000;
@@ -622,6 +622,7 @@ export class ApproveServer {
     avatarOf = null,
     avatarWarm = null,
     avatarPeek = null,
+    personInfo = null,
     recordApprover = null,
     mergePollMs = MERGE_POLL_MS,
     mergePollAttempts = MERGE_POLL_ATTEMPTS,
@@ -668,6 +669,8 @@ export class ApproveServer {
     // (name) => picture data URI for a person, and (names) => Promise that loads their photos: from the watcher.
     this.avatarOf = typeof avatarOf === 'function' ? avatarOf : null;
     this.avatarWarm = typeof avatarWarm === 'function' ? avatarWarm : null;
+    // Who a person is and whether they are around (Teams directory and presence, HR WORKS): `(name) => info`.
+    this.personInfo = typeof personInfo === 'function' ? personInfo : null;
     // (person) => cached photo or null: for people known by email (the on-duty responders from OpsGenie).
     this.avatarPeek = typeof avatarPeek === 'function' ? avatarPeek : null;
     // (project, iid, {username, name}) => void: who really approved, so the card can show them instead of the bot.
@@ -896,12 +899,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/merge', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/merge', '/signin', '/signout', '/issue', '/alert', '/mr', '/person', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/merge', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/person', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/merge', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1770,6 +1773,11 @@ export class ApproveServer {
         return this.json(res, 502, {});
       }
     }
+    if (route === '/dashboard/person') {
+      if (method !== 'GET') return notAllowed('GET');
+      if (!session) return this.json(res, 401, {});
+      return this.dashboardPerson(req, res, session);
+    }
     if (route === '/dashboard/issue' || route === '/dashboard/alert' || route === '/dashboard/mr') {
       if (method !== 'GET') return notAllowed('GET');
       if (!session) return this.json(res, 401, {});
@@ -2004,6 +2012,7 @@ export class ApproveServer {
     try {
       const item = await hit.promise;
       const names = kind === 'issue' ? [item.assignee, item.reporter].filter(Boolean) : [];
+      this.notePeopleShown(session, names);
       if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
@@ -2011,6 +2020,48 @@ export class ApproveServer {
       return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx));
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
+      return this.json(res, 502, {});
+    }
+  }
+
+  /** Remembers the people a detail panel showed this visitor, so their names open the person panel too. */
+  notePeopleShown(session, names) {
+    const shown = (session.peopleShown ||= new Set());
+    for (const n of names) {
+      const v = String(n || '').trim();
+      if (!v || v.length > 120) continue;
+      shown.delete(v);
+      shown.add(v);
+    }
+    while (shown.size > 500) shown.delete(shown.values().next().value);
+  }
+
+  /**
+   * GET <dash>/person?name=…: the person panel. Only for people this visitor's dashboard shows (the lists, or a
+   * detail panel opened before), so the endpoint is no general directory or HR WORKS reader. Answers `{title, html}`.
+   */
+  async dashboardPerson(req, res, session) {
+    const name = String(new URL(req.url, 'http://localhost').searchParams.get('name') || '').trim();
+    if (!name || name.length > 120) return this.json(res, 404, {});
+    const data = await this.dashboardData(session);
+    if (!dashboardPeople(data).has(name) && !session.peopleShown?.has(name)) return this.json(res, 404, {});
+    if (!this.personInfo) return this.json(res, 200, personDetail({ name, found: false, reason: 'Person details are not available on this server.' }, { avatars: {} }));
+    const key = `person:${name.toLowerCase()}`;
+    const now = this.now();
+    let hit = this.dashSourceCache.get(key);
+    if (!hit || now - hit.at > 120_000) {
+      hit = { at: now, promise: Promise.resolve().then(() => this.personInfo(name)) };
+      this.dashSourceCache.set(key, hit);
+      hit.promise.catch(() => { if (this.dashSourceCache.get(key) === hit) this.dashSourceCache.delete(key); });
+    }
+    try {
+      const info = await hit.promise;
+      if (this.avatarWarm) { try { await this.avatarWarm([name]); } catch { /* initials */ } }
+      const avatars = {};
+      try { const u = this.avatarOf?.(name); if (u) avatars[name] = u; } catch { /* initials */ }
+      return this.json(res, 200, personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }));
+    } catch (err) {
+      log(`Dashboard could not look up a person for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});
     }
   }
@@ -2030,6 +2081,7 @@ export class ApproveServer {
     try {
       const detail = await hit.promise;
       const names = [detail.mr.author, ...(detail.mr.reviewers || [])].filter(Boolean).map((u) => u.name || u.username);
+      this.notePeopleShown(session, [...names, ...(detail.approvals?.approved_by || []).map((a) => a.user?.name || a.user?.username)]);
       if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
@@ -2048,7 +2100,7 @@ export class ApproveServer {
     const hit = this.dashData.get(key);
     if (hit && now - hit.at < DASH_DATA_CACHE_MS) return hit.promise;
     const promise = (async () => {
-      const [mrs, sprint, alerts, meetings] = await Promise.all([
+      const [mrs, sprint, alerts, meetings, leave] = await Promise.all([
         fetchGroupMrs(this.gitlabHost, session.accessToken, this.dashboard.group)
           .then((items) => ({ items: items.map((mr) => ({ ...mr, issues: this.mrIssueKeys(mr) })) }))
           .catch((err) => {
@@ -2059,8 +2111,12 @@ export class ApproveServer {
         this.dashSource('sprint'),
         this.dashSource('alerts'),
         this.dashSource('meetings'),
+        // HR WORKS can take a minute on a cold cache: the page does not wait for it, the next refresh shows it.
+        this.dashboard.sources?.leave
+          ? Promise.race([this.dashSource('leave'), new Promise((resolve) => { const t = setTimeout(() => resolve({ pending: true }), 8_000); t.unref?.(); })])
+          : Promise.resolve({ off: true }),
       ]);
-      return { at: this.now(), mrs, sprint, alerts, meetings };
+      return { at: this.now(), mrs, sprint, alerts, meetings, leave };
     })();
     const entry = { at: now, promise };
     this.dashData.set(key, entry);

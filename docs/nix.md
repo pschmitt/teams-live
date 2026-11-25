@@ -568,8 +568,13 @@ signed-in start page:
   With `gitlab.approve.merge_enabled`, a merge request that GitLab reports as `mergeable` for the visitor also has
   **Merge** (in the row and on the Approvals row of the detail panel): after a confirmation prompt, one merge as the
   visitor's own GitLab account, pinned to the head commit the page showed and checked again first, never repeated.
-- **Active sprint** (Jira), **alerts and on-call** (OpsGenie) and the **next meetings** (the Teams calendar of the
-  account teams-live runs as). These are read by the bot with its own accounts, at most once a minute for everyone.
+- **Active sprint** (Jira), **alerts** and **on-call** (OpsGenie: who is on duty per queue and the visitor's own
+  current or next shift from the schedules' timelines, four weeks ahead, matched by name), the **next meetings** (the
+  Teams calendar of the account teams-live runs as) and **leave** (who of the HR WORKS team is away this week). These
+  are read by the bot with its own accounts, at most once a minute for everyone. Each card can be hidden.
+- **People** are clickable everywhere (authors, approvers, assignees, people on duty, meeting organizers, people on
+  leave): the person panel shows their Teams directory entry, Teams presence and HR WORKS absence, with Teams chat,
+  call and email links. It answers only for people the visitor's dashboard shows.
 
 Who may open it: a GitLab user who signs in and is an active member of `gitlab.group` (checked with their own
 token), and on `oauth.allowed_users` when that list is set. The session cookie is HttpOnly and SameSite=Strict and

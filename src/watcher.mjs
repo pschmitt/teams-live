@@ -1920,6 +1920,60 @@ export class MergeRequestWatcher {
     return isImageDataUri(photo) && photo !== PLACEHOLDER_AVATAR ? photo : fallbackAvatar(name);
   }
 
+  /**
+   * Who a person (a display name the dashboard shows) is and whether they are around, for the dashboard's
+   * person panel: the Teams directory entry (only an unambiguous match), Teams presence and HR WORKS absence.
+   * Each slow source has its own time limit; a source that fails is left out, never guessed.
+   */
+  async personInfo(name) {
+    const query = String(name || '').trim();
+    if (!query || !this.userDirectory?.searchDirectory) return { name: query, found: false, reason: 'The Teams directory is not available.' };
+    const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => { const t = setTimeout(() => resolve(undefined), ms); t.unref?.(); })]);
+    let results;
+    try {
+      results = (await within(this.userDirectory.searchDirectory(query), 15_000)) || [];
+    } catch (err) {
+      log.warn(`Person lookup failed for a dashboard panel: ${err.message}`);
+      return { name: query, found: false, reason: 'The Teams directory could not be searched right now.' };
+    }
+    const want = normalizeName(query);
+    // One exact name match (the same account found twice counts once), else the only search result.
+    const exact = [...new Map(results.filter((r) => r?.displayName && normalizeName(r.displayName) === want).map((r) => [r.mri || r.email || r.displayName, r])).values()];
+    const person = exact.length === 1 ? exact[0] : !exact.length && results.length === 1 ? results[0] : null;
+    if (!person) {
+      return { name: query, found: false, reason: exact.length > 1 ? 'Several people in the Teams directory have this name.' : 'This person was not found in the Teams directory.' };
+    }
+    const info = {
+      found: true,
+      name: person.displayName || query,
+      email: person.email || '',
+      mri: person.mri || '',
+      jobTitle: person.jobTitle || '',
+      department: person.department || '',
+      company: person.companyName || '',
+      presence: null,
+      absence: null,
+    };
+    const presence = person.mri
+      ? within(getUserPresence(person.mri).then((res) => {
+          const pr = res?.ok && Array.isArray(res.value?.data) ? res.value.data[0]?.presence : null;
+          return pr ? { availability: pr.availability || '', activity: pr.activity || '', outOfOffice: pr.calendarData?.isOutOfOffice === true } : null;
+        }).catch(() => null), 8_000)
+      : Promise.resolve(null);
+    const absence = this.hrworks
+      ? within(this.hrworks.findPersonAbsence(person).then((r) => {
+          if (!r) return null;
+          if (r.error) return { state: 'unavailable' };
+          if (r.absence) return { state: 'away', current: r.absence };
+          if (r.reason === 'not_found') return { state: 'not_found' };
+          if (r.reason === 'calendar_unavailable') return { state: 'unavailable' };
+          return { state: 'present', upcoming: r.upcomingAbsence || null };
+        }).catch(() => ({ state: 'unavailable' })), 20_000).then((v) => (v === undefined ? { state: 'unavailable' } : v))
+      : Promise.resolve(null);
+    [info.presence, info.absence] = await Promise.all([presence, absence]);
+    return info;
+  }
+
   /** Loads the photos of the people an approval page shows (bounded by the picture service). */
   async webAvatarWarm(names) {
     if (!this.avatarService || this.suppressAvatars) return;

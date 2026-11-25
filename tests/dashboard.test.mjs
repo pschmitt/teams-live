@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertDetail, diffsSection, issueDetail, linkify, mergeButton, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { alertDetail, diffsSection, issueDetail, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -37,7 +37,7 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now, mergeEnabled = false } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now, mergeEnabled = false, personInfo = null } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
@@ -49,6 +49,7 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     pushFile,
     now,
     mergeEnabled,
+    personInfo,
     mergePollMs: 0,
     mergePollAttempts: 2,
     sleep: async () => {},
@@ -243,7 +244,8 @@ test('sections: links stay on their hosts, failures read plainly', () => {
   const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
   const offHost = mrsSection({ items: [normalizeMr(node({ webUrl: 'https://evil.example.com/x' }))] }, ctx);
   assert.ok(!offHost.includes('evil.example.com'), 'merge request links only on the GitLab host');
-  assert.match(alertsSection({ data: { alerts: [], duty: [{ queue: 'On-call', who: 'Alice Example' }] } }, ctx), /No open alerts[\s\S]*Alice Example/);
+  assert.match(alertsSection({ data: { alerts: [], duty: [{ queue: 'On-call', who: 'Alice Example' }] } }, ctx), /No open alerts/);
+  assert.match(oncallSection({ data: { alerts: [], duty: [{ queue: 'On-call', who: 'Alice Example' }] } }, ctx), /Alice Example/);
   assert.match(meetingsSection({ data: [] }, ctx), /No more meetings/);
 });
 
@@ -438,6 +440,95 @@ test('alert panels: URLs in the source, description and details are links, every
   assert.equal(linkify('(https://e.example.com/Foo_(bar))'), '(<a href="https://e.example.com/Foo_(bar)" target="_blank" rel="noopener noreferrer">https://e.example.com/Foo_(bar)</a>)');
 });
 
+test('people are buttons that open the person panel; a placeholder name stays text', () => {
+  assert.match(personRef('Alice <Example>', {}), /^<button type="button" class="pref" data-person="Alice &lt;Example&gt;" title="About Alice &lt;Example&gt;">/);
+  assert.doesNotMatch(personRef('Unassigned', {}), /<button/);
+  assert.equal(personRef('', {}), '');
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  assert.match(oncallSection({ data: { alerts: [], duty: [{ queue: 'On-call', people: [{ name: 'Carol Example' }] }] } }, ctx), /<span class="duty-p"><button type="button" class="pref" data-person="Carol Example"[^>]*>[\s\S]*?<b>Carol Example<\/b><\/button>/);
+  assert.match(mrsSection({ items: [normalizeMr(node())] }, ctx), /· <button type="button" class="pref" data-person="Bob Example"/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /'\/person\?name='\+encodeURIComponent\(pp\)/);
+  assert.match(script, /var pr=e\.target\.closest\('\[data-person\]'\);if\(pr\)\{e\.preventDefault\(\);openDetail\(pr\)/, 'a person wins over the row it sits in');
+  const people = dashboardPeople({ mrs: { items: [normalizeMr(node())] }, sprint: { data: { todo: [{ assignee: 'Erin Example' }] } }, alerts: { data: { duty: [{ people: [{ name: 'Carol Example' }] }, { who: 'Dave Example' }] } }, meetings: { data: [{ organizer: 'Frank Example' }] } });
+  assert.deepEqual([...people].sort(), ['Bob Example', 'Carol Example', 'Dave Example', 'Erin Example', 'Frank Example'].sort());
+});
+
+test('the person panel: Teams status, HR WORKS, chat, call and email; nothing invented when unknown', () => {
+  const ctx = { avatars: {} };
+  const html = personDetail({ found: true, name: 'Carol Example', email: 'carol@example.com', mri: '8:orgid:00000000-0000-0000-0000-000000000001', jobTitle: 'Engineer', department: 'Platform', presence: { availability: 'Busy', activity: 'InAMeeting' }, absence: { state: 'present', upcoming: { category: 'Vacation', startDate: '2026-12-01', endDate: '2026-12-05' } } }, ctx).html;
+  assert.match(html, /<b>Carol Example<\/b><span>Engineer<\/span>/);
+  assert.match(html, /href="https:\/\/teams\.microsoft\.com\/l\/chat\/0\/0\?users=carol%40example\.com"/);
+  assert.match(html, /href="https:\/\/teams\.microsoft\.com\/l\/call\/0\/0\?users=carol%40example\.com"/);
+  assert.match(html, /href="mailto:carol@example\.com"/);
+  assert.match(html, /<span class="pill pill-bad">Busy<\/span><span class="note">In a meeting<\/span>/);
+  assert.match(html, /<span class="pill pill-ok">Present<\/span><span class="note">Next: Vacation \(2026-12-01 – 2026-12-05\)<\/span>/);
+  const away = personDetail({ found: true, name: 'C', absence: { state: 'away', current: { category: 'Sick', startDate: '2026-11-25' } } }, ctx).html;
+  assert.match(away, /pill-bad">Away<\/span><span class="note">Sick \(2026-11-25\)/);
+  assert.doesNotMatch(away, /Chat in Teams|mailto/, 'no links without an address');
+  assert.match(personDetail({ found: false, name: 'Zed', reason: 'Several people in the Teams directory have this name.' }, ctx).html, /Several people/);
+});
+
+test('the person endpoint answers only for people the visitor\'s dashboard shows', async () => {
+  const asked = [];
+  const personInfo = async (name) => { asked.push(name); return { found: true, name, email: 'bob@example.com', presence: { availability: 'Available' } }; };
+  await withDashboard({ personInfo }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const get = (name) => fetch(`${base}/approve/dashboard/person?name=${encodeURIComponent(name)}`, { headers: { Cookie: cookie } });
+    assert.equal((await fetch(`${base}/approve/dashboard/person?name=Bob%20Example`)).status, 401);
+    assert.equal((await get('Mallory Example')).status, 404, 'not on the dashboard');
+    assert.deepEqual(asked, []);
+    const res = await get('Bob Example');
+    assert.equal(res.status, 200);
+    const d = await res.json();
+    assert.equal(d.title, 'Bob Example');
+    assert.match(d.html, /pill-ok">Available/);
+    await get('Bob Example');
+    assert.deepEqual(asked, ['Bob Example'], 'looked up once, then cached');
+  });
+});
+
+test('the Leave card lists HR WORKS absences of the week, its people open the person panel', () => {
+  const ctx = { avatars: {}, now: Date.parse('2026-11-25T10:00:00Z'), timeZone: 'Europe/Berlin' };
+  const html = leaveSection({ data: [
+    { name: 'Erin Example', category: 'Vacation', startDate: '2026-11-24', endDate: '2026-11-28' },
+    { name: 'Frank Example', category: 'Sick', startDate: '2026-11-25', endDate: '2026-11-25' },
+    { name: 'Gina Example', category: 'Vacation', startDate: '2026-11-30', endDate: '2026-12-02' },
+  ] }, ctx);
+  assert.match(html, /^<div class="leave"><ul class="llist">/);
+  assert.doesNotMatch(meetingsSection({ data: [] }, ctx), /leave/, 'no longer inside the meetings');
+  assert.match(html, /<li class="now" [^>]*><button[^>]*data-person="Erin Example"[\s\S]*?<small>Vacation · until Sat 28 Nov<\/small>/);
+  assert.match(html, /<small>Sick · today<\/small>/);
+  assert.match(html, /<li class="" [^>]*>[\s\S]*?Gina Example[\s\S]*?<small>Vacation · Mon 30 Nov – Wed 2 Dec<\/small>/);
+  assert.match(leaveSection({ off: true }, ctx), /HR WORKS is not configured/);
+  assert.match(leaveSection({ pending: true }, ctx), /Reading HR WORKS/);
+  assert.match(leaveSection({ data: [] }, ctx), /Nobody on leave this week/);
+  assert.ok(dashboardPeople({ leave: { data: [{ name: 'Erin Example' }] } }).has('Erin Example'));
+});
+
+test('the On-call card: who is on duty, and the visitor\'s own current or next shift (matched by name)', () => {
+  const ctx = { name: 'Philippa Müller', avatars: {}, now: Date.parse('2026-11-25T10:00:00Z'), timeZone: 'Europe/Berlin' };
+  const shifts = [
+    { queue: 'On-call', shifts: [
+      { name: 'Louis Example', start: '2026-11-24T08:00:00Z', end: '2026-12-01T08:00:00Z' },
+      { name: 'Philippa Mueller', start: '2026-12-01T08:00:00Z', end: '2026-12-08T08:00:00Z' },
+    ] },
+    { queue: 'Support', shifts: null },
+  ];
+  const html = oncallSection({ data: { duty: [{ queue: 'On-call', people: [{ name: 'Louis Example' }] }], shifts } }, ctx);
+  assert.match(html, /<div class="myshift">[\s\S]*<b>Your next shift<\/b> · On-call · Tue 1 Dec 09:00 – Tue 8 Dec 09:00/);
+  assert.match(html, /data-person="Louis Example"/);
+  const now = oncallSection({ data: { duty: [], shifts: [{ queue: 'Support', shifts: [{ name: 'Philippa Müller', start: '2026-11-25T08:00:00Z', end: '2026-11-26T08:00:00Z' }] }] } }, ctx);
+  assert.match(now, /<div class="myshift now">[\s\S]*You are on duty now<\/b> · Support until Thu 26 Nov 09:00/);
+  assert.match(oncallSection({ data: { duty: [], shifts: [{ queue: 'On-call', shifts: [] }] } }, ctx), /No shift for you in the next four weeks/);
+  assert.doesNotMatch(oncallSection({ data: { duty: [{ queue: 'On-call', people: [] }], shifts: [{ queue: 'On-call', shifts: null }] } }, ctx), /myshift/, 'nothing claimed when the timeline is unknown');
+});
+
+test('the sprint card has no summary bar any more; alerts and on-call, meetings and leave are separate cards', () => {
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  assert.doesNotMatch(sprintSection({ data: { todo: [{ key: 'ABC-1', summary: 's', assignee: 'Alice' }] } }, ctx), /sbar|slegend/);
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);
@@ -576,7 +667,7 @@ test('without approval rules a merge request is approved only once someone appro
 test('on-duty responders show their picture (initials without one), and an empty queue reads Off-duty', () => {
   const photo = 'data:image/png;base64,AAAA';
   const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: { 'Carol Example': photo }, now: Date.now(), timeZone: 'UTC' };
-  const html = alertsSection({ data: { alerts: [], duty: [{ queue: 'On-call', people: [{ name: 'Carol Example', email: 'carol.example@example.com' }] }, { queue: 'Support', people: [{ name: 'Dave Example' }] }, { queue: 'Edge', people: [] }] } }, ctx);
+  const html = oncallSection({ data: { alerts: [], duty: [{ queue: 'On-call', people: [{ name: 'Carol Example', email: 'carol.example@example.com' }] }, { queue: 'Support', people: [{ name: 'Dave Example' }] }, { queue: 'Edge', people: [] }] } }, ctx);
   assert.ok(html.includes(`src="${photo}"`), 'the cached photo');
   assert.match(html, /<img class="av" src="data:image\/png;base64,[^"]+" alt="Dave Example"/, 'initials for the one without a photo');
   assert.match(html, /Off-duty<\/span><small>Edge<\/small>/);

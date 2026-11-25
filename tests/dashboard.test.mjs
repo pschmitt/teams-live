@@ -408,6 +408,15 @@ test('merge request panel: the pipeline and its stages on one row, the diff of e
   assert.match(dashboardScript('/dashboard'), /data-diff-sel/);
 });
 
+test('detail panels open from a prefetched copy: on hover, focus, touch and when idle, kept 30 s, dropped after a write', () => {
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /addEventListener\('pointerover'[\s\S]*?prefetch\(el\)/);
+  assert.match(script, /addEventListener\('focusin'[\s\S]*?prefetch\(el\)/);
+  assert.match(script, /requestIdleCallback/);
+  assert.match(script, /if\(c0&&c0\.x\)show\(c0\.x\)/, 'a cached copy shows at once');
+  assert.equal((script.match(/busy--;DC=\{\}/g) || []).length, 2, 'approving or moving drops the cache');
+});
+
 test('the page script parses (a syntax error would leave the whole page inert)', () => {
   assert.doesNotThrow(() => new Function(dashboardScript('/dashboard')));
   assert.doesNotThrow(() => new Function(liveScript('/approve/state')));

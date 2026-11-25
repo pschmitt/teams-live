@@ -1,5 +1,6 @@
 import './test-guard.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { webcrypto } from 'node:crypto';
 import { writeSessionState, clearTokenCache } from 'msteams-mcp/dist/auth/session-store.js';
 import { extractMessageAuth } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { createLogger } from './logger.mjs';
@@ -7,6 +8,59 @@ import { createLogger } from './logger.mjs';
 const log = createLogger('browser-auth');
 
 const pendingAuth = new Map();
+
+/**
+ * MSAL.js encrypts some cache entries (notably the refresh token) in
+ * localStorage as {id, nonce, data}: AES-GCM with a key derived via HKDF
+ * (salt: nonce, info: client ID) from the key in the `msal.cache.encryption`
+ * cookie. msteams-mcp only reads plaintext entries, so decrypt what we can in
+ * place; entries that do not decrypt are left as they are.
+ */
+export async function decryptMsalStorage(storage, cookies) {
+  const raw = (cookies || []).find((c) => c.name === 'msal.cache.encryption')?.value;
+  if (!raw) return { decrypted: 0, failed: 0 };
+  let cacheKey;
+  try {
+    cacheKey = JSON.parse(decodeURIComponent(raw));
+  } catch {
+    return { decrypted: 0, failed: 0 };
+  }
+  if (typeof cacheKey?.key !== 'string') return { decrypted: 0, failed: 0 };
+
+  const parsed = Object.entries(storage).map(([name, value]) => {
+    try {
+      return [name, JSON.parse(value)];
+    } catch {
+      return [name, null];
+    }
+  });
+  const clientIds = [...new Set(parsed.map(([, v]) => v?.clientId).filter((id) => typeof id === 'string'))];
+  const encrypted = parsed.filter(([name, v]) => name.startsWith('msal.') && typeof v?.data === 'string' && typeof v?.nonce === 'string' && (!v.id || !cacheKey.id || v.id === cacheKey.id));
+  if (!encrypted.length || !clientIds.length) return { decrypted: 0, failed: encrypted.length };
+
+  const baseKey = await webcrypto.subtle.importKey('raw', Buffer.from(cacheKey.key, 'base64url'), 'HKDF', false, ['deriveKey']);
+  let decrypted = 0;
+  for (const [name, entry] of encrypted) {
+    for (const clientId of clientIds) {
+      try {
+        const key = await webcrypto.subtle.deriveKey(
+          { name: 'HKDF', hash: 'SHA-256', salt: Buffer.from(entry.nonce, 'base64url'), info: new TextEncoder().encode(clientId) },
+          baseKey,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['decrypt']
+        );
+        const plain = await webcrypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, key, Buffer.from(entry.data, 'base64url'));
+        const text = new TextDecoder().decode(plain);
+        JSON.parse(text);
+        storage[name] = text;
+        decrypted++;
+        break;
+      } catch {}
+    }
+  }
+  return { decrypted, failed: encrypted.length - decrypted };
+}
 
 /** Cancel in-flight authentication and wait for its owned browser resources to close. */
 export async function closePendingBrowserAuth() {
@@ -185,6 +239,8 @@ async function acquireBrowserAuth(bdConfig, signal) {
 
       authData = await authRes.json();
       storage = authData.local_storage || {};
+      const msal = await decryptMsalStorage(storage, authData.cookies);
+      if (msal.decrypted || msal.failed) log.debug(`Decrypted ${msal.decrypted} MSAL cache entries (${msal.failed} left encrypted)`);
 
       for (const [k, v] of Object.entries(storage)) {
         try {
@@ -212,6 +268,9 @@ async function acquireBrowserAuth(bdConfig, signal) {
 
     if (!spacesToken) {
       throw new Error('No valid Skype Spaces token found in Teams page storage');
+    }
+    if (!refreshToken) {
+      log.warn('No MSAL refresh token in Teams page storage: the session cannot be refreshed over HTTP and needs another browser sign-in when it expires');
     }
 
     // 5. Exchange Spaces token for skypeToken via authsvc

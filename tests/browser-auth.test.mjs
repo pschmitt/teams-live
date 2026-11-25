@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-import { acquireFromBrowserDaemon, closePendingBrowserAuth, trackBrowserAuth } from '../src/browser-auth.mjs';
+import { webcrypto } from 'node:crypto';
+
+import { acquireFromBrowserDaemon, closePendingBrowserAuth, decryptMsalStorage, trackBrowserAuth } from '../src/browser-auth.mjs';
 import { AuthManager } from '../src/auth.mjs';
 
 const originalFetch = globalThis.fetch;
@@ -334,4 +336,46 @@ test('shutdown waits for an in-flight session creation and closes that session',
   await rejected;
   assert.ok(calls.some(([path, method]) => path === '/api/sessions/owned-session' && method === 'DELETE'));
   assert.ok(!calls.some(([path]) => path === '/json/new'));
+});
+
+// Encrypts a cache entry the way MSAL.js does (HKDF from the cookie key, salt
+// nonce, info client ID; AES-GCM with a zero IV).
+async function msalEncrypt(rawKey, id, clientId, value) {
+  const base = await webcrypto.subtle.importKey('raw', rawKey, 'HKDF', false, ['deriveKey']);
+  const nonce = webcrypto.getRandomValues(new Uint8Array(16));
+  const key = await webcrypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: nonce, info: new TextEncoder().encode(clientId) },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt']
+  );
+  const data = await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, key, new TextEncoder().encode(JSON.stringify(value)));
+  return JSON.stringify({ id, nonce: Buffer.from(nonce).toString('base64url'), data: Buffer.from(data).toString('base64url'), lastUpdatedAt: '0' });
+}
+
+test('decrypts the MSAL-encrypted refresh token so it can be refreshed over HTTP', async () => {
+  const rawKey = webcrypto.getRandomValues(new Uint8Array(32));
+  const clientId = '00000000-0000-0000-0000-00000000c1d0';
+  const refresh = { credentialType: 'RefreshToken', clientId, secret: '1.test-refresh', homeAccountId: 'a.b', environment: 'login.windows.net' };
+  const rtKey = 'msal.2|a.b|login.windows.net|refreshtoken|' + clientId + '|||';
+  const storage = {
+    'msal.2|a.b|login.windows.net|accesstoken|x': JSON.stringify({ credentialType: 'AccessToken', clientId, secret: 'ey.test' }),
+    [rtKey]: await msalEncrypt(rawKey, 'key-1', clientId, refresh),
+    'msal.2|other': await msalEncrypt(rawKey, 'key-1', 'another-context', { x: 1 }),
+    plain: 'not json',
+  };
+  const cookies = [{ name: 'msal.cache.encryption', value: encodeURIComponent(JSON.stringify({ id: 'key-1', key: Buffer.from(rawKey).toString('base64url') })) }];
+
+  assert.deepEqual(await decryptMsalStorage(storage, cookies), { decrypted: 1, failed: 1 });
+  assert.deepEqual(JSON.parse(storage[rtKey]), refresh);
+  assert.ok(JSON.parse(storage['msal.2|other']).data, 'undecryptable entries are left as they are');
+  assert.equal(storage.plain, 'not json');
+});
+
+test('leaves storage alone without the MSAL encryption cookie', async () => {
+  const storage = { 'msal.2|x': JSON.stringify({ id: 'k', nonce: 'AA', data: 'AA' }) };
+  const before = { ...storage };
+  assert.deepEqual(await decryptMsalStorage(storage, []), { decrypted: 0, failed: 0 });
+  assert.deepEqual(storage, before);
 });

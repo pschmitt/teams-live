@@ -201,7 +201,7 @@ test('the entry page is static: no token needed, no GitLab call, hash-pinned scr
         const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
         const hash = `sha256-${crypto.createHash('sha256').update(script).digest('base64')}`;
         assert.ok(csp.includes(`script-src '${hash}'`), 'the CSP pins exactly this script');
-        assert.doesNotMatch(html, /src=/, 'no third-party or external resources');
+        assert.doesNotMatch(html, /src="(?!data:)/, 'no third-party or external resources (embedded pictures only)');
         assert.match(html, /href="https:\/\/github\.com\/pschmitt\/teams-live"[^>]*>.*teams-live on GitHub<\/a>/);
         assert.match(script, /history\.replaceState/, 'the fragment is cleared from the address bar');
         assert.match(script, /location\.hash/);

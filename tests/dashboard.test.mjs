@@ -771,6 +771,13 @@ test('on a narrow screen the summary tiles sit two side by side', () => {
   assert.match(DASHBOARD_CSS, /@media \(max-width:68rem\)\{[^']*\.lrow:has\(\.box-st\):not\(:has\(\.box:not\(\.box-st\)\)\)\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
 });
 
+test('the sidebar animates like the other apps: a hop for the current view, a pop for badges, none with reduced motion', () => {
+  assert.match(DASHBOARD_CSS, /\.side button\[aria-current=true\] \.di,\.tabbar button\[aria-current=true\] \.di\{animation:tl-nav-hop/);
+  assert.match(DASHBOARD_CSS, /@keyframes tl-nav-hop\{0%\{transform:translateY\(0\) scale\(\.85\)\}45%\{transform:translateY\(-4px\) scale\(1\.12\)\}/);
+  assert.match(DASHBOARD_CSS, /\.side \.badge:not\(\[hidden\]\)[^{]*\{animation:tl-badge-pop/);
+  assert.match(DASHBOARD_CSS, /@media \(prefers-reduced-motion:reduce\)\{\.side button\[data-view-to\][^}]*\{transition:none!important;animation:none!important/);
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

@@ -196,6 +196,9 @@ in
         Type = "notify";
         NotifyAccess = "all";
         WatchdogSec = "120s";
+        # Let the authentication helper close its browser tab on shutdown.
+        KillMode = "mixed";
+        TimeoutStopSec = "120s";
         Restart = "always";
         RestartSec = "10s";
 

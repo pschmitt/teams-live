@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { closePendingBrowserAuth } from './browser-auth.mjs';
 import { loadConfig } from './config.mjs';
 import { AuthManager } from './auth.mjs';
 import { GitLabClient } from './gitlab.mjs';
@@ -161,6 +162,8 @@ function formatHuman(event, selfMri) {
   return `${prefix} <${nick(who)}>${tag} ${body}`;
 }
 
+let stopping = false;
+
 async function main() {
   log('Starting teams-live...');
   const config = loadConfig(configPath);
@@ -211,7 +214,6 @@ async function main() {
   let webhookServer = null;
   let webhookReconciler = null;
   let approveServer = null;
-  let stopping = false;
 
   const hrworks = new HRWorksClient({
     ...config.home_assistant,
@@ -242,14 +244,15 @@ async function main() {
     log(`Shutting down teams-live (signal: ${signal})...`);
     systemd.notify(['--stopping', '--status=Shutting down...']);
     systemd.stop();
+    watcher.stop();
+    authManager.stop();
+    await closePendingBrowserAuth();
     if (health) health.stop();
     try {
       await watcher.sendShutdownAnnouncement(signal);
     } catch (err) {
       log(`Failed to send shutdown announcement: ${err.message}`);
     }
-    watcher.stop();
-    authManager.stop();
     webhookReconciler?.stop();
     if (webhookServer) {
       await webhookServer.stop().catch((e) => log(`Error stopping webhook server: ${e.message}`));
@@ -428,6 +431,7 @@ async function main() {
 
   // Initial auth check / self-heal
   let currentAuth = await authManager.ensureValidAuth();
+  if (stopping) return;
   watcher.setSelfMri(currentAuth.userMri);
   authManager.startProactiveRefresh(config.teams.token_refresh_interval_minutes);
 
@@ -437,6 +441,8 @@ async function main() {
   } catch (err) {
     log(`Initial history scan failed: ${err.message}`);
   }
+
+  if (stopping) return;
 
   // Start polling GitLab
   // Who the bot's GitLab accounts are, so MR cards can show who an approval was made for.
@@ -489,6 +495,7 @@ async function main() {
   while (!stopping) {
     try {
       currentAuth = await authManager.ensureValidAuth();
+      if (stopping) break;
       watcher.setSelfMri(currentAuth.userMri);
       systemd.ready('Connecting to Trouter...');
       if (connectCount++ > 0) {
@@ -517,6 +524,7 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (stopping) return;
   log.error('Fatal error in teams-live:', err);
   process.exit(1);
 });

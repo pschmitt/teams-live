@@ -75,6 +75,8 @@ export class ScreenshotClient {
     try {
       const payload = {
         url: targetUrl,
+        keep_open: false,
+        persistent: false,
         timeout_ms: timeoutMs,
         script: `async ({ page }) => {
           await page.setViewportSize({ width: ${width}, height: ${height} });

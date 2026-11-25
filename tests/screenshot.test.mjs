@@ -73,6 +73,8 @@ test('ScreenshotClient capture sends POST /api/run with secret and returns base6
     assert.equal(receivedHeaders['x-browser-cluster-secret'], 'my-cluster-secret');
     assert.equal(receivedBody.url, 'https://example.com/some/page');
     assert.equal(receivedBody.profile, 'custom-profile');
+    assert.equal(receivedBody.keep_open, false);
+    assert.equal(receivedBody.persistent, false);
     assert.ok(receivedBody.script.includes('width: 480, height: 200'));
     assert.ok(receivedBody.script.includes('page.screenshot'));
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-import { acquireFromBrowserDaemon } from '../src/browser-auth.mjs';
+import { acquireFromBrowserDaemon, closePendingBrowserAuth, trackBrowserAuth } from '../src/browser-auth.mjs';
+import { AuthManager } from '../src/auth.mjs';
 
 const originalFetch = globalThis.fetch;
 
@@ -202,4 +203,135 @@ test('requires cloud placement before accessing the profile', async () => {
     /Browser placement failed: HTTP 409/,
   );
   assert.deepEqual(calls, [{ path: '/api/mesh/placement', body: { profile: 'work', group: 'cloud', engine: 'chromium', create: true } }]);
+});
+
+
+test('shutdown cancels authentication and closes its tab in a shared session', async () => {
+  const calls = [];
+  let opened;
+  const openedPromise = new Promise(resolve => { opened = resolve; });
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    calls.push(`${options.method || 'GET'} ${url.pathname}`);
+    if (url.pathname === '/api/mesh/overview') return { ok: true, json: async () => ({
+      local_node: { name: 'local' },
+      profiles: [{ name: 'work', node_name: 'local', session_id: 'shared' }], targets: [],
+    }) };
+    if (url.pathname === '/json/new') return { ok: true, json: async () => { opened(); return { id: 'owned-tab' }; } };
+    if (url.pathname === '/api/sessions/shared') return { ok: true, json: async () => ({ session: { tabs_count: 2 } }) };
+    if (url.pathname === '/json/close/owned-tab') return { ok: true };
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+  const acquisition = acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work' });
+  const rejected = assert.rejects(acquisition, { name: 'AbortError' });
+  await openedPromise;
+  await new Promise(setImmediate);
+  await closePendingBrowserAuth();
+  await rejected;
+  assert.ok(calls.includes('PUT /json/close/owned-tab'));
+  assert.ok(!calls.includes('DELETE /api/sessions/shared'));
+});
+
+test('shutdown closes the session created for authentication', async () => {
+  const calls = [];
+  let opened;
+  const openedPromise = new Promise(resolve => { opened = resolve; });
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    calls.push([url.pathname, options.method || 'GET']);
+    if (url.pathname === '/api/mesh/overview') return { ok: true, json: async () => ({
+      local_node: { name: 'local' },
+      profiles: [{ name: 'work', node_name: 'local', session_id: null }], targets: [],
+    }) };
+    if (url.pathname === '/api/sessions' && options.method === 'POST') return { ok: true, json: async () => ({ id: 'owned-session' }) };
+    if (url.pathname === '/json/new') return { ok: true, json: async () => { opened(); return { id: 'owned-tab' }; } };
+    if (url.pathname === '/api/sessions/owned-session' && options.method === 'DELETE') return { ok: true };
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+  const acquisition = acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work' });
+  const rejected = assert.rejects(acquisition, { name: 'AbortError' });
+  await openedPromise;
+  await new Promise(setImmediate);
+  await closePendingBrowserAuth();
+  await rejected;
+  assert.ok(calls.some(([path, method]) => path === '/api/sessions/owned-session' && method === 'DELETE'));
+});
+
+
+test('shutdown waits for the shared sign-in helper to finish its cleanup', async () => {
+  let finish;
+  const helper = trackBrowserAuth(new Promise(resolve => { finish = resolve; }));
+  let stopped = false;
+  const shutdown = closePendingBrowserAuth().then(() => { stopped = true; });
+  await new Promise(setImmediate);
+  assert.equal(stopped, false);
+  finish();
+  await helper;
+  await shutdown;
+  assert.equal(stopped, true);
+});
+
+test('shutdown waits for an in-flight tab creation before closing the new tab', async () => {
+  let opened;
+  let completeOpen;
+  const opening = new Promise(resolve => { opened = resolve; });
+  const response = new Promise(resolve => { completeOpen = resolve; });
+  const closed = [];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    if (url.pathname === '/api/mesh/overview') return { ok: true, json: async () => ({
+      local_node: { name: 'local' },
+      profiles: [{ name: 'work', node_name: 'local', session_id: 'shared' }], targets: [],
+    }) };
+    if (url.pathname === '/json/new') { opened(); return response; }
+    if (url.pathname === '/api/sessions/shared') return { ok: true, json: async () => ({ session: { tabs_count: 2 } }) };
+    if (url.pathname === '/json/close/owned-tab') { closed.push(options.method); return { ok: true }; }
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+  const acquisition = acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work' });
+  const rejected = assert.rejects(acquisition, { name: 'AbortError' });
+  await opening;
+  let stopped = false;
+  const shutdown = closePendingBrowserAuth().then(() => { stopped = true; });
+  await new Promise(setImmediate);
+  assert.equal(stopped, false);
+  completeOpen({ ok: true, json: async () => ({ id: 'owned-tab' }) });
+  await shutdown;
+  await rejected;
+  assert.deepEqual(closed, ['PUT']);
+});
+
+
+test('a stopped authentication manager does not begin another browser login', async () => {
+  const manager = new AuthManager({ teams: {}, browser_daemon: {} });
+  manager.stop();
+  await assert.rejects(manager.ensureValidAuth(), { name: 'AbortError' });
+});
+
+test('shutdown waits for an in-flight session creation and closes that session', async () => {
+  let started;
+  let complete;
+  const starting = new Promise(resolve => { started = resolve; });
+  const response = new Promise(resolve => { complete = resolve; });
+  const calls = [];
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(input);
+    calls.push([url.pathname, options.method || 'GET']);
+    if (url.pathname === '/api/mesh/overview') return { ok: true, json: async () => ({
+      local_node: { name: 'local' },
+      profiles: [{ name: 'work', node_name: 'local', session_id: null }], targets: [],
+    }) };
+    if (url.pathname === '/api/sessions' && options.method === 'POST') { started(); return response; }
+    if (url.pathname === '/api/sessions/owned-session' && options.method === 'DELETE') return { ok: true };
+    throw new Error(`Unexpected request path: ${url.pathname}`);
+  };
+  const acquisition = acquireFromBrowserDaemon({ url: 'https://browser.invalid', profile: 'work' });
+  const rejected = assert.rejects(acquisition, { name: 'AbortError' });
+  await starting;
+  const shutdown = closePendingBrowserAuth();
+  complete({ ok: true, json: async () => ({ id: 'owned-session' }) });
+  await shutdown;
+  await rejected;
+  assert.ok(calls.some(([path, method]) => path === '/api/sessions/owned-session' && method === 'DELETE'));
+  assert.ok(!calls.some(([path]) => path === '/json/new'));
 });

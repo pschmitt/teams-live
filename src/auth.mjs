@@ -8,7 +8,7 @@ import {
 import { refreshTokensViaHttp } from 'msteams-mcp/dist/auth/token-refresh-http.js';
 import { signInViaBrowserDaemon } from 'msteams-mcp/dist/auth/token-refresh.js';
 import { writeSessionState } from 'msteams-mcp/dist/auth/session-store.js';
-import { acquireFromBrowserDaemon } from './browser-auth.mjs';
+import { acquireFromBrowserDaemon, trackBrowserAuth } from './browser-auth.mjs';
 import { createLogger } from './logger.mjs';
 
 export { getUserProfile, getUserDisplayName };
@@ -21,6 +21,7 @@ export class AuthManager {
     this.credentialsFile = config.teams?.credentials_file || null;
     this.credentialsLoaded = false;
     this.refreshTimer = null;
+    this.stopped = false;
 
     if (config.browser_daemon?.url) {
       process.env.TEAMS_MCP_BROWSER_DAEMON_URL = config.browser_daemon.url;
@@ -118,6 +119,7 @@ export class AuthManager {
   }
 
   async ensureValidAuth({ forceDaemon = false } = {}) {
+    if (this.stopped) throw new DOMException('Authentication stopped', 'AbortError');
     // 1. Initial seed from credentials file if session not yet loaded
     let fileAuth = null;
     if (!this.credentialsLoaded) {
@@ -160,6 +162,7 @@ export class AuthManager {
 
     // 3. Fallback to browser-daemon only if explicitly configured
     if (this.config.browser_daemon?.url) {
+      if (this.stopped) throw new DOMException('Authentication stopped', 'AbortError');
       log(`Attempting sign-in via browser-daemon profile "${this.config.browser_daemon.profile}"...`);
       try {
         const directAuth = await acquireFromBrowserDaemon(this.config.browser_daemon);
@@ -168,11 +171,13 @@ export class AuthManager {
           return directAuth;
         }
       } catch (err) {
+        if (err.name === 'AbortError') throw err;
         log(`Direct browser-daemon sign-in threw: ${err.message}`);
       }
 
       try {
-        const daemonResult = await signInViaBrowserDaemon();
+        if (this.stopped) throw new DOMException('Authentication stopped', 'AbortError');
+        const daemonResult = await trackBrowserAuth(signInViaBrowserDaemon());
         if (daemonResult.ok) {
           const auth = extractMessageAuth();
           if (auth) {
@@ -183,6 +188,7 @@ export class AuthManager {
           log(`Browser-daemon sign-in returned error: ${daemonResult.error?.message || 'unknown error'}`);
         }
       } catch (err) {
+        if (err.name === 'AbortError') throw err;
         log(`Browser-daemon sign-in threw: ${err.message}`);
       }
     }
@@ -221,6 +227,7 @@ export class AuthManager {
   }
 
   stop() {
+    this.stopped = true;
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;

@@ -1,11 +1,36 @@
 import './test-guard.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { writeSessionState, clearTokenCache } from 'msteams-mcp/dist/auth/session-store.js';
 import { extractMessageAuth } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { createLogger } from './logger.mjs';
 
 const log = createLogger('browser-auth');
 
-export async function acquireFromBrowserDaemon(bdConfig) {
+const pendingAuth = new Map();
+
+/** Cancel in-flight authentication and wait for its owned browser resources to close. */
+export async function closePendingBrowserAuth() {
+  const pending = [...pendingAuth.entries()];
+  for (const [controller] of pending) controller.abort?.();
+  await Promise.allSettled(pending.map(([, promise]) => promise));
+}
+
+/** Wait for the shared sign-in helper to release its own tab before shutdown. */
+export function trackBrowserAuth(promise) {
+  const key = {};
+  pendingAuth.set(key, promise);
+  return promise.finally(() => pendingAuth.delete(key));
+}
+
+export function acquireFromBrowserDaemon(bdConfig) {
+  const controller = new AbortController();
+  const promise = acquireBrowserAuth(bdConfig, controller.signal);
+  pendingAuth.set(controller, promise);
+  return promise.finally(() => pendingAuth.delete(controller));
+}
+
+async function acquireBrowserAuth(bdConfig, signal) {
+  const timeout = (ms) => AbortSignal.any([signal, AbortSignal.timeout(ms)]);
   if (!bdConfig?.url) return null;
 
   const url = bdConfig.url.replace(/\/+$/, '');
@@ -24,7 +49,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: profileName, group: bdConfig.node_group, engine: 'chromium', create: true }),
-      signal: AbortSignal.timeout(180000),
+      signal: timeout(180000),
     });
     if (!res.ok) throw new Error(`Browser placement failed: HTTP ${res.status}`);
     placement = await res.json();
@@ -33,7 +58,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
   // 1. Fetch overview
   const ovRes = await fetch(`${url}/api/mesh/overview`, {
     headers,
-    signal: AbortSignal.timeout(15000),
+    signal: timeout(15000),
   });
   if (!ovRes.ok) {
     throw new Error(`Overview request failed: HTTP ${ovRes.status}`);
@@ -112,11 +137,12 @@ export async function acquireFromBrowserDaemon(bdConfig) {
     const newPage = await openRes.json();
     targetId = newPage.id;
     openedTabId = targetId;
-    await new Promise(r => setTimeout(r, 6000));
+    await delay(6000, undefined, { signal });
   };
 
   // 3. Export auth and find Spaces token
   try {
+    signal.throwIfAborted();
     if (!targetId) {
       log(`No active Teams page tab found in session ${sessionId}, opening tab...`);
       await openAuthTab();
@@ -144,7 +170,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
             'https://login.microsoftonline.com',
           ],
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: timeout(30000),
       });
 
       if (!authRes.ok) {
@@ -180,7 +206,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
 
       if (attempt < maxAttempts) {
         log.debug(`Waiting for Skype Spaces token in localStorage (attempt ${attempt}/${maxAttempts})...`);
-        await new Promise(r => setTimeout(r, 3000));
+        await delay(3000, undefined, { signal });
       }
     }
 
@@ -196,7 +222,7 @@ export async function acquireFromBrowserDaemon(bdConfig) {
         'Content-Type': 'application/json',
       },
       body: '{}',
-      signal: AbortSignal.timeout(15000),
+      signal: timeout(15000),
     });
 
     if (!authzRes.ok) {

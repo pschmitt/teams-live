@@ -33,11 +33,24 @@ test('person absence: read offline from HR WORKS for every panel; pending until 
   const info = { found: true, directory: { displayName: 'Bob Example' } };
   const calls = [];
   const away = absenceOf({ findPersonAbsence: async (person, opts) => { calls.push([person.displayName, opts]); return { absence: { category: 'Vacation' } }; } });
-  assert.deepEqual(await away(info), { state: 'away', current: { category: 'Vacation' } });
+  assert.deepEqual(await away(info), { state: 'away', current: { category: 'Vacation' }, days: [] });
   assert.deepEqual(calls, [['Bob Example', { offline: true }]]);
   assert.deepEqual(await absenceOf({ findPersonAbsence: async () => ({ reason: 'calendar_unavailable' }) })(info), { state: 'pending' });
   assert.deepEqual(await absenceOf({ findPersonAbsence: async () => ({ reason: 'not_found' }) })(info), { state: 'not_found' });
   assert.deepEqual(await absenceOf({ findPersonAbsence: async () => { throw new Error('x'); } })(info), { state: 'unavailable' });
   assert.equal(await absenceOf(null)(info), null, 'no HR WORKS');
   assert.equal(await away({ found: false }), null);
+});
+
+test('person absence: the days for the calendar, from two weeks back to three months ahead', async () => {
+  const day = (offset) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+  const all = [
+    { start: `${day(-60)}T00:00:00`, end: `${day(-50)}T00:00:00`, category: 'Old' },
+    { start: `${day(-1)}T00:00:00`, end: `${day(3)}T00:00:00`, category: 'Vacation' },
+    { start: `${day(200)}T00:00:00`, end: `${day(201)}T00:00:00`, category: 'Far' },
+  ];
+  const r = await absenceOf({ findPersonAbsence: async () => ({ absence: { category: 'Vacation' }, allAbsences: all }) })({ found: true, directory: {} });
+  assert.deepEqual(r.days.map((d) => d.category), ['Vacation']);
+  assert.equal(r.days[0].startDate, day(-1));
+  assert.equal(r.days[0].endDate, day(2), 'an all-day end at midnight is the day before');
 });

@@ -84,6 +84,7 @@ import { createAvatarFallbacks } from './avatar-sources.mjs';
 import { PLACEHOLDER_AVATAR } from './placeholder-avatar.mjs';
 import { collectCardPeople, fallbackAvatar, isImageDataUri } from './card-user-row.mjs';
 import { formatOnDuty, humanizeRecipient } from './opsgenie.mjs';
+import { getInclusiveDateRange } from './hrworks.mjs';
 import { getMessageAuthStatus } from 'msteams-mcp/dist/auth/token-extractor.js';
 import { fallbackTokenPendingPath, persistFallbackToken, persistGitLabToken } from './config.mjs';
 import { formatTokenExpiry } from './gitlab.mjs';
@@ -1976,10 +1977,18 @@ export class MergeRequestWatcher {
     try {
       const r = await this.hrworks.findPersonAbsence(info.directory, { offline: true });
       if (!r) return null;
-      if (r.absence) return { state: 'away', current: r.absence };
       if (r.reason === 'not_found') return { state: 'not_found' };
       if (r.reason === 'calendar_unavailable') return { state: 'pending' };
-      return { state: 'present', upcoming: r.upcomingAbsence || null };
+      // Every absence from two weeks back to three months ahead, for the panel's calendar.
+      const day = (d) => d.toISOString().slice(0, 10);
+      const from = day(new Date(Date.now() - 14 * 86_400_000));
+      const until = day(new Date(Date.now() + 92 * 86_400_000));
+      const days = (r.allAbsences || [])
+        .map((a) => ({ ...getInclusiveDateRange(a.start, a.end), category: a.category || 'Leave', status: a.status || '' }))
+        .filter((a) => a.start && a.end >= from && a.start <= until)
+        .map((a) => ({ startDate: a.start, endDate: a.end, category: a.category, status: a.status }));
+      if (r.absence) return { state: 'away', current: r.absence, days };
+      return { state: 'present', upcoming: r.upcomingAbsence || null, days };
     } catch {
       return { state: 'unavailable' };
     }

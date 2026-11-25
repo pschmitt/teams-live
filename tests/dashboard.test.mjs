@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { DEFAULT_LAYOUT, dashboardBody, alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { DEFAULT_LAYOUT, dashboardBody, alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, absenceCalendar, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -637,6 +637,23 @@ test('offline mode: a 5xx from the server (a restart behind the proxy) serves th
   answer = () => new Response('<p>new</p>', { status: 200, headers: { 'X-TL-Offline': '1' } });
   assert.equal(await (await run('/dashboard')).text(), '<p>new</p>');
   assert.match(dashboardScript('/dashboard'), /net\(!nc&&r\.status<500\)/, 'the page shows the offline bar for a 5xx');
+});
+
+test('the person panel shows this and next month with absence days marked by kind', () => {
+  const now = Date.parse('2026-11-25T10:00:00Z');
+  const html = absenceCalendar([
+    { startDate: '2026-11-19', endDate: '2026-11-30', category: 'Absent', status: 'approved' },
+    { startDate: '2026-12-03', endDate: '2026-12-03', category: 'Krankheit' },
+  ], now, 'Europe/Berlin');
+  assert.match(html, /<b>November 2026<\/b>[\s\S]*<b>December 2026<\/b>/);
+  assert.match(html, /<span class="ab ab-leave today" title="Absent, approved \(2026-11-19 – 2026-11-30\)">25<\/span>/);
+  assert.match(html, /<span class="ab ab-sick" title="Krankheit \(2026-12-03\)">3<\/span>/);
+  assert.equal((html.match(/class="ab ab-leave/g) || []).length, 12, 'every day of the absence');
+  assert.match(html, /<i class="ab-leave"><\/i>Leave<\/span><span><i class="ab-sick"><\/i>Sick/);
+  assert.match(absenceCalendar([], now), /No absences this month or next/);
+  const panel = personDetail({ found: true, name: 'Dan', absence: { state: 'away', current: { category: 'Absent' }, days: [{ startDate: '2026-11-19', endDate: '2026-11-30', category: 'Absent' }] } }, { avatars: {}, now, timeZone: 'Europe/Berlin' }).html;
+  assert.match(panel, /<h3 class="dsub">Absences<\/h3><div class="cals">/);
+  assert.match(dashboardScript('/dashboard'), /\.alist \[data-alert\][\s\S]*\.duty \[data-person\],\.llist \[data-person\]/, 'alerts and people are prefetched when idle');
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

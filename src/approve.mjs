@@ -2132,7 +2132,7 @@ export class ApproveServer {
       await this.warmBriefly([name]);
       const avatars = {};
       try { const u = this.avatarOf?.(name); if (u) avatars[name] = u; } catch { /* initials */ }
-      return this.json(res, 200, { ...personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }), pending }, { 'Server-Timing': serverTiming({ check: t1 - t0, lookup: t2 - t1, photos: performance.now() - t2 }, 'person') });
+      return this.json(res, 200, { ...personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars, now: this.now(), timeZone: this.dashboard.timeZone }), pending }, { 'Server-Timing': serverTiming({ check: t1 - t0, lookup: t2 - t1, photos: performance.now() - t2 }, 'person') });
     } catch (err) {
       log(`Dashboard could not look up a person for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});

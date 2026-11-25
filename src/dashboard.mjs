@@ -463,6 +463,30 @@ function shortDay(day) {
   return Number.isNaN(d.getTime()) ? day : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
+/** The working day after a YYYY-MM-DD day (Saturday and Sunday skipped). */
+function nextWorkday(day) {
+  const d = new Date(`${day}T12:00:00Z`);
+  do d.setUTCDate(d.getUTCDate() + 1); while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * One entry per stretch of leave: a person's absences of the same kind that overlap or follow each other with only
+ * a weekend between them (HR WORKS can hold one leave as two entries) are merged.
+ */
+export function mergeAbsences(absences) {
+  const sorted = [...absences].sort((a, b) => a.name.localeCompare(b.name) || String(a.category).localeCompare(String(b.category)) || a.startDate.localeCompare(b.startDate));
+  const out = [];
+  for (const ab of sorted) {
+    const last = out.at(-1);
+    if (last && last.name === ab.name && last.category === ab.category && ab.startDate <= nextWorkday(last.endDate)) {
+      if (ab.endDate > last.endDate) last.endDate = ab.endDate;
+      if (last.status !== ab.status) last.status = '';
+    } else out.push({ ...ab });
+  }
+  return out.sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
+}
+
 /** Who of the HR WORKS team is on leave from today for a week (the Leave card); a note while HR WORKS loads. */
 export function leaveSection(leave, ctx) {
   if (!leave || leave.off) return '<p class="empty">HR WORKS is not configured.</p>';
@@ -472,7 +496,7 @@ export function leaveSection(leave, ctx) {
   const today = new Date(ctx.now).toLocaleDateString('en-CA', { timeZone: ctx.timeZone || 'Europe/Berlin' });
   const week = new Date(ctx.now + 7 * 86_400_000).toLocaleDateString('en-CA', { timeZone: ctx.timeZone || 'Europe/Berlin' });
   // This week only (the source reads four weeks for the Team leave card); an older answer is a plain list.
-  const all = (Array.isArray(leave.data) ? leave.data : leave.data?.absences || []).filter((ab) => ab.startDate <= week);
+  const all = mergeAbsences(Array.isArray(leave.data) ? leave.data : leave.data?.absences || []).filter((ab) => ab.startDate <= week);
   const items = all.slice(0, 20);
   leave = { ...leave, data: all };
   if (!items.length) return wrap('<p class="note">Nobody on leave this week.</p>');

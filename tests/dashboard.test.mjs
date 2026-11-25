@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { DEFAULT_LAYOUT, dashboardBody, alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, absenceCalendar, teamLeaveSection, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
+import { DEFAULT_LAYOUT, dashboardBody, alertDetail, diffsSection, issueDetail, DASHBOARD_CSS, absenceCalendar, mergeAbsences, teamLeaveSection, dashboardPeople, leaveSection, linkify, oncallSection, mergeButton, personDetail, personRef, mrDetail, sprintSection, NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -794,6 +794,24 @@ test('every view has its own layout (falling back to the overview\'s) and can be
   assert.match(body, /data-view-to="meetings"[^>]*>[\s\S]*?<span>Calendar<\/span>/);
   assert.match(body, /<h2 id="h-meetings">[\s\S]*?Calendar<\/h2>/);
   assert.doesNotMatch(body, />Meetings</);
+});
+
+test('the Leave card merges a person\'s absences that follow each other over a weekend into one row', () => {
+  const ctx = { avatars: {}, now: Date.parse('2026-11-25T10:00:00Z'), timeZone: 'Europe/Berlin' };
+  const leave = { data: { team: ['Mark Example', 'Bob Example'], absences: [
+    { name: 'Mark Example', category: 'Absent', startDate: '2026-11-27', endDate: '2026-11-27' },
+    { name: 'Mark Example', category: 'Absent', startDate: '2026-11-30', endDate: '2026-12-18' },
+    { name: 'Bob Example', category: 'Absent', startDate: '2026-11-26', endDate: '2026-11-26' },
+    { name: 'Bob Example', category: 'Krankheit', startDate: '2026-11-27', endDate: '2026-11-27' },
+  ] } };
+  const html = leaveSection(leave, ctx);
+  assert.equal((html.match(/data-key="leave:Mark Example@/g) || []).length, 1, 'one row for Mark');
+  assert.match(html, /data-key="leave:Mark Example@2026-11-27"[\s\S]*?<small>Absent · Fri 27 Nov – Fri 18 Dec<\/small>/);
+  assert.equal((html.match(/data-key="leave:Bob Example@/g) || []).length, 2, 'different kinds stay apart');
+  assert.deepEqual(mergeAbsences([
+    { name: 'A', category: 'L', startDate: '2026-11-23', endDate: '2026-11-24' },
+    { name: 'A', category: 'L', startDate: '2026-11-26', endDate: '2026-11-26' },
+  ]).length, 2, 'a working day between them keeps them apart');
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

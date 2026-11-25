@@ -565,7 +565,7 @@ export function teamLeaveSection(leave, ctx) {
   }).join('');
   const rows = team.slice(0, 40).map((name) => {
     const own = byName.get(name) || [];
-    // A run of days of the same absence is one bar: it spans those day columns and the week spacers between them.
+    // A run of days of the same absence is one bar, within a week: a leave over a weekend is a bar per week.
     let cells = '';
     for (let i = 0; i < days.length; ) {
       const gap = i > 0 && i % 5 === 0 ? '<span class="tl-gap"></span>' : '';
@@ -576,9 +576,8 @@ export function teamLeaveSection(leave, ctx) {
         continue;
       }
       let j = i + 1;
-      while (j < days.length && own.find((x) => x.startDate <= days[j] && x.endDate >= days[j]) === a) j += 1;
-      let columns = j - i;
-      for (let k = i + 1; k < j; k++) if (k % 5 === 0) columns += 1;
+      while (j < days.length && j % 5 !== 0 && own.find((x) => x.startDate <= days[j] && x.endDate >= days[j]) === a) j += 1;
+      const columns = j - i;
       const title = `${name}: ${a.category}${a.status ? `, ${a.status}` : ''} (${a.startDate === a.endDate ? a.startDate : `${a.startDate} – ${a.endDate}`})`;
       cells += `${gap}<span class="tl-c ab ab-${absenceKind(a.category)}"${columns > 1 ? ` style="grid-column:span ${columns}"` : ''} title="${escapeHtml(title)}"></span>`;
       i = j;

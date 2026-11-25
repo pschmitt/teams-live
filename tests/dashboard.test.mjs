@@ -684,14 +684,14 @@ test('the Team leave card: a row per team member over four weeks of weekdays, ab
   const html = teamLeaveSection(leave, ctx);
   assert.equal((html.match(/class="tl-d/g) || []).length, 20, 'Monday to Friday for four weeks');
   assert.match(html, /<span class="tl-d" title="Monday 23 November"><small>Nov<\/small>23<\/span>/, 'starts on this week\'s Monday');
-  assert.equal((html.match(/<span class="tl-gap"><\/span>/g) || []).length, 3 * 5 - 1, 'a spacer between the weeks, in the header and each row (one inside Dan\'s bar)');
+  assert.equal((html.match(/<span class="tl-gap"><\/span>/g) || []).length, 3 * 5, 'a spacer between the weeks, in the header and each row');
   assert.doesNotMatch(html, /class="[^"]*\bwk\b/, 'no margin that would make Mondays narrower');
   assert.match(html, /style="--day-cols:minmax\(1\.35rem,1fr\)( minmax\(1\.35rem,1fr\)){4} 4px minmax/);
   assert.equal((html.match(/<div class="tl-row[^"]*" data-key="tl:/g) || []).length, 4, 'every team member');
   assert.match(html, /<div class="tl-row tl-here" data-key="tl:Alice Example"><span class="tl-n"><button[^>]*data-person="Alice Example"/, 'present people are rows too');
   assert.match(html, /<span class="tl-c ab ab-leave" style="grid-column:span 4" title="Erin Example: Urlaub \(2026-11-24 – 2026-11-27\)"><\/span>/, 'Erin: one bar, Tuesday to Friday');
-  assert.match(html, /<span class="tl-c ab ab-leave" style="grid-column:span 7" title="Dan Example: Urlaub \(2026-11-19 – 2026-11-30\)"><\/span>/, 'Dan: one bar over the weekend gap (six days and the spacer)');
-  assert.equal((html.match(/tl-c ab ab-leave/g) || []).length, 2);
+  assert.match(html, /<span class="tl-c ab ab-leave" style="grid-column:span 5" title="Dan Example: Urlaub \(2026-11-19 – 2026-11-30\)"><\/span><span class="tl-gap"><\/span><span class="tl-c ab ab-leave" title="Dan Example: Urlaub/, 'Dan: a bar per week, none over the weekend');
+  assert.equal((html.match(/tl-c ab ab-leave/g) || []).length, 3);
   assert.doesNotMatch(html, /tl-c[^"]*today/, 'today is marked in the header only, no outlined empty cells');
   assert.match(html, /<span class="tl-c ab ab-sick" title="Bob Example: Krankheit \(2026-12-01\)"><\/span>/, 'a single day has no span');
   assert.match(teamLeaveSection({ pending: true }, ctx), /Reading HR WORKS/);

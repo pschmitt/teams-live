@@ -30,3 +30,13 @@ test('person info: an ambiguous name is not guessed, a single result is taken, H
   assert.equal(single.found, true);
   assert.deepEqual(single.absence, { state: 'unavailable' });
 });
+
+test('person info: the panel reads HR WORKS offline only and does not wait for a slow source', async () => {
+  const calls = [];
+  const hrworks = { findPersonAbsence: (person, opts) => { calls.push(opts); return new Promise(() => {}); } };
+  const started = Date.now();
+  const info = await lookup([{ displayName: 'Bob Example', email: 'bob@example.com' }], hrworks)('Bob Example');
+  assert.deepEqual(calls, [{ offline: true }]);
+  assert.deepEqual(info.absence, { state: 'pending' });
+  assert.ok(Date.now() - started < 4_000);
+});

@@ -430,7 +430,12 @@ test('detail panels open from a prefetched copy: on hover, focus, touch and when
   assert.match(script, /addEventListener\('focusin'[\s\S]*?prefetch\(el\)/);
   assert.match(script, /requestIdleCallback/);
   assert.match(script, /if\(c0&&c0\.x\)show\(c0\.x\)/, 'a cached copy shows at once');
-  assert.equal((script.match(/busy--;DC=\{\}/g) || []).length, 3, 'approving, merging or moving drops the cache');
+  assert.doesNotMatch(script, /DC=\{\}/, 'a write drops only what it changed, not every panel');
+  assert.equal((script.match(/busy--;dinv\('\/mr\?ref='\+encodeURIComponent\(ref\)\)/g) || []).length, 2, 'approving and merging drop that merge request');
+  assert.match(script, /busy--;dinv\('\/issue\?key='/, 'moving drops that ticket');
+  assert.match(script, /sessionStorage\.setItem\('tl-dc'/, 'kept for reloads in the tab');
+  assert.match(script, /function forget\(\)\{try\{sessionStorage\.removeItem\('tl-dc'\)/, 'and forgotten at sign-out');
+  assert.match(script, /if\(x\.pending\)pendLater\(q,n,0\)/, 'a panel still waiting for a source asks again');
 });
 
 test('the page script parses (a syntax error would leave the whole page inert)', () => {
@@ -555,6 +560,27 @@ test('meetings: Today and Tomorrow pills filter the list; every meeting of both 
   const script = dashboardScript('/dashboard');
   assert.match(script, /var mf=e\.target\.closest\('\[data-mtf-to\]'\);if\(mf\)\{mtf\(/);
   assert.match(script, /localStorage\.setItem\('tl-mtf',on\)/);
+});
+
+test('detail panels do not wait for the whole dashboard: the last known data is enough when it lists the item', async () => {
+  let clock = Date.now();
+  const personInfo = async (name) => ({ found: true, name, absence: { state: 'pending' } });
+  await withDashboard({ personInfo, now: () => clock }, async ({ base, seen }) => {
+    const { cookie } = await signIn(base);
+    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+    const lists = () => seen.filter((c) => c.url.endsWith('/api/graphql')).length;
+    const before = lists();
+    clock += 120_000;
+    const res = await fetch(`${base}/approve/dashboard/mr?ref=${encodeURIComponent('group/app!7')}`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.equal(lists(), before, 'the merge request list was not read again');
+    assert.match(res.headers.get('server-timing'), /^check;dur=[\d.]+, fetch;dur=[\d.]+, photos;dur=[\d.]+$/);
+    assert.equal((await fetch(`${base}/approve/dashboard/mr?ref=${encodeURIComponent('group/app!8')}`, { headers: { Cookie: cookie } })).status, 404);
+    assert.equal(lists(), before + 1, 'an unknown item waits for fresh data once');
+    const person = await (await fetch(`${base}/approve/dashboard/person?name=${encodeURIComponent('Bob Example')}`, { headers: { Cookie: cookie } })).json();
+    assert.equal(person.pending, true);
+    assert.match(person.html, /data-pending>Checking HR WORKS/);
+  });
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

@@ -1931,7 +1931,7 @@ export class MergeRequestWatcher {
     const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => { const t = setTimeout(() => resolve(undefined), ms); t.unref?.(); })]);
     let results;
     try {
-      results = (await within(this.userDirectory.searchDirectory(query), 15_000)) || [];
+      results = (await within(this.userDirectory.searchDirectory(query), 8_000)) || [];
     } catch (err) {
       log.warn(`Person lookup failed for a dashboard panel: ${err.message}`);
       return { name: query, found: false, reason: 'The Teams directory could not be searched right now.' };
@@ -1958,17 +1958,17 @@ export class MergeRequestWatcher {
       ? within(getUserPresence(person.mri).then((res) => {
           const pr = res?.ok && Array.isArray(res.value?.data) ? res.value.data[0]?.presence : null;
           return pr ? { availability: pr.availability || '', activity: pr.activity || '', outOfOffice: pr.calendarData?.isOutOfOffice === true } : null;
-        }).catch(() => null), 8_000)
+        }).catch(() => null), 4_000)
       : Promise.resolve(null);
     const absence = this.hrworks
-      ? within(this.hrworks.findPersonAbsence(person).then((r) => {
+      ? within(Promise.resolve(this.hrworks.findPersonAbsence(person, { offline: true })).then((r) => {
           if (!r) return null;
           if (r.error) return { state: 'unavailable' };
           if (r.absence) return { state: 'away', current: r.absence };
           if (r.reason === 'not_found') return { state: 'not_found' };
           if (r.reason === 'calendar_unavailable') return { state: 'unavailable' };
           return { state: 'present', upcoming: r.upcomingAbsence || null };
-        }).catch(() => ({ state: 'unavailable' })), 20_000).then((v) => (v === undefined ? { state: 'unavailable' } : v))
+        }).catch(() => ({ state: 'unavailable' })), 3_000).then((v) => (v === undefined ? { state: 'pending' } : v))
       : Promise.resolve(null);
     [info.presence, info.absence] = await Promise.all([presence, absence]);
     return info;

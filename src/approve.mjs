@@ -520,6 +520,9 @@ const actorBind = (actor) => `user=${actor.user};cred=${actor.cred}`;
 
 const UNVERIFIED_ACCOUNT = 'The GitLab account that would act could not be verified. Nothing was sent. Reload the page to try again.';
 
+/** A `Server-Timing` header value from phase durations in milliseconds (visible in the browser's network panel). */
+const serverTiming = (phases) => Object.entries(phases).map(([k, ms]) => `${k};dur=${Math.max(0, ms).toFixed(1)}`).join(', ');
+
 const kindOf = (record) => (ACTIONS.includes(record?.action) ? record.action : 'approve');
 
 // GitLab's `detailed_merge_status` values that say "not mergeable right now".
@@ -1983,21 +1986,26 @@ export class ApproveServer {
    */
   async dashboardDetail(kind, req, res, session) {
     const params = new URL(req.url, 'http://localhost').searchParams;
-    const data = await this.dashboardData(session);
+    const t0 = performance.now();
+    if (kind === 'mr') return this.dashboardMrDetail(String(params.get('ref') || ''), res, session, t0);
     let id;
-    let allowed;
-    if (kind === 'mr') return this.dashboardMrDetail(String(params.get('ref') || ''), res, session, data);
+    let listed;
     if (kind === 'issue') {
       id = String(params.get('key') || '').toUpperCase();
-      const keys = new Set();
-      for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data.sprint.data?.[k] || []) keys.add(String(t.key).toUpperCase());
-      for (const mr of data.mrs.items || []) for (const k of mr.issues || []) keys.add(k);
-      allowed = /^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(id) && keys.has(id);
+      listed = (data) => {
+        const keys = new Set();
+        for (const k of ['todo', 'inProgress', 'inReview']) for (const t of data.sprint.data?.[k] || []) keys.add(String(t.key).toUpperCase());
+        for (const mr of data.mrs.items || []) for (const k of mr.issues || []) keys.add(k);
+        return keys.has(id);
+      };
+      if (!/^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(id)) return this.json(res, 404, {});
     } else {
       id = String(params.get('id') || '');
-      allowed = /^[A-Za-z0-9-]{1,80}$/.test(id) && (data.alerts.data?.alerts || []).some((a) => a.id === id);
+      listed = (data) => (data.alerts.data?.alerts || []).some((a) => a.id === id);
+      if (!/^[A-Za-z0-9-]{1,80}$/.test(id)) return this.json(res, 404, {});
     }
-    if (!allowed) return this.json(res, 404, {});
+    if (!(await this.dashboardDataFor(session, listed))) return this.json(res, 404, {});
+    const t1 = performance.now();
     const fn = this.dashboard.sources?.[kind];
     if (typeof fn !== 'function') return this.json(res, 404, {});
     const cacheKey = `${kind}:${id}`;
@@ -2011,17 +2019,43 @@ export class ApproveServer {
     }
     try {
       const item = await hit.promise;
+      const t2 = performance.now();
       const names = kind === 'issue' ? [item.assignee, item.reporter].filter(Boolean) : [];
       this.notePeopleShown(session, names);
-      if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
+      await this.warmBriefly(names);
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars };
-      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx));
+      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }) });
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
       return this.json(res, 502, {});
     }
+  }
+
+  /**
+   * The dashboard data a detail panel is checked against (is the item on this visitor's dashboard?). The last
+   * known data is enough when it lists the item: a panel never waits for the whole dashboard to be read again.
+   * Only an item the known data does not have (it may have just appeared) waits for fresh data.
+   */
+  async dashboardDataFor(session, listed) {
+    const hit = this.dashData.get(session.key || sha256Hex(session.sid));
+    if (hit) {
+      const data = await hit.promise.catch(() => null);
+      if (data && listed(data)) return data;
+      if (data && this.now() - hit.at < DASH_DATA_CACHE_MS) return null;
+    }
+    const data = await this.dashboardData(session);
+    return listed(data) ? data : null;
+  }
+
+  /** Loads the photos of `names` for at most a moment: a panel shows initials rather than wait; the next shows the photo. */
+  async warmBriefly(names) {
+    if (!names.length || !this.avatarWarm) return;
+    let timer;
+    const work = Promise.resolve().then(() => this.avatarWarm(names)).catch(() => {});
+    await Promise.race([work, new Promise((resolve) => { timer = setTimeout(resolve, 250); timer.unref?.(); })]);
+    clearTimeout(timer);
   }
 
   /** Remembers the people a detail panel showed this visitor, so their names open the person panel too. */
@@ -2043,8 +2077,9 @@ export class ApproveServer {
   async dashboardPerson(req, res, session) {
     const name = String(new URL(req.url, 'http://localhost').searchParams.get('name') || '').trim();
     if (!name || name.length > 120) return this.json(res, 404, {});
-    const data = await this.dashboardData(session);
-    if (!dashboardPeople(data).has(name) && !session.peopleShown?.has(name)) return this.json(res, 404, {});
+    const t0 = performance.now();
+    if (!session.peopleShown?.has(name) && !(await this.dashboardDataFor(session, (data) => dashboardPeople(data).has(name)))) return this.json(res, 404, {});
+    const t1 = performance.now();
     if (!this.personInfo) return this.json(res, 200, personDetail({ name, found: false, reason: 'Person details are not available on this server.' }, { avatars: {} }));
     const key = `person:${name.toLowerCase()}`;
     const now = this.now();
@@ -2056,10 +2091,14 @@ export class ApproveServer {
     }
     try {
       const info = await hit.promise;
-      if (this.avatarWarm) { try { await this.avatarWarm([name]); } catch { /* initials */ } }
+      const t2 = performance.now();
+      // HR WORKS did not answer within its budget: keep this answer only briefly, the page asks again.
+      const pending = info?.absence?.state === 'pending';
+      if (pending && this.dashSourceCache.get(key) === hit) hit.at = Math.min(hit.at, this.now() - 120_000 + 2_500);
+      await this.warmBriefly([name]);
       const avatars = {};
       try { const u = this.avatarOf?.(name); if (u) avatars[name] = u; } catch { /* initials */ }
-      return this.json(res, 200, personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }));
+      return this.json(res, 200, { ...personDetail({ ...(info || {}), name: info?.name || name, found: Boolean(info?.found) }, { avatars }), pending }, { 'Server-Timing': serverTiming({ check: t1 - t0, lookup: t2 - t1, photos: performance.now() - t2 }) });
     } catch (err) {
       log(`Dashboard could not look up a person for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2067,9 +2106,12 @@ export class ApproveServer {
   }
 
   /** The detail panel of a merge request the visitor's dashboard lists, read with the visitor's own token. */
-  async dashboardMrDetail(ref, res, session, data) {
-    const listed = (data.mrs.items || []).find((mr) => `${mr.project}!${mr.iid}` === ref);
+  async dashboardMrDetail(ref, res, session, t0 = performance.now()) {
+    const find = (data) => (data.mrs.items || []).find((mr) => `${mr.project}!${mr.iid}` === ref);
+    const data = await this.dashboardDataFor(session, find);
+    const listed = data && find(data);
     if (!listed) return this.json(res, 404, {});
+    const t1 = performance.now();
     const key = `mr:${sha256Hex(session.sid)}:${ref}`;
     const now = this.now();
     let hit = this.dashSourceCache.get(key);
@@ -2080,13 +2122,14 @@ export class ApproveServer {
     }
     try {
       const detail = await hit.promise;
+      const t2 = performance.now();
       const names = [detail.mr.author, ...(detail.mr.reviewers || [])].filter(Boolean).map((u) => u.name || u.username);
       this.notePeopleShown(session, [...names, ...(detail.approvals?.approved_by || []).map((a) => a.user?.name || a.user?.username)]);
-      if (names.length && this.avatarWarm) { try { await this.avatarWarm(names); } catch { /* initials */ } }
+      await this.warmBriefly(names);
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost, merge: this.mergeEnabled };
-      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)));
+      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }) });
     } catch (err) {
       log(`Dashboard could not read ${ref} for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});

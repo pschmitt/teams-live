@@ -409,3 +409,16 @@ test('HealthMonitor tracks homeassistant service and watcher.getConnectorsStatus
   assert.match(cacheLines[3], /`\/meetings`/);
   assert.match(cacheLines[4], /`\/whereis` \(HR works\): \d+s ago \(1 employees, 1 absences\)/);
 });
+
+test('findPersonAbsence offline: answers from the prefetched company data and never calls Home Assistant', async () => {
+  const client = new HRWorksClient({ url: 'https://ha.example.com', token: 't' });
+  client.callService = async () => { throw new Error('must not be called'); };
+  assert.equal((await client.findPersonAbsence({ displayName: 'Bob Example' }, { offline: true })).reason, 'calendar_unavailable', 'nothing prefetched yet');
+  client.mergeIntoCompanyCache({
+    employees: [{ id: 'e1', rawName: 'Example, Bob', displayName: 'Bob Example' }],
+    absences: [{ resourceId: 'e1', start: '2000-01-01', end: '2999-01-01', category: 'Vacation' }],
+  });
+  const found = await client.findPersonAbsence({ displayName: 'Bob Example' }, { offline: true });
+  assert.equal(found.absence?.category, 'Vacation');
+  assert.equal((await client.findPersonAbsence({ displayName: 'Nobody Example' }, { offline: true })).reason, 'not_found');
+});

@@ -301,8 +301,17 @@ export class HRWorksClient {
    * Matches a person from Teams directory to an HRworks employee and determines
    * their active or upcoming absence.
    */
-  async findPersonAbsence(person, { organizationalUnit = null } = {}) {
+  async findPersonAbsence(person, { organizationalUnit = null, offline = false } = {}) {
     if (!person) return null;
+    // `offline`: only what the background prefetch already holds, never a call to Home Assistant (whose HR WORKS
+    // integration answers slowly and one request after the other, so a lookup per click would queue up).
+    if (offline) {
+      const companyAgg = this.getAggregatedCompanyData();
+      if (!companyAgg) return { checked: true, employee: null, absence: null, upcomingAbsence: null, allAbsences: [], reason: 'calendar_unavailable' };
+      const known = this.matchEmployee(person, companyAgg.employees);
+      if (!known) return { checked: true, employee: null, absence: null, upcomingAbsence: null, allAbsences: [], reason: 'not_found' };
+      return this.absencesOf(known, companyAgg);
+    }
 
     let calData = null;
     let employee = null;
@@ -364,6 +373,11 @@ export class HRWorksClient {
       };
     }
 
+    return this.absencesOf(employee, calData);
+  }
+
+  /** The current and the next absence of a matched employee in a calendar (`{employees, absences}`). */
+  absencesOf(employee, calData) {
     // 4. Find absences for this employee
     const empAbsences = calData.absences.filter((a) => {
       if (a.resourceId && a.resourceId === employee.id) return true;

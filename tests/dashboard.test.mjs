@@ -492,14 +492,14 @@ test('the person endpoint answers only for people the visitor\'s dashboard shows
     const get = (name) => fetch(`${base}/approve/dashboard/person?name=${encodeURIComponent(name)}`, { headers: { Cookie: cookie } });
     assert.equal((await fetch(`${base}/approve/dashboard/person?name=Bob%20Example`)).status, 401);
     assert.equal((await get('Mallory Example')).status, 404, 'not on the dashboard');
-    assert.deepEqual(asked, []);
+    assert.ok(!asked.includes('Mallory Example'));
     const res = await get('Bob Example');
     assert.equal(res.status, 200);
     const d = await res.json();
     assert.equal(d.title, 'Bob Example');
     assert.match(d.html, /pill-ok">Available/);
     await get('Bob Example');
-    assert.deepEqual(asked, ['Bob Example'], 'looked up once, then cached');
+    assert.equal(asked.filter((n) => n === 'Bob Example').length, 1, 'looked up once, then cached');
   });
 });
 
@@ -612,7 +612,7 @@ test('the person panel reads the absence fresh for every request, while the dire
     const second = await get();
     assert.equal(second.pending, false);
     assert.match(second.html, /pill-bad">Away<\/span><span class="note">Vacation/);
-    assert.deepEqual(asked, ['Bob Example'], 'the directory was asked once');
+    assert.equal(asked.filter((n) => n === 'Bob Example').length, 1, 'the directory was asked once');
   });
 });
 
@@ -648,12 +648,29 @@ test('the person panel shows this and next month with absence days marked by kin
   assert.match(html, /<b>November 2026<\/b>[\s\S]*<b>December 2026<\/b>/);
   assert.match(html, /<span class="ab ab-leave today" title="Absent, approved \(2026-11-19 – 2026-11-30\)">25<\/span>/);
   assert.match(html, /<span class="ab ab-sick" title="Krankheit \(2026-12-03\)">3<\/span>/);
-  assert.equal((html.match(/class="ab ab-leave/g) || []).length, 12, 'every day of the absence');
+  assert.equal((html.match(/class="ab ab-leave/g) || []).length, 8, 'every weekday of the absence');
+  assert.doesNotMatch(html, /<i>Sa<\/i>|<i>Su<\/i>/, 'no weekend columns');
+  assert.doesNotMatch(html.split('December')[0], />28<\/span>|>29<\/span>/, 'Saturday 28 and Sunday 29 November are left out');
   assert.match(html, /<i class="ab-leave"><\/i>Leave<\/span><span><i class="ab-sick"><\/i>Sick/);
   assert.match(absenceCalendar([], now), /No absences this month or next/);
   const panel = personDetail({ found: true, name: 'Dan', absence: { state: 'away', current: { category: 'Absent' }, days: [{ startDate: '2026-11-19', endDate: '2026-11-30', category: 'Absent' }] } }, { avatars: {}, now, timeZone: 'Europe/Berlin' }).html;
   assert.match(panel, /<h3 class="dsub">Absences<\/h3><div class="cals">/);
   assert.match(dashboardScript('/dashboard'), /\.alist \[data-alert\][\s\S]*\.duty \[data-person\],\.llist \[data-person\]/, 'alerts and people are prefetched when idle');
+});
+
+test('after the dashboard data loads, the people it shows are looked up in the background', async () => {
+  const asked = [];
+  const personInfo = async (name) => { asked.push(name); return { found: true, name }; };
+  await withDashboard({ personInfo }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(asked.includes('Bob Example'), 'the merge request author was warmed');
+    const before = asked.length;
+    await fetch(`${base}/approve/dashboard/person?name=${encodeURIComponent('Bob Example')}`, { headers: { Cookie: cookie } });
+    assert.equal(asked.length, before, 'the panel used the warmed answer');
+  });
+  assert.match(dashboardScript('/dashboard'), /if\(who\)\{var av=el\.querySelector\('img\.av'\)/, 'the panel opens with the name and photo at once');
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

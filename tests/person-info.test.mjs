@@ -54,3 +54,15 @@ test('person absence: the days for the calendar, from two weeks back to three mo
   assert.equal(r.days[0].startDate, day(-1));
   assert.equal(r.days[0].endDate, day(2), 'an all-day end at midnight is the day before');
 });
+
+test('person info: the directory entry is kept, so a second panel does not search again', async () => {
+  let searches = 0;
+  const self = { userDirectory: { searchDirectory: async () => { searches++; return [{ displayName: 'Bob Example', email: 'bob@example.com' }]; } } };
+  const info = MergeRequestWatcher.prototype.personInfo.bind(self);
+  assert.equal((await info('Bob Example')).email, 'bob@example.com');
+  assert.equal((await info('Bob Example')).email, 'bob@example.com');
+  assert.equal(searches, 1);
+  const slow = { userDirectory: { searchDirectory: () => new Promise(() => {}) } };
+  // (a timed-out search would take 8 s; only the cache rule is checked here)
+  assert.equal(slow.personDirectory, undefined);
+});

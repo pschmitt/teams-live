@@ -1930,19 +1930,30 @@ export class MergeRequestWatcher {
     const query = String(name || '').trim();
     if (!query || !this.userDirectory?.searchDirectory) return { name: query, found: false, reason: 'The Teams directory is not available.' };
     const within = (promise, ms) => Promise.race([promise, new Promise((resolve) => { const t = setTimeout(() => resolve(undefined), ms); t.unref?.(); })]);
-    let results;
-    try {
-      results = (await within(this.userDirectory.searchDirectory(query), 8_000)) || [];
-    } catch (err) {
-      log.warn(`Person lookup failed for a dashboard panel: ${err.message}`);
-      return { name: query, found: false, reason: 'The Teams directory could not be searched right now.' };
-    }
+    // The directory entry rarely changes: kept for hours (a miss for minutes), so a panel only asks for the presence.
+    this.personDirectory ||= new Map();
     const want = normalizeName(query);
-    // One exact name match (the same account found twice counts once), else the only search result.
-    const exact = [...new Map(results.filter((r) => r?.displayName && normalizeName(r.displayName) === want).map((r) => [r.mri || r.email || r.displayName, r])).values()];
-    const person = exact.length === 1 ? exact[0] : !exact.length && results.length === 1 ? results[0] : null;
+    const known = this.personDirectory.get(want);
+    let found = known && Date.now() - known.at < (known.person ? 6 * 3_600_000 : 600_000) ? known : null;
+    if (!found) {
+      let results;
+      try {
+        results = (await within(this.userDirectory.searchDirectory(query), 8_000)) || [];
+      } catch (err) {
+        log.warn(`Person lookup failed for a dashboard panel: ${err.message}`);
+        return { name: query, found: false, reason: 'The Teams directory could not be searched right now.' };
+      }
+      // One exact name match (the same account found twice counts once), else the only search result.
+      const exact = [...new Map(results.filter((r) => r?.displayName && normalizeName(r.displayName) === want).map((r) => [r.mri || r.email || r.displayName, r])).values()];
+      const match = exact.length === 1 ? exact[0] : !exact.length && results.length === 1 ? results[0] : null;
+      found = { at: Date.now(), person: match, reason: exact.length > 1 ? 'Several people in the Teams directory have this name.' : 'This person was not found in the Teams directory.' };
+      // A search that timed out (undefined) is not remembered as a miss.
+      if (match || Array.isArray(results)) this.personDirectory.set(want, found);
+      while (this.personDirectory.size > 1000) this.personDirectory.delete(this.personDirectory.keys().next().value);
+    }
+    const person = found.person;
     if (!person) {
-      return { name: query, found: false, reason: exact.length > 1 ? 'Several people in the Teams directory have this name.' : 'This person was not found in the Teams directory.' };
+      return { name: query, found: false, reason: found.reason };
     }
     const info = {
       found: true,
@@ -1955,13 +1966,18 @@ export class MergeRequestWatcher {
       presence: null,
       absence: null,
     };
-    const presence = person.mri
+    this.presenceCache ||= new Map();
+    const seen = person.mri && this.presenceCache.get(person.mri);
+    const presence = seen && Date.now() - seen.at < 60_000
+      ? Promise.resolve(seen.presence)
+      : person.mri
       ? within(getUserPresence(person.mri).then((res) => {
           const pr = res?.ok && Array.isArray(res.value?.data) ? res.value.data[0]?.presence : null;
           return pr ? { availability: pr.availability || '', activity: pr.activity || '', outOfOffice: pr.calendarData?.isOutOfOffice === true } : null;
         }).catch(() => null), 4_000)
       : Promise.resolve(null);
     info.presence = await presence;
+    if (person.mri && info.presence) this.presenceCache.set(person.mri, { at: Date.now(), presence: info.presence });
     // The directory entry, for matching the person in HR WORKS (see personAbsence).
     info.directory = person;
     return info;

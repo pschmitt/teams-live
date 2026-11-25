@@ -2089,6 +2089,32 @@ export class ApproveServer {
     clearTimeout(timer);
   }
 
+  /**
+   * Looks up everyone the dashboard shows in the background (at most every ten minutes, three at a time), so a
+   * person panel finds the directory entry ready. Never waited for.
+   */
+  warmPeople(data) {
+    if (!this.personInfo) return;
+    const now = this.now();
+    if (now - (this.peopleWarmedAt || 0) < 600_000) return;
+    this.peopleWarmedAt = now;
+    const names = [...dashboardPeople(data)].slice(0, 80);
+    let next = 0;
+    const worker = async () => {
+      while (next < names.length) {
+        const name = names[next++];
+        const key = `person:${name.toLowerCase()}`;
+        const hit = this.dashSourceCache.get(key);
+        if (hit && this.now() - hit.at <= 120_000) continue;
+        const entry = { at: this.now(), promise: Promise.resolve().then(() => this.personInfo(name)) };
+        this.dashSourceCache.set(key, entry);
+        entry.promise.catch(() => { if (this.dashSourceCache.get(key) === entry) this.dashSourceCache.delete(key); });
+        await entry.promise.catch(() => {});
+      }
+    };
+    for (let i = 0; i < 3; i++) void worker();
+  }
+
   /** Remembers the people a detail panel showed this visitor, so their names open the person panel too. */
   notePeopleShown(session, names) {
     const shown = (session.peopleShown ||= new Set());
@@ -2193,6 +2219,7 @@ export class ApproveServer {
       ]);
       const data = { at: this.now(), mrs, sprint, alerts, meetings, leave };
       this.dashDataDone.set(key, data);
+      this.warmPeople(data);
       return data;
     })();
     const entry = { at: now, promise };

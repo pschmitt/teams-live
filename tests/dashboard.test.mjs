@@ -510,11 +510,12 @@ test('the Leave card lists HR WORKS absences of the week, its people open the pe
     { name: 'Frank Example', category: 'Sick', startDate: '2026-11-25', endDate: '2026-11-25' },
     { name: 'Gina Example', category: 'Vacation', startDate: '2026-11-30', endDate: '2026-12-02' },
   ] }, ctx);
-  assert.match(html, /^<div class="leave"><ul class="llist">/);
+  assert.match(html, /^<ul class="plist"><li class="now" data-key="leave:Erin Example@2026-11-24"><svg[^>]*>[\s\S]*?<\/svg><span class="duty-who"><span class="duty-p"><button[^>]*data-person="Erin Example"[^>]*>[\s\S]*?<b>Erin Example<\/b><\/button><\/span><small>Vacation · until Sat 28 Nov<\/small>/, 'the On-call look: icon, photo, bold name, muted note');
+  const oncall = oncallSection({ data: { duty: [{ queue: 'On-call', people: [{ name: 'Carol Example' }] }] } }, ctx);
+  assert.match(oncall, /<ul class="plist duty"><li><svg[^>]*>[\s\S]*?<\/svg><span class="duty-who"><span class="duty-p"><button[^>]*data-person="Carol Example"/, 'both lists share one structure');
   assert.doesNotMatch(meetingsSection({ data: [] }, ctx), /leave/, 'no longer inside the meetings');
-  assert.match(html, /<li class="now" [^>]*><button[^>]*data-person="Erin Example"[\s\S]*?<small>Vacation · until Sat 28 Nov<\/small>/);
   assert.match(html, /<small>Sick · today<\/small>/);
-  assert.match(html, /<li class="" [^>]*>[\s\S]*?Gina Example[\s\S]*?<small>Vacation · Mon 30 Nov – Wed 2 Dec<\/small>/);
+  assert.match(html, /<li data-key="leave:Gina Example@2026-11-30">[\s\S]*?Gina Example[\s\S]*?<small>Vacation · Mon 30 Nov – Wed 2 Dec<\/small>/);
   assert.match(leaveSection({ off: true }, ctx), /HR WORKS is not configured/);
   assert.match(leaveSection({ pending: true }, ctx), /Reading HR WORKS/);
   assert.match(leaveSection({ data: [] }, ctx), /Nobody on leave this week/);
@@ -655,7 +656,7 @@ test('the person panel shows this and next month with absence days marked by kin
   assert.match(absenceCalendar([], now), /No absences this month or next/);
   const panel = personDetail({ found: true, name: 'Dan', absence: { state: 'away', current: { category: 'Absent' }, days: [{ startDate: '2026-11-19', endDate: '2026-11-30', category: 'Absent' }] } }, { avatars: {}, now, timeZone: 'Europe/Berlin' }).html;
   assert.match(panel, /<h3 class="dsub">Absences<\/h3><div class="cals">/);
-  assert.match(dashboardScript('/dashboard'), /\.alist \[data-alert\][\s\S]*\.duty \[data-person\],\.llist \[data-person\]/, 'alerts and people are prefetched when idle');
+  assert.match(dashboardScript('/dashboard'), /\.alist \[data-alert\][\s\S]*\.plist \[data-person\]/, 'alerts and people are prefetched when idle');
 });
 
 test('after the dashboard data loads, the people it shows are looked up in the background', async () => {

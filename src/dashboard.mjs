@@ -427,6 +427,19 @@ export function alertsSection(state, ctx) {
   return list;
 }
 
+/**
+ * A list of people, the same everywhere (the On-call look): a row per entry with an icon, then the people
+ * (photo, name in bold, a button for the person panel) and a muted note. Rows: `{names, icon, note, key, cls}`.
+ */
+export function peopleList(rows, ctx, cls = '') {
+  const items = rows.map((r) => {
+    const names = (r.names || []).filter(Boolean);
+    const who = names.length ? names.map((n) => `<span class="duty-p">${personRef(n, ctx.avatars, { bold: true })}</span>`).join('') : `<span class="note">${escapeHtml(r.empty || 'Nobody')}</span>`;
+    return `<li${r.cls ? ` class="${escapeHtml(r.cls)}"` : ''}${r.key ? ` data-key="${escapeHtml(r.key)}"` : ''}>${ICONS[r.icon] || ''}<span class="duty-who">${who}${r.note ? `<small>${escapeHtml(r.note)}</small>` : ''}</span></li>`;
+  });
+  return `<ul class="plist${cls ? ` ${cls}` : ''}">${items.join('')}</ul>`;
+}
+
 /** A YYYY-MM-DD day as "Fri 28 Nov". */
 function shortDay(day) {
   const d = new Date(`${day}T12:00:00Z`);
@@ -450,9 +463,9 @@ export function leaveSection(leave, ctx) {
     const range = ab.startDate <= today
       ? (ab.endDate === today ? 'today' : `until ${shortDay(ab.endDate)}`)
       : ab.endDate && ab.endDate !== ab.startDate ? `${shortDay(ab.startDate)} – ${shortDay(ab.endDate)}` : shortDay(ab.startDate);
-    return `<li class="${ab.startDate <= today ? 'now' : ''}" data-key="${escapeHtml(`leave:${ab.name}@${ab.startDate}`)}">${personRef(ab.name, ctx.avatars)}<small>${escapeHtml(ab.category || 'Leave')} · ${escapeHtml(range)}</small></li>`;
+    return { names: [ab.name], icon: 'leave', note: `${ab.category || 'Leave'} · ${range}`, key: `leave:${ab.name}@${ab.startDate}`, cls: ab.startDate <= today ? 'now' : '' };
   });
-  return wrap(`<ul class="llist">${rows.join('')}</ul>${leave.data.length > items.length ? `<p class="note">${leave.data.length - items.length} more</p>` : ''}`);
+  return `${peopleList(rows, ctx)}${leave.data.length > items.length ? `<p class="note leave">${leave.data.length - items.length} more</p>` : ''}`;
 }
 
 /** Folds a name for comparing people across services: case, accents and German umlaut spellings. */
@@ -473,14 +486,14 @@ function shiftTime(at, tz) {
 export function oncallSection(state, ctx) {
   if (state.error) return `<p class="empty">${escapeHtml(state.error)}</p>`;
   const data = state.data || {};
-  const duty = (data.duty || [])
+  const dutyRows = (data.duty || [])
     .filter(Boolean)
-    .map((d) => {
-      const people = Array.isArray(d.people) ? d.people.filter((p) => p?.name) : d.who ? [{ name: d.who }] : [];
-      const who = people.length ? people.map((p) => `<span class="duty-p">${personRef(p.name, ctx.avatars, { bold: true })}</span>`).join('') : '<span class="note">Off-duty</span>';
-      return `<li>${ICONS.phone}<span class="duty-who">${who}<small>${escapeHtml(d.queue)}</small></span></li>`;
-    })
-    .join('');
+    .map((d) => ({
+      names: (Array.isArray(d.people) ? d.people.filter((p) => p?.name) : d.who ? [{ name: d.who }] : []).map((p) => p.name),
+      icon: 'phone',
+      note: d.queue,
+      empty: 'Off-duty',
+    }));
   const tz = ctx.timeZone;
   const me = foldName(ctx.name);
   const known = (data.shifts || []).filter((q) => Array.isArray(q.shifts));
@@ -498,8 +511,8 @@ export function oncallSection(state, ctx) {
     if (!parts.length) parts.push('<span class="note">No shift for you in the next four weeks.</span>');
     mine = `<div class="myshift${now ? ' now' : ''}">${ICONS.clock}<span>${parts.join('<br>')}</span></div>`;
   }
-  if (!duty && !mine) return '<p class="empty">No on-call schedules.</p>';
-  return `${mine}${duty ? `<ul class="duty">${duty}</ul>` : ''}`;
+  if (!dutyRows.length && !mine) return '<p class="empty">No on-call schedules.</p>';
+  return `${mine}${dutyRows.length ? peopleList(dutyRows, ctx, 'duty') : ''}`;
 }
 
 /**
@@ -1418,7 +1431,7 @@ export const DASHBOARD_CSS = [
   '.none{color:var(--muted);font-size:.8rem;padding:.3rem .2rem}',
   '.al{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.6rem;align-items:center;padding:.6rem 1rem;border-top:1px solid var(--line)}.al:first-child{border-top:0}.al b{display:block;font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.al b a{color:var(--text)}.al small{color:var(--muted)}.al.acked{opacity:.6}',
   '.prio{font:700 .72rem var(--mono);border-radius:4px;padding:.05rem .35rem;background:var(--draft-bg);color:var(--draft)}.prio-p1,.prio-p2{background:var(--closed-bg);color:var(--closed)}.prio-p3{background:var(--warn-bg);color:var(--warn)}',
-  '.duty-who{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.duty-p{display:inline-flex;align-items:center}.duty-p .av{width:22px;height:22px;margin-right:.45rem}.duty{border-top:1px solid var(--line);background:var(--subtle);padding:.4rem 0}.duty li{display:flex;gap:.55rem;align-items:center;padding:.3rem 1rem;font-size:.86rem}.duty small{color:var(--muted)}',
+  '.duty-who{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.duty-p{display:inline-flex;align-items:center}.duty-p .av{width:22px;height:22px;margin-right:.45rem}.plist{list-style:none;margin:0;padding:.4rem 0}.plist li{display:flex;gap:.55rem;align-items:center;padding:.3rem 1rem;font-size:.86rem}.plist small{color:var(--muted)}.plist .di{flex:none;color:var(--muted)}.plist li.now small{color:var(--text)}.duty{border-top:1px solid var(--line);background:var(--subtle);padding:.4rem 0}.duty li{display:flex;gap:.55rem;align-items:center;padding:.3rem 1rem;font-size:.86rem}.duty small{color:var(--muted)}',
   '.mlist .day{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:.6rem 1rem .2rem}',
   '.mt{display:grid;grid-template-columns:3.2rem minmax(0,1fr) auto;gap:.6rem;align-items:center;padding:.5rem 1rem}.mt time{font:.8rem var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}.mt b{display:block;font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mt small{color:var(--muted)}',
   '.mt.now{background:var(--run-bg)}.mt.now time{color:var(--run);font-weight:700}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}',
@@ -1489,7 +1502,7 @@ function pendLater(q,n,k){if(k>=3)return;setTimeout(function(){if(n!==dreq||!dr|
 function dq(el){var m=el.getAttribute('data-mr'),i=el.getAttribute('data-issue'),a=el.getAttribute('data-alert'),pp=el.getAttribute('data-person');return pp?'/person?name='+encodeURIComponent(pp):m?'/mr?ref='+encodeURIComponent(m):i?'/issue?key='+encodeURIComponent(i):a?'/alert?id='+encodeURIComponent(a):null}
 function dget(q,fresh){var c=DC[q],now=Date.now();if(c&&c.p&&(!fresh||now-c.t<30000))return c.p;var e={t:now,x:c&&c.x};e.p=fetch(B+q,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(x){if(x){e.x=x;e.t=Date.now();dsave()}else if(DC[q]===e&&!e.x)delete DC[q];return x},function(err){if(DC[q]===e){if(e.x)e.p=null;else delete DC[q]}throw err});DC[q]=e;return e.p}
 function prefetch(el){var q=el&&dq(el);if(!q||!online())return;var c=DC[q];if(c&&Date.now()-c.t<30000)return;dget(q,true).catch(function(){})}
-function pfIdle(){var go=function(){var seen={},els=[].slice.call(d.querySelectorAll('.mrlist .mrrow[data-mr]')).filter(function(x){return x.offsetParent!==null}).slice(0,5).concat([].slice.call(d.querySelectorAll('.board .tk.mine[data-issue]')).slice(0,5),[].slice.call(d.querySelectorAll('.alist [data-alert]')).slice(0,12),[].slice.call(d.querySelectorAll('.duty [data-person],.llist [data-person]')).slice(0,16)).filter(function(x){var q=dq(x);if(!q||seen[q])return false;seen[q]=1;return true});els.forEach(function(x,k){setTimeout(function(){prefetch(x)},k*250)})};if(window.requestIdleCallback)requestIdleCallback(go,{timeout:4000});else setTimeout(go,1500)}
+function pfIdle(){var go=function(){var seen={},els=[].slice.call(d.querySelectorAll('.mrlist .mrrow[data-mr]')).filter(function(x){return x.offsetParent!==null}).slice(0,5).concat([].slice.call(d.querySelectorAll('.board .tk.mine[data-issue]')).slice(0,5),[].slice.call(d.querySelectorAll('.alist [data-alert]')).slice(0,12),[].slice.call(d.querySelectorAll('.plist [data-person]')).slice(0,16)).filter(function(x){var q=dq(x);if(!q||seen[q])return false;seen[q]=1;return true});els.forEach(function(x,k){setTimeout(function(){prefetch(x)},k*250)})};if(window.requestIdleCallback)requestIdleCallback(go,{timeout:4000});else setTimeout(go,1500)}
 d.addEventListener('pointerover',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');clearTimeout(pft);if(el)pft=setTimeout(function(){prefetch(el)},120)});d.addEventListener('pointerout',function(){clearTimeout(pft)});d.addEventListener('focusin',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)});d.addEventListener('touchstart',function(e){var el=e.target.closest&&e.target.closest('[data-person],.mrrow[data-mr],[data-issue],[data-alert]');if(el)prefetch(el)},{passive:true});
 pfIdle();
 function openDetail(el){if(!dr)return;var who=el.getAttribute('data-person'),issue=who?null:el.getAttribute('data-issue'),alertId=who?null:el.getAttribute('data-alert'),mrk=who?null:el.getAttribute('data-mr'),n=++dreq,was=!dr.hidden;dlast=el;dkey=who?['person',who]:issue?['issue',issue]:alertId?['alert',alertId]:['mr',mrk];var t=dr.querySelector('#drawer-title'),body=dr.querySelector('[data-drawer-body]');t.textContent=who||issue||mrk||'Alert';body.innerHTML='<div class="sk" style="width:60%"></div><div class="sk" style="width:85%"></div><div class="sk" style="width:40%"></div><div class="sk" style="height:120px"></div>';if(who){var av=el.querySelector('img.av');body.innerHTML='<div class="pcard"></div><div class="sk" style="width:70%"></div><div class="sk" style="width:55%"></div><div class="sk" style="width:62%"></div>';var pc=body.querySelector('.pcard');if(av)pc.appendChild(av.cloneNode(true));var nb=document.createElement('div'),bn=document.createElement('b');bn.textContent=who;nb.appendChild(bn);pc.appendChild(nb)}dr.hidden=false;document.body.style.overflow='hidden';if(!rbusy){if(was)unroute();else{route();dpush=true}}var c=dr.querySelector('.drawer-panel [data-drawer-close]');if(c)c.focus();

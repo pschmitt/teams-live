@@ -616,6 +616,29 @@ test('the person panel reads the absence fresh for every request, while the dire
   });
 });
 
+test('offline mode: a 5xx from the server (a restart behind the proxy) serves the last dashboard, not the error', async () => {
+  const handlers = {};
+  const store = new Map([['/dashboard', new Response('<p>saved</p>', { status: 200, headers: { 'X-TL-Offline': '1' } })]]);
+  const caches = { open: async () => ({ match: async (k) => store.get(k)?.clone(), put: async (k, v) => store.set(k, v) }), delete: async () => true };
+  let answer = () => new Response('Bad Gateway', { status: 502 });
+  const self = { addEventListener: (k, fn) => { handlers[k] = fn; }, location: { origin: 'https://dash.example.com' }, registration: {}, clients: {} };
+  new Function('self', 'caches', 'fetch', 'Response', 'Headers', 'URL', serviceWorkerScript('/dashboard'))(self, caches, async () => answer(), Response, Headers, URL);
+  const run = async (path) => {
+    let reply;
+    handlers.fetch({ request: { method: 'GET', url: `https://dash.example.com${path}` }, respondWith: (p) => { reply = p; }, waitUntil: () => {} });
+    return reply;
+  };
+  const res = await run('/dashboard');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('X-TL-From-Cache'), '1');
+  assert.equal(await res.text(), '<p>saved</p>');
+  const none = await run('/dashboard/data');
+  assert.equal(none.status, 502, 'nothing saved: the error goes through');
+  answer = () => new Response('<p>new</p>', { status: 200, headers: { 'X-TL-Offline': '1' } });
+  assert.equal(await (await run('/dashboard')).text(), '<p>new</p>');
+  assert.match(dashboardScript('/dashboard'), /net\(!nc&&r\.status<500\)/, 'the page shows the offline bar for a 5xx');
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

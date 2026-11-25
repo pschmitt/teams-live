@@ -473,3 +473,27 @@ test('HR WORKS: the team calendar is refreshed hourly, the company every six hou
   assert.equal(await client.getTeamAbsences(), good, 'a failed retry still serves the saved calendar');
   assert.equal(calls, 3);
 });
+
+test('team leave: the team from the team calendar, their absences from everything HR WORKS answered', () => {
+  const client = new HRWorksClient({ url: 'https://ha.example.com', token: 't' });
+  const team = {
+    employees: [{ id: 't1', rawName: 'Example, Mark', displayName: 'Mark Example' }, { id: 't2', rawName: 'Example, Alice', displayName: 'Alice Example' }],
+    absences: [{ resourceId: 't1', start: '2026-11-27T00:00:00', end: '2026-11-28T00:00:00', category: 'Absent' }],
+  };
+  client.mergeIntoCompanyCache(team);
+  // The company calendar (another read) knows the longer leave the team view does not reach.
+  client.mergeIntoCompanyCache({
+    employees: [{ id: 'c9', rawName: 'Example, Mark', displayName: 'Mark Example' }],
+    absences: [
+      { resourceId: 'c9', start: '2026-11-30T00:00:00', end: '2026-12-19T00:00:00', category: 'Absent' },
+      { employee: 'Mark Example', start: '2026-11-27T00:00:00', end: '2026-11-28T00:00:00', category: 'Absent' },
+    ],
+  });
+  const { team: names, absences } = client.teamLeave(team, '2026-11-25', '2026-12-23');
+  assert.deepEqual(names, ['Alice Example', 'Mark Example']);
+  assert.deepEqual(absences.map((a) => `${a.name} ${a.startDate}..${a.endDate}`), [
+    'Mark Example 2026-11-27..2026-11-27',
+    'Mark Example 2026-11-30..2026-12-18',
+  ], 'both absences, each once');
+  assert.deepEqual(client.teamLeave(team, '2026-12-20', '2026-12-31').absences, [], 'only the window asked for');
+});

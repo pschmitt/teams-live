@@ -475,6 +475,34 @@ export class HRWorksClient {
     return this.absencesOf(employee, calData);
   }
 
+  /**
+   * The team's absences between two days (YYYY-MM-DD, inclusive) for the Team leave and Leave cards: who is in the
+   * team comes from the team calendar, their absences from everything HR WORKS answered (the company calendar as
+   * well), matched as for the person panel; the team calendar alone covers only a short window around today.
+   * `{team: [names], absences: [{name, category, startDate, endDate, status}]}`, one entry per absence.
+   */
+  teamLeave(teamData, from, until) {
+    const all = this.getAggregatedCompanyData() || { employees: teamData?.employees || [], absences: teamData?.absences || [] };
+    const members = (teamData?.employees || []).filter((e) => e.displayName);
+    const seen = new Set();
+    const absences = [];
+    for (const member of members) {
+      const known = this.matchEmployee(member, all.employees) || member;
+      const own = [...(this.absencesOf(known, all).allAbsences || []), ...(this.absencesOf(member, all).allAbsences || [])];
+      for (const ab of own) {
+        const { start, end } = getInclusiveDateRange(ab.start, ab.end);
+        const entry = { name: member.displayName, category: ab.category || 'Leave', startDate: start, endDate: end, status: ab.status || '' };
+        const key = `${entry.name}|${start}|${end}|${entry.category}`;
+        if (!start || end < from || start > until || seen.has(key)) continue;
+        seen.add(key);
+        absences.push(entry);
+      }
+    }
+    absences.sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
+    const team = [...new Set(members.map((e) => e.displayName))].sort((a, b) => a.localeCompare(b));
+    return { team, absences };
+  }
+
   /** The current and the next absence of a matched employee in a calendar (`{employees, absences}`). */
   absencesOf(employee, calData) {
     // 4. Find absences for this employee

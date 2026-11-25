@@ -7,7 +7,7 @@ import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
 import { OpsGenieClient, humanizeRecipient } from './opsgenie.mjs';
 import { getCalendarView } from './teams.mjs';
-import { HRWorksClient, getInclusiveDateRange } from './hrworks.mjs';
+import { HRWorksClient } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
 import { TrouterClient } from './trouter.mjs';
 import { MergeRequestWatcher } from './watcher.mjs';
@@ -124,16 +124,8 @@ function dashboardSources({ jira, opsgenie, hrworks }) {
           const day = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(d);
           const today = day(new Date());
           const until = day(new Date(Date.now() + 28 * 24 * 60 * 60 * 1000));
-          const names = new Map((data.employees || []).map((e) => [e.id, e.displayName]));
-          const absences = (data.absences || [])
-            .map((ab) => {
-              const { start, end } = getInclusiveDateRange(ab.start, ab.end);
-              return { name: names.get(ab.resourceId) || ab.employee || '', category: ab.category || 'Leave', startDate: start, endDate: end, status: ab.status || '' };
-            })
-            .filter((ab) => ab.name && ab.startDate && ab.endDate >= today && ab.startDate <= until)
-            .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name));
-          const team = [...new Set((data.employees || []).map((e) => e.displayName).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-          return { team, absences };
+          // Who is in the team comes from the team calendar, their absences from everything HR WORKS answered.
+          return hrworks.teamLeave(data, today, until);
         }
       : null,
     meetings: async () => {

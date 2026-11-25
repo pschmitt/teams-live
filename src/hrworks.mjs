@@ -56,6 +56,12 @@ export class HRWorksClient {
       resumeIndex: 0,
       loadingPromise: null,
     };
+    // Reads in flight, by cache key: a second caller shares the first one's request to Home Assistant.
+    this.inflight = new Map();
+    // The calendars survive a restart (HR WORKS answers slowly through Home Assistant): `cache_file`, if set.
+    this.cacheFile = config.cache_file || config.cacheFile || null;
+    this.saveTimer = null;
+    this.loadCacheFile();
   }
 
   isConfigured() {
@@ -170,6 +176,7 @@ export class HRWorksClient {
 
   mergeIntoCompanyCache(data) {
     if (!data) return;
+    this.saveCacheSoon();
     if (Array.isArray(data.available_organizational_units) && data.available_organizational_units.length > 0) {
       this.companyData.availableUnits = data.available_organizational_units;
     }
@@ -199,12 +206,26 @@ export class HRWorksClient {
     };
   }
 
+  /** The last team calendar read, however old (`{data, fresh}`), or null: for a page that must not wait. */
+  cachedTeamAbsences() {
+    const cached = this.cache.get('team:current');
+    return cached?.data ? { data: cached.data, fresh: Date.now() < cached.expiresAt } : null;
+  }
+
   async getTeamAbsences({ organizationalUnit = null, date = null } = {}) {
     const cacheKey = `${organizationalUnit || 'team'}:${date || 'current'}`;
     const cached = this.cache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
       return cached.data;
     }
+    const running = this.inflight.get(cacheKey);
+    if (running) return running;
+    const read = this.readTeamAbsences(cacheKey, { organizationalUnit, date }).finally(() => this.inflight.delete(cacheKey));
+    this.inflight.set(cacheKey, read);
+    return read;
+  }
+
+  async readTeamAbsences(cacheKey, { organizationalUnit = null, date = null } = {}) {
 
     const payload = {};
     if (organizationalUnit) payload.organizational_unit = organizationalUnit;
@@ -220,6 +241,66 @@ export class HRWorksClient {
       return data;
     }
     return null;
+  }
+
+  /** Loads the saved calendars (see `cache_file`); a missing or unreadable file starts empty. */
+  loadCacheFile() {
+    if (!this.cacheFile) return;
+    let saved;
+    try {
+      saved = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') log.warn(`Could not read the saved HR WORKS calendars: ${err.message}`);
+      return;
+    }
+    if (saved?.version !== 1) return;
+    for (const [key, entry] of Array.isArray(saved.cache) ? saved.cache : []) {
+      if (typeof key === 'string' && entry?.data && Number.isFinite(entry.expiresAt)) this.cache.set(key, entry);
+    }
+    const c = saved.company || {};
+    this.mergeIntoCompanyCache({ employees: c.employees, absences: c.absences, available_organizational_units: c.units });
+    this.companyData.lastFullPrefetchAt = Number(c.lastFullPrefetchAt) || 0;
+    this.companyData.lastTeamPrefetchAt = Number(c.lastTeamPrefetchAt) || 0;
+    this.companyData.resumeIndex = Number(c.resumeIndex) || 0;
+    log(`Loaded the saved HR WORKS calendars: ${this.companyData.employeesByRaw.size} employees, ${this.companyData.absencesByKey.size} absences`);
+  }
+
+  /** Saves the calendars soon (coalesced), atomically and readable by the service only. */
+  saveCacheSoon() {
+    if (!this.cacheFile || this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.saveCacheFile();
+    }, 2_000);
+    this.saveTimer.unref?.();
+  }
+
+  saveCacheFile() {
+    if (!this.cacheFile) return;
+    // Absences that ended more than a month ago are no longer needed.
+    const cutoff = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const absences = [...this.companyData.absencesByKey.values()].filter((ab) => String(ab.end || ab.start || '').slice(0, 10) >= cutoff);
+    const body = JSON.stringify({
+      version: 1,
+      savedAt: Date.now(),
+      cache: [...this.cache.entries()],
+      company: {
+        employees: [...this.companyData.employeesByRaw.values()],
+        absences,
+        units: this.companyData.availableUnits,
+        lastFullPrefetchAt: this.companyData.lastFullPrefetchAt,
+        lastTeamPrefetchAt: this.companyData.lastTeamPrefetchAt,
+        resumeIndex: this.companyData.resumeIndex,
+      },
+    });
+    const tmp = `${this.cacheFile}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, body, { mode: 0o600 });
+      fs.renameSync(tmp, this.cacheFile);
+    } catch (err) {
+      log.warn(`Could not save the HR WORKS calendars: ${err.message}`);
+      try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    }
   }
 
   async getCompanyAbsences({ units = [] } = {}) {
@@ -288,6 +369,7 @@ export class HRWorksClient {
 
         this.companyData.resumeIndex = 0;
         this.companyData.lastFullPrefetchAt = Date.now();
+        this.saveCacheSoon();
         return this.getAggregatedCompanyData();
       } finally {
         this.companyData.loadingPromise = null;

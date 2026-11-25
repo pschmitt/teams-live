@@ -422,3 +422,30 @@ test('findPersonAbsence offline: answers from the prefetched company data and ne
   assert.equal(found.absence?.category, 'Vacation');
   assert.equal((await client.findPersonAbsence({ displayName: 'Nobody Example' }, { offline: true })).reason, 'not_found');
 });
+
+test('the HR WORKS calendars survive a restart through the cache file, and one read is shared', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hrworks-'));
+  const file = path.join(dir, 'hrworks-cache.json');
+  try {
+    let calls = 0;
+    let release;
+    const first = new HRWorksClient({ url: 'https://ha.example.com', token: 't', cache_file: file });
+    first.callService = () => { calls++; return new Promise((resolve) => { release = resolve; }); };
+    const a = first.getTeamAbsences();
+    const b = first.getTeamAbsences();
+    release({ employees: [{ id: 'e1', rawName: 'Example, Bob', displayName: 'Bob Example' }], absences: [{ resourceId: 'e1', start: '2999-01-01', end: '2999-01-02', category: 'Vacation' }] });
+    assert.equal(await a, await b);
+    assert.equal(calls, 1, 'one request for both callers');
+    first.saveCacheFile();
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    const second = new HRWorksClient({ url: 'https://ha.example.com', token: 't', cache_file: file });
+    second.callService = async () => { throw new Error('must not be called'); };
+    assert.equal(second.cachedTeamAbsences().data.employees[0].displayName, 'Bob Example');
+    assert.equal((await second.findPersonAbsence({ displayName: 'Bob Example' }, { offline: true })).upcomingAbsence?.category, 'Vacation');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

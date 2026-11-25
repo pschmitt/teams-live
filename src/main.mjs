@@ -103,7 +103,14 @@ function dashboardSources({ jira, opsgenie, hrworks }) {
     // Who of the HR WORKS team is on leave from today for the next seven days (the meetings card shows it).
     leave: hrworks && (hrworks.token || hrworks.tokenFile)
       ? async () => {
-          const data = await hrworks.getTeamAbsences();
+          // The last team calendar, also an old one (it is saved across restarts), refreshed in the background.
+          const saved = hrworks.cachedTeamAbsences();
+          let data = saved?.data;
+          if (!saved?.fresh) {
+            const read = hrworks.getTeamAbsences();
+            if (data) read.catch(() => {});
+            else data = await read;
+          }
           if (!data) throw new Error('the HR WORKS team calendar is unavailable');
           const day = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(d);
           const today = day(new Date());
@@ -240,6 +247,7 @@ async function main() {
 
   const hrworks = new HRWorksClient({
     ...config.home_assistant,
+    cache_file: config.gitlab?.state_dir ? path.join(config.gitlab.state_dir, 'hrworks-cache.json') : null,
     onAuthError: (err) => handleAuthError('HomeAssistant', err),
     onSuccess: () => handleServiceSuccess('HomeAssistant'),
   });

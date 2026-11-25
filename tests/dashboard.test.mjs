@@ -814,6 +814,16 @@ test('the Leave card merges a person\'s absences that follow each other over a w
   ]).length, 2, 'a working day between them keeps them apart');
 });
 
+test('on a phone the layout editor moves cards with arrow buttons instead of dragging', () => {
+  const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
+  assert.match(body, /<span class="tools"><button type="button" class="tool tmv" data-move="-1" title="Move up" aria-label="Move Merge requests up">[\s\S]*?data-move="1"[\s\S]*?data-hide/);
+  assert.match(body, /<span class="hint-narrow">Move a card with the arrows in its header, hide it with the eye\.<\/span>/);
+  assert.match(DASHBOARD_CSS, /\.tmv,\.hint-narrow\{display:none\}@media \(max-width:68rem\)\{\.dash\.editing \.tmv\{display:grid\}/, 'the arrows show only on a narrow screen while editing');
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /var mvb=e\.target\.closest\('\[data-move\]'\);if\(mvb\)\{moveCard\(/);
+  assert.match(script, /function moveCard\(b,dir\)\{[\s\S]*?saveL\(\)/, 'a move is saved like any other layout change');
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

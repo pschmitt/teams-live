@@ -374,11 +374,14 @@ test('ordering a ticket: a rank next to a ticket on the board, also within its c
   });
 });
 
-test('sprint board: an "Only mine" toggle with per-column counts of the visitor’s tickets', () => {
+test('sprint board: an "Only mine" toggle in the card header, per-column counts of the visitor’s tickets', () => {
   const html = sprintSection({ data: { todo: [{ key: 'ABC-1', summary: 's', assignee: 'Alice' }, { key: 'ABC-2', summary: 's', assignee: 'Bob' }], inProgress: [], inReview: [] } }, { name: 'Alice', avatars: {} });
-  assert.match(html, /data-sprintmine-toggle aria-pressed="false"[^>]*>Only mine<span class="n">1<\/span>/);
+  assert.doesNotMatch(html, /data-sprintmine-toggle/, 'not in the refreshed body');
   assert.match(html, /data-col="todo"><h4>To do<span data-col-count><span class="n-all">2<\/span><span class="n-mine">1<\/span>/);
-  assert.match(dashboardScript('/dashboard'), /tl-sprintmine/);
+  assert.match(html, /<li class="tk mine" data-key="ABC-1"/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /tl-sprintmine/);
+  assert.match(script, /if\(k==='sprint'\)smn\(\)/, 'the header count follows a refresh');
 });
 
 test('merge request panel: the pipeline and its stages on one row, the diff of each file below', () => {
@@ -391,13 +394,16 @@ test('merge request panel: the pipeline and its stages on one row, the diff of e
   ];
   const { html } = mrDetail({ mr, jobs: [{ stage: 'test', name: 'unit', status: 'running' }], diffs }, ctx);
   assert.match(html, /<span class="pipe-row"><span class="pipe">[\s\S]*?<\/span><span class="stages">/, 'stages sit next to the pipeline link');
-  assert.match(html, /<h3 class="dsub">Changes<\/h3><div class="diffs"><details class="dfile" open><summary><code>a\.js<\/code><span class="dstat"><span class="dadd">\+1<\/span><span class="ddel">−1<\/span>/);
-  assert.match(html, /<span class="dl dl-hunk">@@ -1,2 \+1,2 @@<\/span><span class="dl dl-del">-old &lt;b&gt;<\/span><span class="dl dl-add">\+new<\/span><span class="dl"> same<\/span><\/pre>/, 'escaped, one line each');
+  assert.match(html, /<h3 class="dsub">Changes <span class="dsum">3 files · <span class="dadd">\+2<\/span> <span class="ddel">−1<\/span>/, 'totals in the heading');
+  assert.match(html, /<select class="dsel" data-diff-sel aria-label="File"><option value="0">a\.js  \+1 −1<\/option><option value="1">big\.bin  \+0 −0<\/option><option value="2">n\.txt \(added\)  \+1 −0<\/option><\/select>/, 'one selector for the files');
+  assert.match(html, /data-diff-step="1"/);
+  assert.match(html, /<div class="dpane" data-diff-pane="0"><div class="dpath">/, 'the first file is shown');
+  assert.match(html, /data-diff-pane="1" hidden>/, 'the others wait');
+  assert.match(html, /<tr class="dl-hunk"><td class="ln"><\/td><td class="ln"><\/td><td class="dc">@@ -1,2 \+1,2 @@<\/td><\/tr><tr class="dl-del"><td class="ln">1<\/td><td class="ln"><\/td><td class="dc"><span class="dm">−<\/span>old &lt;b&gt;<\/td><\/tr><tr class="dl-add"><td class="ln"><\/td><td class="ln">1<\/td><td class="dc"><span class="dm">\+<\/span>new<\/td><\/tr><tr class="dl-ctx"><td class="ln">2<\/td><td class="ln">2<\/td>/, 'old and new line numbers, escaped');
   assert.match(html, /big\.bin[\s\S]*?too large or binary/);
-  assert.match(html, /n\.txt<\/code><span class="dtag">added<\/span>/);
   assert.equal(diffsSection(null), '', 'nothing when GitLab gave no diffs');
-  const many = Array.from({ length: 4 }, (_, i) => ({ new_path: `f${i}`, diff: '+a\n' }));
-  assert.doesNotMatch(diffsSection(many), /open>/, 'collapsed when there are many files');
+  assert.doesNotMatch(diffsSection([{ new_path: 'f', diff: '+a\n' }]), /data-diff-step/, 'no previous and next for one file');
+  assert.match(dashboardScript('/dashboard'), /data-diff-sel/);
 });
 
 test('the page script parses (a syntax error would leave the whole page inert)', () => {

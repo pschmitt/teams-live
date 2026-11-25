@@ -136,11 +136,37 @@ const MAX_DIFF_FILES = 100;
 const MAX_DIFF_LINES_PER_FILE = 1500;
 const MAX_DIFF_LINES = 8000;
 
-/** The file diffs of a merge request as collapsible, escaped blocks; '' when GitLab gave none. */
+/** One file's unified diff as rows with the old and new line numbers, like GitLab's inline view. */
+function diffRows(lines) {
+  let o = 0;
+  let n = 0;
+  return lines
+    .map((l) => {
+      const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+      if (h) {
+        o = Number(h[1]);
+        n = Number(h[2]);
+        return `<tr class="dl-hunk"><td class="ln"></td><td class="ln"></td><td class="dc">${escapeHtml(l)}</td></tr>`;
+      }
+      if (l.startsWith('\\')) return `<tr class="dl-meta"><td class="ln"></td><td class="ln"></td><td class="dc">${escapeHtml(l)}</td></tr>`;
+      const kind = l[0] === '+' ? 'add' : l[0] === '-' ? 'del' : 'ctx';
+      const ol = kind === 'add' ? '' : o++;
+      const nl = kind === 'del' ? '' : n++;
+      return `<tr class="dl-${kind}"><td class="ln">${ol}</td><td class="ln">${nl}</td><td class="dc"><span class="dm">${kind === 'add' ? '+' : kind === 'del' ? '−' : ' '}</span>${escapeHtml(l.slice(1)) || ' '}</td></tr>`;
+    })
+    .join('');
+}
+
+/**
+ * The file diffs of a merge request: a file selector on top (with the totals, previous and next) and the diff of
+ * the selected file below it. Everything escaped; '' when GitLab gave no diffs.
+ */
 export function diffsSection(diffs, url) {
   if (!Array.isArray(diffs)) return '';
   if (!diffs.length) return '<h3 class="dsub">Changes</h3><p class="note">No changes.</p>';
   let budget = MAX_DIFF_LINES;
+  let addAll = 0;
+  let delAll = 0;
   const files = diffs.slice(0, MAX_DIFF_FILES).map((f) => {
     const path = f.renamed_file && f.old_path !== f.new_path ? `${f.old_path} → ${f.new_path}` : f.new_path || f.old_path || '';
     const lines = String(f.diff || '').replace(/\n$/, '').split('\n');
@@ -150,25 +176,28 @@ export function diffsSection(diffs, url) {
       if (l.startsWith('+')) add++;
       else if (l.startsWith('-')) del++;
     }
+    addAll += add;
+    delAll += del;
     const tag = f.new_file ? 'added' : f.deleted_file ? 'deleted' : f.renamed_file ? 'renamed' : '';
-    const head = `<summary><code>${escapeHtml(path)}</code>${tag ? `<span class="dtag">${tag}</span>` : ''}<span class="dstat"><span class="dadd">+${add}</span><span class="ddel">−${del}</span></span></summary>`;
     let body;
     if (f.too_large || f.collapsed || (!f.diff && !f.new_file && !f.deleted_file)) body = '<p class="note dnote">This diff is too large or binary. See it in GitLab.</p>';
     else if (!f.diff) body = '<p class="note dnote">Empty file.</p>';
     else if (lines.length > MAX_DIFF_LINES_PER_FILE || lines.length > budget) body = '<p class="note dnote">Too long to show here. See it in GitLab.</p>';
     else {
       budget -= lines.length;
-      body = `<pre class="diff">${lines
-        .map((l) => {
-          const cls = l.startsWith('@@') ? 'dl-hunk' : l.startsWith('+') ? 'dl-add' : l.startsWith('-') ? 'dl-del' : l.startsWith('\\') ? 'dl-meta' : '';
-          return `<span class="dl${cls ? ` ${cls}` : ''}">${escapeHtml(l) || ' '}</span>`;
-        })
-        .join('')}</pre>`;
+      body = `<div class="diff-scroll"><table class="diff"><tbody>${diffRows(lines)}</tbody></table></div>`;
     }
-    return `<details class="dfile"${diffs.length <= 3 ? ' open' : ''}>${head}${body}</details>`;
+    return { path, tag, add, del, body };
   });
+  const label = (f) => `${f.path}${f.tag ? ` (${f.tag})` : ''}  +${f.add} −${f.del}`;
+  const select = `<select class="dsel" data-diff-sel aria-label="File">${files.map((f, i) => `<option value="${i}">${escapeHtml(label(f))}</option>`).join('')}</select>`;
+  const nav = files.length > 1 ? `<button type="button" class="tool" data-diff-step="-1" aria-label="Previous file" title="Previous file">‹</button><button type="button" class="tool" data-diff-step="1" aria-label="Next file" title="Next file">›</button>` : '';
+  const panes = files
+    .map((f, i) => `<div class="dpane" data-diff-pane="${i}"${i ? ' hidden' : ''}><div class="dpath"><span class="dpname">${escapeHtml(f.path)}</span>${f.tag ? `<span class="dtag">${f.tag}</span>` : ''}<span class="dstat"><span class="dadd">+${f.add}</span><span class="ddel">−${f.del}</span></span></div>${f.body}</div>`)
+    .join('');
   const more = diffs.length > MAX_DIFF_FILES ? `<p class="note">${diffs.length - MAX_DIFF_FILES} more file(s)${url ? ` in <a href="${escapeHtml(url)}/diffs" target="_blank" rel="noopener noreferrer">GitLab</a>` : ''}.</p>` : '';
-  return `<h3 class="dsub">Changes</h3><div class="diffs">${files.join('')}</div>${more}`;
+  const head = `<h3 class="dsub">Changes <span class="dsum">${diffs.length} file${diffs.length === 1 ? '' : 's'} · <span class="dadd">+${addAll}</span> <span class="ddel">−${delAll}</span></span></h3>`;
+  return `${head}<div class="diffs" data-diffs><div class="dbar">${select}${nav}</div>${panes}</div>${more}`;
 }
 
 /** Bot-made merge requests (Renovate, service accounts, dependency updates): the same rules as `/mrs`. */
@@ -334,8 +363,6 @@ export function sprintSection(state, ctx) {
   const total = counts.reduce((a, b) => a + b, 0) || 1;
   const bar = `<div class="sbar" role="img" aria-label="${counts[2]} in review, ${counts[1]} in progress, ${counts[0]} to do"><i class="s-rev" style="width:${((100 * counts[2]) / total).toFixed(1)}%"></i><i class="s-prog" style="width:${((100 * counts[1]) / total).toFixed(1)}%"></i></div>`;
   const legend = `<p class="slegend"><span><i class="s-rev"></i>${counts[2]} in review</span><span><i class="s-prog"></i>${counts[1]} in progress</span><span><i class="s-todo"></i>${counts[0]} to do</span></p>`;
-  const mineCount = all.filter((t) => me && lower(t.assignee) === me).length;
-  const chips = `<div class="chips" role="group" aria-label="Filter sprint tickets"><button type="button" class="toggle" data-sprintmine-toggle aria-pressed="false" title="Show only the tickets assigned to you">Only mine<span class="n">${mineCount}</span></button></div>`;
   const cols = SPRINT_COLUMNS.map(([k, label]) => {
     const tickets = (sprint[k] || []).map((t) => {
       const url = webLink(t.url);
@@ -346,7 +373,7 @@ export function sprintSection(state, ctx) {
     const mine = (sprint[k] || []).filter((t) => me && lower(t.assignee) === me).length;
     return `<div class="col" data-col="${k}"><h4>${label}<span data-col-count><span class="n-all">${tickets.length}</span><span class="n-mine">${mine}</span></span></h4><ul>${tickets.join('') || '<li class="none">Nothing here</li>'}</ul></div>`;
   }).join('');
-  return `${chips}${bar}${legend}<div class="board">${cols}</div>`;
+  return `${bar}${legend}<div class="board">${cols}</div>`;
 }
 
 const PRIORITY_ORDER = { P1: 1, P2: 2, P3: 3, P4: 4, P5: 5 };
@@ -918,9 +945,11 @@ export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }
   const events = notifyEvents(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
   const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}${short ? '' : ` title="${label}"`}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
+  // The sprint card's filter sits in its header; the page script keeps its count in step with the board.
+  const SPRINT_MINE_TOGGLE = '<button type="button" class="toggle chip-h" data-sprintmine-toggle aria-pressed="false" title="Show only the tickets assigned to you">Only mine<span class="n" data-sprintmine-n></span></button>';
   const box = ([k, title]) =>
     `<section class="box box-${k}" data-sec="${k}" aria-labelledby="h-${k}">` +
-    `<header><h2 id="h-${k}">${ICONS[k]}${title}</h2><span class="tools"><button type="button" class="tool" data-hide title="Hide this card" aria-label="Hide ${title}">${ICONS.hide}</button><button type="button" class="tool grip" data-grip title="Move with the arrow keys" aria-label="Move ${title}: arrow keys">${ICONS.grip}</button></span></header>` +
+    `<header><h2 id="h-${k}">${ICONS[k]}${title}</h2><span class="tools">${k === 'sprint' ? SPRINT_MINE_TOGGLE : ''}<button type="button" class="tool" data-hide title="Hide this card" aria-label="Hide ${title}">${ICONS.hide}</button><button type="button" class="tool grip" data-grip title="Move with the arrow keys" aria-label="Move ${title}: arrow keys">${ICONS.grip}</button></span></header>` +
     `<div class="box-body" data-sec-body="${k}">${s[k]}</div><span class="rs" data-resize title="Drag to resize (height, and the width against the next column); double-click to reset the height" aria-hidden="true"></span></section>`;
   const byKey = Object.fromEntries(SECTIONS.map((sec) => [sec[0], sec]));
   const layout = DEFAULT_LAYOUT.rows
@@ -1068,10 +1097,13 @@ export const DASHBOARD_CSS = [
   '.lbl{display:inline-block;font-size:.75rem;background:var(--subtle);border:1px solid var(--line);border-radius:999px;padding:0 .5rem;margin:0 .2rem .2rem 0}.drawer .sk{height:12px;border-radius:4px;background:var(--subtle);margin:.6rem 0}',
   '.tl-new{animation:tl-new 1.6s var(--ease)}@keyframes tl-new{0%,30%{background:var(--run-bg)}100%{background:transparent}}',
   '.btn-sm{padding:.2rem .6rem;font-size:.82rem;width:auto}.btn-sm .di{width:14px;height:14px}.btn-sm[data-busy]::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:tl-spin .7s linear infinite}.btn-sm[data-busy] .di{display:none}',
+  '.chip-h{font:inherit;font-size:.78rem;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:.1rem .6rem;cursor:pointer;display:inline-flex;gap:.35rem;align-items:center;margin-right:.35rem;transition:background .15s,color .15s,border-color .15s}.chip-h .n{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:600}.chip-h[aria-pressed=true],.chip-h[aria-pressed=true] .n{background:var(--run-bg);color:var(--run);border-color:var(--run)}',
   '.dash[data-sprintmine="1"] .board .tk:not(.mine){display:none}[data-col-count] .n-mine{display:none}.dash[data-sprintmine="1"] [data-col-count] .n-all{display:none}.dash[data-sprintmine="1"] [data-col-count] .n-mine{display:inline}',
-  '.diffs{display:grid;gap:.5rem}.dfile{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}.dfile summary{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;cursor:pointer;background:var(--subtle);font-size:.8rem;list-style-position:inside}.dfile summary code{font:.78rem var(--mono);overflow-wrap:anywhere;flex:1;min-width:0}',
+  '.diffs{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}.dbar{display:flex;gap:.3rem;align-items:center;padding:.4rem;background:var(--subtle);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1}.dsel{flex:1;min-width:0;font:.78rem var(--mono);color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.3rem .4rem}',
+  '.dpath{display:flex;align-items:center;gap:.5rem;padding:.4rem .6rem;border-bottom:1px solid var(--line);font-size:.8rem}.dpname{font:.78rem var(--mono);overflow-wrap:anywhere;flex:1;min-width:0}.dsum{text-transform:none;letter-spacing:0;font-weight:400;margin-left:.4rem;font-family:var(--mono)}',
   '.dtag{font-size:.7rem;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 .4rem}.dstat{display:inline-flex;gap:.4rem;font:.75rem var(--mono);flex:none}.dadd{color:var(--ok)}.ddel{color:var(--closed)}.dnote{margin:0;padding:.5rem .7rem}',
-  '.diff{margin:0;overflow:auto;font:.74rem/1.5 var(--mono);max-height:70vh}.dl{display:block;white-space:pre;padding:0 .6rem;min-width:max-content}.dl-add{background:var(--ok-bg)}.dl-del{background:var(--closed-bg)}.dl-hunk{color:var(--muted);background:var(--subtle)}.dl-meta{color:var(--muted)}',
+  '.diff-scroll{overflow:auto;max-height:70vh}.diff{border-collapse:collapse;font:.74rem/1.5 var(--mono);min-width:100%}.diff td{padding:0 .5rem;vertical-align:top}.diff .ln{color:var(--muted);text-align:right;user-select:none;width:1%;white-space:nowrap;border-right:1px solid var(--line)}.diff .dc{white-space:pre}.diff .dm{display:inline-block;width:1.1em;color:var(--muted);user-select:none}',
+  '.dl-add td{background:var(--ok-bg)}.dl-del td{background:var(--closed-bg)}.dl-hunk td{color:var(--muted);background:var(--subtle)}.dl-meta td{color:var(--muted)}',
   '.mrlist .empty{display:none}.dash[data-nodraft="1"] .mrrow[data-f~=draft]{display:none}.chips-sep{flex:1}',
   '.chips .toggle[aria-pressed=true]{background:var(--run-bg);color:var(--run);border-color:var(--run)}',
   '.dash[data-mrf=review] .mrrow:not([data-f~=review]),.dash[data-mrf=mine] .mrrow:not([data-f~=mine]),.dash[data-mrf=human] .mrrow:not([data-f~=human]),.dash[data-mrf=bots] .mrrow:not([data-f~=bots]){display:none}',
@@ -1127,9 +1159,12 @@ export function dashboardScript(dashPath) {
   const B = JSON.stringify(dashPath);
   return `(function(){var B=${B},d=document.getElementById('dash');if(!d)return;var csrf=document.getElementById('dash-csrf'),busy=0;
 function theme(t){var root=document.documentElement,sec=location.protocol==='https:'?'; Secure':'';if(t==='light'||t==='dark'){root.setAttribute('data-theme',t);document.cookie='tl_theme='+t+'; Path=/; Max-Age=31536000; SameSite=Lax'+sec}else{root.removeAttribute('data-theme');document.cookie='tl_theme=; Path=/; Max-Age=0; SameSite=Lax'+sec}document.querySelectorAll('[data-theme-set]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-theme-set')===(t==='light'||t==='dark'?t:'auto')))})}
+function diffShow(box,i){var ps=box.querySelectorAll('[data-diff-pane]');if(!ps.length)return;i=(i+ps.length)%ps.length;ps.forEach(function(p,k){p.hidden=k!==i});var s=box.querySelector('[data-diff-sel]');if(s)s.value=String(i)}
+document.addEventListener('change',function(e){var s=e.target.closest&&e.target.closest('[data-diff-sel]');if(s)diffShow(s.closest('[data-diffs]'),Number(s.value))});
+function smn(){var c=d.querySelectorAll('.board .tk.mine').length;document.querySelectorAll('[data-sprintmine-n]').forEach(function(n){n.textContent=c})}
 function sprintmine(on){d.setAttribute('data-sprintmine',on?'1':'0');try{localStorage.setItem('tl-sprintmine',on?'1':'0')}catch(e){}mark()}
 function nodraft(on){d.setAttribute('data-nodraft',on?'1':'0');try{localStorage.setItem('tl-nodraft',on?'1':'0')}catch(e){}mark()}
-function mark(){document.querySelectorAll('[data-nodraft-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-nodraft')==='1'))});document.querySelectorAll('[data-sprintmine-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-sprintmine')==='1'))});var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
+function mark(){document.querySelectorAll('[data-nodraft-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-nodraft')==='1'))});document.querySelectorAll('[data-sprintmine-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-sprintmine')==='1'))});smn();var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
 function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e=document.createElement('div');e.className='toast';e.textContent=t;r.appendChild(e);setTimeout(function(){e.classList.add('out');setTimeout(function(){e.remove()},320)},3600)}
 function view(v){d.setAttribute('data-view',v);mark();document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')});try{sessionStorage.setItem('tl-view',v)}catch(e){}if(!rbusy&&dr&&!dr.hidden){rbusy=true;closeDetail();rbusy=false}route();window.scrollTo({top:0,behavior:'smooth'})}
 var tk=null;
@@ -1202,11 +1237,11 @@ function unroute(){if(rbusy)return;try{history.replaceState(null,'',location.pat
 function apply(){var m=ROUTE.exec(location.hash);if(!m)return false;rbusy=true;try{var q=new URLSearchParams(m[2]||''),f=q.get('f');if(f&&/^[a-z]+$/.test(f)&&d.querySelector('[data-mrf-to="'+f+'"]')){d.setAttribute('data-mrf',f);try{sessionStorage.setItem('tl-mrf',f)}catch(e){}}if(d.getAttribute('data-view')!==m[1])view(m[1]);else mark();var o=null;['mr','issue','alert'].forEach(function(k){var x=q.get(k);if(x&&!o)o=[k,x]});if(!o)closeDetail();else if(!dkey||dr.hidden||dkey[0]!==o[0]||dkey[1]!==o[1]){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1].replace(/["\\\\]/g,''))+'"]');if(el)openDetail(el);else closeDetail()}dpush=false}finally{rbusy=false}unroute();return true}
 if(!apply())unroute();window.addEventListener('popstate',apply);window.addEventListener('hashchange',apply);mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
-document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
+document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var ds=e.target.closest('[data-diff-step]');if(ds){var bx=ds.closest('[data-diffs]'),sl=bx.querySelector('[data-diff-sel]');diffShow(bx,Number(sl.value)+Number(ds.getAttribute('data-diff-step')));return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-sprintmine-toggle]')){sprintmine(d.getAttribute('data-sprintmine')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}route();return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;if(!online()){toast('You are offline. Approve again once you are back online.');return}b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}
-function refresh(){if((document.hidden&&!(non()&&!npush))||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){nc=!!r.headers.get('X-TL-From-Cache');net(!nc&&r.status!==503);if(r.status===401){forget();var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;if(x.events&&!nc)nupdate(x.events);var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){net(false)}).then(function(){if(rb)rb.classList.remove('busy')})}
+function refresh(){if((document.hidden&&!(non()&&!npush))||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){nc=!!r.headers.get('X-TL-From-Cache');net(!nc&&r.status!==503);if(r.status===401){forget();var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;if(x.events&&!nc)nupdate(x.events);var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(k==='sprint')smn();if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){net(false)}).then(function(){if(rb)rb.classList.remove('busy')})}
 var pal=document.querySelector('[data-palette]'),pin=pal&&pal.querySelector('[data-pal-in]'),plist=pal&&pal.querySelector('[data-pal-list]'),pall=[],pshow=[],psel=0,plast=null;
 function palItems(){var it=[];[['overview','Overview'],['mrs','Merge requests'],['sprint','Sprint'],['alerts','Alerts'],['meetings','Meetings'],['settings','Settings']].forEach(function(v){it.push({g:'Go to',i:v[0],t:v[1],run:function(){view(v[0])}})});
 it.push({g:'Actions',i:'refresh',t:'Refresh now',run:function(){refresh()}});it.push({g:'Actions',i:'bell',t:(non()?'Turn off':'Turn on')+' desktop notifications',run:function(){nmaster(!non())}});it.push({g:'Actions',i:'edit',t:editing()?'Finish customizing the layout':'Customize the layout',run:function(){setEdit(!editing())}});it.push({g:'Actions',i:'collapse',t:(d.classList.contains('collapsed')?'Expand':'Collapse')+' the sidebar',run:function(){collapse(!d.classList.contains('collapsed'))}});it.push({g:'Actions',i:'hide',t:(d.getAttribute('data-nodraft')==='1'?'Show':'Hide')+' draft merge requests',run:function(){nodraft(d.getAttribute('data-nodraft')!=='1')}});it.push({g:'Actions',i:'undo',t:'Reset the layout',run:function(){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset')}});

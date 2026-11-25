@@ -715,24 +715,19 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
       '</span>'
     : '<span class="note">No pipeline</span>';
   const branch = (b) => `<code>${escapeHtml(b)}</code>`;
+  const mergeText = MERGE_TEXT[String(mr.detailed_merge_status || '').toLowerCase()] || String(mr.detailed_merge_status || '').replace(/_/g, ' ');
   const html =
     '<div class="dmeta">' +
     facts([
-      ['Status', `<span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? ' <span class="pill pill-draft">Draft</span>' : ''}`],
+      ['Status', `<span class="dstate"><span class="pill pill-${tone === 'merged' ? 'merged' : tone}">${escapeHtml(stateText)}</span>${draft ? '<span class="pill pill-draft">Draft</span>' : ''}${mergeText && mr.state === 'opened' ? `<span class="note">${escapeHtml(mergeText)}</span>` : ''}</span>`],
       ['Repo', !project ? '' : projectUrl ? `<a class="dref" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(project)}</a>` : `<span class="dref">${escapeHtml(project)}</span>`],
       ['Branches', `${branch(mr.source_branch)} → ${branch(mr.target_branch)}`],
       ['Author', person(mr.author)],
-      ['Reviewers', (mr.reviewers || []).map(person).join(' ')],
-      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}</span>`],
+      ['Approvals', `<span class="appr-line">${badge}${approvedBy.length ? `<span class="note">by ${approvedBy.map((u) => escapeHtml(u.name || u.username)).join(', ')}</span>` : ''}${approve}</span>`],
       ['Pipeline', pipeline],
-      ['Merge status', escapeHtml(MERGE_TEXT[String(mr.detailed_merge_status || '').toLowerCase()] || String(mr.detailed_merge_status || '').replace(/_/g, ' '))],
-      ['Changes', mr.changes_count ? escapeHtml(`${mr.changes_count} file(s)`) : ''],
-      ['Labels', (mr.labels || []).map((l) => `<span class="lbl">${escapeHtml(l)}</span>`).join(' ')],
-      ['Created', escapeHtml(when(mr.created_at, ctx))],
-      ['Updated', escapeHtml(when(mr.updated_at, ctx))],
+      ['Created', escapeHtml(`${when(mr.created_at, ctx)}${mr.updated_at && mr.updated_at !== mr.created_at ? ` · updated ${ago(mr.updated_at, ctx.now)}` : ''}`)],
       openRow(url, 'Open in GitLab', 'gitlab'),
     ]) +
-    (approve ? `<p class="dactions">${approve}</p>` : '') +
     '</div>' +
     (mr.description && mr.description.trim() ? `<div class="dtext rich">${markdownToHtml(clip(mr.description, 20000))}</div>` : '<p class="note">No description.</p>') +
     diffsSection(diffs, url);
@@ -1089,7 +1084,7 @@ export const DASHBOARD_CSS = [
   '.dtext{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.88rem;line-height:1.55;background:var(--subtle);border:1px solid var(--line);border-radius:6px;padding:.75rem .85rem}.drawer-body{scrollbar-width:none}.drawer-body::-webkit-scrollbar{display:none}.dsub{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:1.1rem 0 .5rem}',
   '.dref{font:.82rem var(--mono);color:var(--muted)}a.dref:hover{color:var(--text)}.dlink{display:inline-flex;align-items:center;gap:.3rem}.dlink svg{width:14px;height:14px}.dlink .dlogo{width:16px;height:16px;flex:none}.who{display:inline-flex;align-items:center;margin-right:.6rem}.who .av{width:18px;height:18px}',
   '.pipe{display:inline-flex;gap:.4rem;align-items:center}.pipe-row{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center}.stages{display:flex;flex-wrap:wrap;gap:.3rem}.stage{display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem .05rem .25rem;background:var(--subtle)}.appr-line{display:inline-flex;flex-wrap:wrap;gap:.5rem;align-items:center}',
-  '.dactions{margin:0 0 1rem}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
+  '.dactions{margin:0 0 1rem}.dstate{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center}.appr-line [data-approve]{margin-left:auto}.rich hr{border:0;border-top:1px solid var(--line);margin:.75rem 0}.mrrow[data-mr]{cursor:pointer}.mrrow[data-mr]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
   '.dtext.rich{white-space:normal;max-height:none;overflow:visible}.rich>:first-child{margin-top:0}.rich>:last-child{margin-bottom:0}.rich p{margin:.5rem 0}.rich h3,.rich h4,.rich h5,.rich h6{margin:1rem 0 .35rem;font-size:.92rem;font-weight:700}.rich h3{font-size:1rem}.rich ul,.rich ol{margin:.35rem 0;padding-left:1.3rem}.rich li{margin:.15rem 0}',
   '.rich code{font:.85em var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:0 .25rem}.rich pre{font:.8rem/1.45 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.6rem .75rem;overflow:auto;white-space:pre}.rich blockquote{margin:.5rem 0;padding:.1rem .75rem;border-left:3px solid var(--line-strong);color:var(--muted)}',
   '.rich .tbl{overflow-x:auto}.rich table{border-collapse:collapse;font-size:.82rem;margin:.5rem 0}.rich th,.rich td{border:1px solid var(--line);padding:.25rem .5rem;text-align:left;vertical-align:top}.rich th{background:var(--panel)}.rich a{overflow-wrap:anywhere}',

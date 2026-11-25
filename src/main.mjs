@@ -55,6 +55,15 @@ function dashboardSources({ jira, opsgenie, hrworks }) {
         }
       : null,
     // The tickets a merge request names in its branch or title (the same rules as the cards).
+    // The merge requests a ticket links explicitly in Jira (remote links to GitLab merge requests).
+    issueLinks: jira.isConfigured()
+      ? async (key) => {
+          const links = (await jira.request(`rest/api/2/issue/${encodeURIComponent(key)}/remotelink`, { resource: true })) || [];
+          return (Array.isArray(links) ? links : [])
+            .map((l) => ({ url: String(l.object?.url || ''), title: String(l.object?.title || '') }))
+            .filter((l) => /\/-\/merge_requests\/\d+/.test(l.url));
+        }
+      : null,
     issueKeys: jira.isConfigured() ? (mr) => jira.findAssociatedIssues({ title: mr.title, source_branch: mr.source, author: mr.author }).map((i) => i.key) : null,
     alert: opsgenie.isConfigured() ? (id) => opsgenie.getAlert(id) : null,
     // Moves a sprint ticket to a board column with the Jira transition that leads there: the target status's

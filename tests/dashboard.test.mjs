@@ -723,6 +723,50 @@ test('mobile: Team leave keeps the people pinned while scrolling; tickets move o
   assert.match(script, /addEventListener\('touchmove',function\(e\)\{if\(tk&&tk\.touch&&tk\.armed\)e\.preventDefault\(\)\},\{passive:false\}\)/, 'an armed ticket does not scroll the page');
 });
 
+test('a ticket panel lists its merge requests: on the dashboard, found in GitLab, or linked in Jira', async () => {
+  const sources = {
+    sprint: async () => ({ todo: [{ key: 'ABC-1', summary: 'Ticket', status: 'Open', assignee: 'Alice Example' }] }),
+    issue: async (key) => ({ key, summary: 'Ticket', status: 'Open', url: 'https://jira.example.com/browse/ABC-1' }),
+    issueKeys: () => ['ABC-1'],
+    issueLinks: async () => [{ url: `https://${GL}/group/other/-/merge_requests/3`, title: 'Linked in Jira' }],
+  };
+  await withDashboard({ sources }, async ({ base, seen }) => {
+    const { cookie } = await signIn(base);
+    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+    const mock = globalThis.fetch;
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url).includes('/api/v4/groups/group/merge_requests?')) {
+        seen.push({ url: String(url), options });
+        return Response.json([
+          { iid: 5, title: 'ABC-1: done before', description: '', source_branch: 'x', references: { full: 'group/app!5' }, web_url: `https://${GL}/group/app/-/merge_requests/5`, state: 'merged' },
+          { iid: 6, title: 'unrelated ABC-12', description: '', source_branch: 'y', references: { full: 'group/app!6' }, web_url: `https://${GL}/group/app/-/merge_requests/6`, state: 'opened' },
+          { iid: 7, title: 'Example change', description: 'Fixes ABC-1', source_branch: 'feature', references: { full: 'group/app!7' }, web_url: `https://${GL}/group/app/-/merge_requests/7`, state: 'opened' },
+        ]);
+      }
+      return mock(url, options);
+    };
+    const d = await (await fetch(`${base}/approve/dashboard/issue?key=ABC-1`, { headers: { Cookie: cookie } })).json();
+    assert.match(d.html, /<h3 class="dsub">Merge requests<\/h3><ul class="dmrs">/);
+    assert.match(d.html, /<button type="button" class="dmr" data-mr="group\/app!7"[^>]*><span class="pill pill-ok">Open<\/span><code>group\/app!7<\/code>/, 'the listed one opens its panel');
+    assert.match(d.html, /<a class="dmr" href="https:\/\/git\.example\.com\/group\/app\/-\/merge_requests\/5"[^>]*><span class="pill pill-merged">Merged<\/span><code>group\/app!5<\/code><span class="t">ABC-1: done before<\/span>/);
+    assert.match(d.html, /<span class="pill pill-idle">Linked<\/span><code>group\/other!3<\/code><span class="t">Linked in Jira<\/span>/);
+    assert.doesNotMatch(d.html, /group\/app!6/, 'ABC-12 is not ABC-1');
+    assert.equal((d.html.match(/group\/app!7<\/code>/g) || []).length, 1, 'one entry per merge request');
+    const search = seen.find((c) => c.url.includes('/groups/group/merge_requests?'));
+    assert.equal(search.options.headers.Authorization, 'Bearer tok', 'searched with the visitor\'s token');
+  });
+  assert.match(dashboardScript('/dashboard'), /var mb=e\.target\.closest\('button\[data-mr\]'\);if\(mb\)\{openDetail\(mb\)/);
+});
+
+test('the ticket panel header is compact: status with type and priority, people in one row, dates in one row', () => {
+  const ctx = { avatars: {}, now: Date.parse('2026-11-25T10:00:00Z'), timeZone: 'UTC' };
+  const html = issueDetail({ key: 'ABC-1', summary: 's', status: 'In Progress', statusCategory: 'indeterminate', issueType: 'Story', priority: 'High', assignee: 'Alice Example', reporter: 'Bob Example', created: '2026-11-20T10:00:00Z', updated: '2026-11-25T09:00:00Z', url: 'https://jira.example.com/browse/ABC-1' }, ctx).html;
+  assert.match(html, /<dt>Status<\/dt><dd><span class="dstate"><span class="pill pill-run">In Progress<\/span><span class="note">Story<\/span><span class="note">High priority<\/span><\/span>/);
+  assert.match(html, /<dt>Assignee<\/dt><dd><span class="dstate"><span class="who"><button[^>]*data-person="Alice Example"[\s\S]*?<span class="note">reported by<\/span><span class="who"><button[^>]*data-person="Bob Example"/);
+  assert.match(html, /<dt>Created<\/dt><dd>[^<]*· updated [^<]+<\/dd>/);
+  assert.doesNotMatch(html, /<dt>(Type|Priority|Reporter|Updated)<\/dt>/, 'no separate rows any more');
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

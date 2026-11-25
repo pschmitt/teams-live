@@ -69,7 +69,7 @@ import { FAVICON } from './favicon.mjs';
 /** The page footer: just the project on GitHub. */
 const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer>`;
 import { ICON_192, ICON_512 } from './pwa-icons.mjs';
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardPeople, personDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardPeople, personDetail, searchIssueMrs, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
 import { generateVapidKeys, parseSubscription, sendPush, validVapidKeys } from './webpush.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
@@ -2036,8 +2036,11 @@ export class ApproveServer {
       listed = (data) => (data.alerts.data?.alerts || []).some((a) => a.id === id);
       if (!/^[A-Za-z0-9-]{1,80}$/.test(id)) return this.json(res, 404, {});
     }
-    if (!(await this.dashboardDataFor(session, listed))) return this.json(res, 404, {});
+    const data = await this.dashboardDataFor(session, listed);
+    if (!data) return this.json(res, 404, {});
     const t1 = performance.now();
+    // A ticket's merge requests are read alongside it (the ticket itself is not held up by them for long).
+    const mrsRead = kind === 'issue' ? this.issueMrs(session, data, id) : Promise.resolve([]);
     const fn = this.dashboard.sources?.[kind];
     if (typeof fn !== 'function') return this.json(res, 404, {});
     const cacheKey = `${kind}:${id}`;
@@ -2057,8 +2060,11 @@ export class ApproveServer {
       await this.warmBriefly(names);
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
-      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars };
-      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, kind) });
+      const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost };
+      let timer;
+      const mrs = await Promise.race([mrsRead, new Promise((resolve) => { timer = setTimeout(() => resolve([]), 4_000); timer.unref?.(); })]).catch(() => []);
+      clearTimeout(timer);
+      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx, mrs) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, kind) });
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2118,6 +2124,40 @@ export class ApproveServer {
       }
     };
     for (let i = 0; i < 3; i++) void worker();
+  }
+
+  /**
+   * The merge requests of a Jira ticket: the dashboard's open ones that name it (title or branch), the group's merge
+   * requests that carry the key (any state, read with the visitor's token) and the ones Jira links explicitly. One
+   * entry per merge request, open ones first; those on the dashboard open their own panel. Cached for a minute.
+   */
+  async issueMrs(session, data, key) {
+    const cacheKey = `issuemrs:${sha256Hex(session.sid)}:${key}`;
+    const now = this.now();
+    const hit = this.dashSourceCache.get(cacheKey);
+    if (hit && now - hit.at < 60_000) return hit.promise;
+    const promise = (async () => {
+      const listed = (data.mrs.items || []).filter((mr) => (mr.issues || []).includes(key));
+      const [found, links] = await Promise.all([
+        searchIssueMrs(this.gitlabHost, session.accessToken, this.dashboard.group, key).catch(() => []),
+        Promise.resolve().then(() => this.dashboard.sources?.issueLinks?.(key) || []).catch(() => []),
+      ]);
+      const byUrl = new Map();
+      const norm = (u) => String(u || '').toLowerCase().replace(/[#?].*$/, '').replace(/\/+$/, '');
+      const put = (mr) => { const k = norm(mr.url); if (k && !byUrl.has(k)) byUrl.set(k, mr); };
+      for (const mr of listed) put({ ref: `${mr.project}!${mr.iid}`, project: mr.project, iid: mr.iid, title: mr.title, url: mr.url, state: 'opened', draft: mr.draft, listed: true });
+      for (const mr of found) put(mr);
+      for (const l of links) {
+        const m = /^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(l.url);
+        put({ ref: m ? `${m[1]}!${m[2]}` : '', title: l.title, url: l.url, state: '' });
+      }
+      const order = { opened: 0, locked: 1, merged: 2, closed: 3, '': 4 };
+      return [...byUrl.values()].sort((a, b) => (order[a.state] ?? 4) - (order[b.state] ?? 4) || Number(b.iid || 0) - Number(a.iid || 0)).slice(0, 15);
+    })();
+    const entry = { at: now, promise };
+    this.dashSourceCache.set(cacheKey, entry);
+    promise.catch(() => { if (this.dashSourceCache.get(cacheKey) === entry) this.dashSourceCache.delete(cacheKey); });
+    return promise;
   }
 
   /** Remembers the people a detail panel showed this visitor, so their names open the person panel too. */

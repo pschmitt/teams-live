@@ -393,6 +393,7 @@ async function main() {
         recordApprover: (project, iid, user) => watcher.recordWebApprover(project, iid, user),
         stateFile: path.join(config.gitlab.state_dir, 'approve-links.json'),
         dashSessionFile: path.join(config.gitlab.state_dir, 'dashboard-sessions.json'),
+        pushFile: path.join(config.gitlab.state_dir, 'dashboard-push.json'),
         refreshCards: (project, iid) => watcher.refreshMrCards(project, iid),
         locateCard: (project, iid) => watcher.mrCardMessage(project, iid),
         geoip,
@@ -403,6 +404,7 @@ async function main() {
               group: config.gitlab.group,
               path: apCfg.dashboard.path,
               timeZone: apCfg.dashboard.time_zone,
+              push: apCfg.dashboard.push,
               sources: dashboardSources({ jira, opsgenie }),
             }
           : null,

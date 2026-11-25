@@ -69,7 +69,8 @@ import { FAVICON } from './favicon.mjs';
 /** The page footer: just the project on GitHub. */
 const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer">${GITHUB_MARK}teams-live on GitHub</a></footer>`;
 import { ICON_192, ICON_512 } from './pwa-icons.mjs';
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, renderSections } from './dashboard.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
+import { generateVapidKeys, parseSubscription, sendPush, validVapidKeys } from './webpush.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('approve');
@@ -115,6 +116,13 @@ const MAX_DASH_SESSIONS = 200;
 const DASH_DATA_CACHE_MS = 20_000;
 const DASH_SOURCE_CACHE_MS = 60_000;
 const DASH_SOURCES = { sprint: 'Jira', alerts: 'OpsGenie', meetings: 'the calendar' };
+// Push notifications: how often the server looks for new events of the subscribed browsers, how many browsers
+// one person and everyone together may subscribe, how long a seen event is remembered after it disappeared.
+const PUSH_POLL_MS = 60_000;
+const MAX_PUSH_SUBS_PER_USER = 10;
+const MAX_PUSH_SUBS = 500;
+const PUSH_SEEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PUSH_BURST = 4;
 
 // Page copy per kind of link. `generic` is the entry page, which does not know
 // the action yet (the token that says so is still in the fragment).
@@ -620,6 +628,7 @@ export class ApproveServer {
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     dashboard = null,
     dashSessionFile = null,
+    pushFile = null,
   } = {}) {
     if (!gitlab) throw new Error('approve: a GitLab client is required');
     let base;
@@ -696,7 +705,7 @@ export class ApproveServer {
     // The dashboard: on only with GitLab sign-in and a group whose members may see it.
     // `sources` are the bot's own readers: {sprint, alerts, meetings}, each () => Promise.
     this.dashboard = dashboard?.enable && dashboard.group && this.oauth
-      ? { group: String(dashboard.group), sources: dashboard.sources || {}, timeZone: dashboard.timeZone || 'Europe/Berlin' }
+      ? { group: String(dashboard.group), sources: dashboard.sources || {}, timeZone: dashboard.timeZone || 'Europe/Berlin', push: dashboard.push !== false }
       : null;
     // Where the dashboard is served: its own public path on the same host (e.g. `/dashboard`) or below the base path.
     const ownPath = typeof dashboard?.path === 'string' ? dashboard.path.trim().replace(/\/+$/, '') : '';
@@ -706,6 +715,12 @@ export class ApproveServer {
     // Dashboard sessions survive a restart: kept in this file, encrypted with a key derived from the OAuth secret.
     this.dashSessionFile = this.dashboard && dashSessionFile ? String(dashSessionFile) : null;
     this.loadDashSessions();
+    // Push notifications (Web Push): the VAPID key pair and the browsers' subscriptions, kept in this file,
+    // encrypted like the sessions. Each subscription belongs to the dashboard session that made it.
+    this.pushFile = this.dashboard?.push && pushFile ? String(pushFile) : null;
+    this.vapid = null;
+    this.pushSubs = new Map();
+    this.loadPush();
     this.dashData = new Map();
     this.dashSourceCache = new Map();
     this.dashboardScript = dashboardScript(this.dashPath);
@@ -782,6 +797,10 @@ export class ApproveServer {
       srv.once('error', reject);
       srv.listen(this.port, this.host, () => {
         this.server = srv;
+        if (this.vapid && !this.pushTimer) {
+          this.pushTimer = setInterval(() => this.pushTick().catch((err) => log(`Push round failed: ${err.message}`)), PUSH_POLL_MS);
+          this.pushTimer.unref?.();
+        }
         this.port = srv.address().port;
         log(`Approval flow listening on http://${this.host}:${this.port}`);
         resolve();
@@ -790,6 +809,8 @@ export class ApproveServer {
   }
 
   stop() {
+    if (this.pushTimer) clearInterval(this.pushTimer);
+    this.pushTimer = null;
     if (!this.server) return Promise.resolve();
     return new Promise((resolve) => {
       this.server.close(() => {
@@ -813,8 +834,9 @@ export class ApproveServer {
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'same-origin',
       'Cross-Origin-Opener-Policy': 'same-origin',
-      // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched.
-      'Content-Security-Policy': `default-src 'none'; img-src data:; style-src 'unsafe-inline'; ${script === 'dashboard' ? "manifest-src 'self'; worker-src 'self'; " : ''}${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : script === 'dashboard' ? this.dashboardHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
+      // img-src data: only: the pictures are embedded (card icons, profile pictures), never fetched. The dashboard
+      // also loads its own app icon (home screen, desktop notifications).
+      'Content-Security-Policy': `default-src 'none'; img-src data:${script === 'dashboard' ? " 'self'" : ''}; style-src 'unsafe-inline'; ${script === 'dashboard' ? "manifest-src 'self'; worker-src 'self'; " : ''}${script ? `script-src '${script === 'live' ? this.liveHash : script === 'batch' ? this.batchApprovalHash : script === 'open-all' ? this.openAllHash : script === 'open-bootstrap' ? this.openBootstrapHash : script === 'dashboard' ? this.dashboardHash : this.scriptHash}'; connect-src 'self'; ` : ''}form-action ${this.origin}; frame-ancestors 'none'; base-uri 'none'`,
       ...extra,
     };
   }
@@ -848,7 +870,7 @@ export class ApproveServer {
     const theme = this.requestContext.getStore()?.theme || '';
     let avatar = '';
     try { if (user) avatar = this.avatarOf?.(user.name || user.username) || ''; } catch { /* Fall back to initials. */ }
-    const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">${MENU_ICONS.dashboard}Dashboard</a>` : ''}${menu}`;
+    const items = `${this.dashboard && dashLink ? `<a class="menu-item" href="${escapeHtml(this.dashPath)}">${MENU_ICONS.dashboard}Dashboard</a>` : ''}${this.dashboard ? `<a class="menu-item" href="${escapeHtml(`${this.dashPath}#settings`)}" data-view-to="settings">${MENU_ICONS.settings}Settings</a>` : ''}${menu}`;
     const account = user ? headerAccount(user, this.gitlabHost, avatar, items) : '';
     return `<!doctype html><html lang="en"${theme ? ` data-theme="${theme}"` : ''}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="${theme || 'light dark'}"><meta name="robots" content="noindex"><meta name="referrer" content="same-origin"><link rel="icon" type="image/png" href="${FAVICON}">${head}<title>${escapeHtml(title)} · teams-live</title><style>${PAGE_CSS}${css}</style></head><body><header class="${shell.replace(/\bshell\b/, 'brand')}"><div class="in">${this.dashboard ? `<a class="home" href="${escapeHtml(`${this.dashPath}#overview`)}" data-home aria-label="teams-live dashboard">${TANUKI}<span class="word">teams-live</span></a>` : `${TANUKI}<span class="word">teams-live</span>`}<span class="sep" aria-hidden="true">/</span><span class="kicker">${kicker}</span>${live ? '<span class="live-dot" title="This page keeps itself up to date"><i></i>Live</span>' : ''}${actions}${account}</div></header><div class="${shell}">${main}${footer ? FOOTER : ''}</div></body></html>`;
   }
@@ -872,12 +894,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/signin', '/signout', '/issue', '/alert', '/mr', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1444,13 +1466,14 @@ export class ApproveServer {
     // Due: refused by GitLab (0) or close to its expiry. A token without a known expiry is used until refused.
     const due = s.tokenExpiresAt === 0 || (s.tokenExpiresAt != null && s.tokenExpiresAt - DASH_TOKEN_MARGIN_MS <= this.now());
     if (!due) return session;
-    const key = sha256Hex(session.sid);
+    const key = session.key || sha256Hex(session.sid);
     if (!s.refreshing) {
       s.refreshing = this.renewDashToken(s)
         .catch((err) => {
           log(`Dashboard session of ${s.user.username} ended: ${err.message}`);
           this.dashSessions.delete(key);
           this.dashData.delete(key);
+          this.dropPushSubs((sub) => sub.session === key);
           return false;
         })
         .finally(() => {
@@ -1519,6 +1542,176 @@ export class ApproveServer {
     }
   }
 
+  // --- push notifications ---
+
+  pushKey() {
+    return crypto.createHmac('sha256', 'teams-live dashboard push').update(this.oauth.clientSecret).digest();
+  }
+
+  /** Reads the VAPID keys and subscriptions; without a readable file (first start, another key) new keys are made. */
+  loadPush() {
+    if (!this.pushFile) return;
+    try {
+      const box = JSON.parse(fs.readFileSync(this.pushFile, 'utf8'));
+      const decipher = crypto.createDecipheriv('aes-256-gcm', this.pushKey(), Buffer.from(box.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(box.tag, 'base64'));
+      const state = JSON.parse(Buffer.concat([decipher.update(Buffer.from(box.data, 'base64')), decipher.final()]).toString('utf8'));
+      if (validVapidKeys(state.vapid)) this.vapid = { publicKey: state.vapid.publicKey, privateKey: state.vapid.privateKey };
+      for (const sub of Array.isArray(state.subs) && this.vapid ? state.subs : []) {
+        const parsed = parseSubscription(sub);
+        if (parsed && typeof sub.session === 'string' && this.dashSessions.has(sub.session)) {
+          this.pushSubs.set(parsed.endpoint, { ...parsed, session: sub.session, username: String(sub.username || ''), settings: normalizeNotifySettings(sub.settings), seen: sub.seen && typeof sub.seen === 'object' ? sub.seen : null, fired: sub.fired && typeof sub.fired === 'object' ? sub.fired : {} });
+        }
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') log(`Saved push subscriptions not used: ${err.message}`);
+    }
+    if (!this.vapid) {
+      this.vapid = generateVapidKeys();
+      this.pushSubs.clear();
+      this.savePush();
+    }
+  }
+
+  /** Writes the keys and subscriptions (encrypted, mode 0600, replaced atomically). Best effort. */
+  savePush() {
+    if (!this.pushFile || !this.vapid) return;
+    try {
+      const subs = [...this.pushSubs.values()].map((s) => ({ endpoint: s.endpoint, keys: s.keys, session: s.session, username: s.username, settings: s.settings, seen: s.seen, fired: s.fired }));
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', this.pushKey(), iv);
+      const data = Buffer.concat([cipher.update(JSON.stringify({ vapid: this.vapid, subs }), 'utf8'), cipher.final()]);
+      const tmp = `${this.pushFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') }), { mode: 0o600 });
+      fs.renameSync(tmp, this.pushFile);
+    } catch (err) {
+      log(`Could not save the push subscriptions: ${err.message}`);
+    }
+  }
+
+  dropPushSubs(match) {
+    let changed = false;
+    for (const [endpoint, sub] of this.pushSubs) {
+      if (match(sub)) {
+        this.pushSubs.delete(endpoint);
+        changed = true;
+      }
+    }
+    if (changed) this.savePush();
+  }
+
+  /** Who signs the push messages: the dashboard's https origin, or a placeholder address on a plain-http test setup. */
+  pushSubject() {
+    return this.origin.startsWith('https:') ? this.origin : 'mailto:teams-live@localhost';
+  }
+
+  /**
+   * POST <dash>/push: saves (action=save) or forgets (action=remove) this browser's push subscription with its
+   * notification settings. Same checks as the other writes: Origin and CSRF. Answers `{status: ok|failed}`.
+   */
+  async dashboardPush(req, res, session) {
+    const answer = (status, code = 200) => this.json(res, code, { status });
+    if (!this.vapid) return answer('failed', 404);
+    if (!this.originAllowed(req)) return answer('failed', 403);
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return answer('failed', parsed.status);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) return answer('failed', 403);
+    const sub = parseSubscription(parsed.form.get('sub'));
+    if (!sub) return answer('failed', 400);
+    const key = sha256Hex(session.sid);
+    const known = this.pushSubs.get(sub.endpoint);
+    if (parsed.form.get('action') === 'remove') {
+      if (known && known.username === session.user.username) {
+        this.pushSubs.delete(sub.endpoint);
+        this.savePush();
+      }
+      return answer('ok');
+    }
+    if (!known) {
+      const mine = [...this.pushSubs.values()].filter((s) => s.username === session.user.username);
+      if (mine.length >= MAX_PUSH_SUBS_PER_USER) this.pushSubs.delete(mine[0].endpoint);
+      if (this.pushSubs.size >= MAX_PUSH_SUBS) return answer('failed', 429);
+    }
+    let settings;
+    try {
+      settings = normalizeNotifySettings(JSON.parse(parsed.form.get('settings') || '{}'));
+    } catch {
+      return answer('failed', 400);
+    }
+    // The same browser under another session or person starts over: nothing it saw before counts.
+    const same = known && known.session === key && known.username === session.user.username;
+    this.pushSubs.set(sub.endpoint, { ...sub, session: key, username: session.user.username, settings, seen: same ? known.seen : null, fired: same ? known.fired : {} });
+    this.savePush();
+    return answer('ok');
+  }
+
+  /**
+   * One push round: for each session with subscribed browsers, read what its dashboard would show, and send each
+   * browser the events it has not seen and asked for. The first round of a new subscription only records what is
+   * there. Events that disappear (a source failing for a while) are remembered for a week, so they do not return.
+   */
+  async pushTick() {
+    if (!this.vapid || !this.pushSubs.size || this.pushBusy) return;
+    this.pushBusy = true;
+    try {
+      const sessions = new Map();
+      for (const sub of this.pushSubs.values()) sessions.set(sub.session, [...(sessions.get(sub.session) || []), sub]);
+      for (const [key, subs] of sessions) {
+        const stored = this.dashSessions.get(key);
+        const session = stored && stored.expiresAt > this.now() ? await this.freshDashSession({ sid: null, key, user: stored.user, accessToken: stored.accessToken, stored }) : null;
+        if (!session) {
+          this.dropPushSubs((sub) => sub.session === key);
+          continue;
+        }
+        const data = await this.dashboardData(session);
+        const events = notifyEvents(data, { username: session.user.username, name: session.user.name, now: this.now(), timeZone: this.dashboard.timeZone });
+        for (const sub of subs) await this.pushTo(sub, events);
+      }
+      this.savePush();
+    } finally {
+      this.pushBusy = false;
+    }
+  }
+
+  async pushTo(sub, events) {
+    const now = this.now();
+    const first = sub.seen === null;
+    const seen = sub.seen || {};
+    const out = [];
+    for (const ev of events) {
+      if (ev.k === 'meeting') {
+        if (sub.fired[ev.id] || now < ev.at - sub.settings.lead * 60_000 || now >= ev.at) continue;
+        sub.fired[ev.id] = ev.at;
+        if (!first && wantsEvent(ev, sub.settings)) out.push({ ...ev, b: `In ${Math.max(1, Math.round((ev.at - now) / 60_000))} min · ${ev.b}` });
+        continue;
+      }
+      if (!seen[ev.id] && !first && wantsEvent(ev, sub.settings)) out.push(ev);
+      seen[ev.id] = now;
+    }
+    for (const id of Object.keys(seen)) if (now - seen[id] > PUSH_SEEN_TTL_MS) delete seen[id];
+    for (const id of Object.keys(sub.fired)) if (sub.fired[id] < now - 86_400_000) delete sub.fired[id];
+    sub.seen = seen;
+    const messages = out.length > PUSH_BURST
+      ? [{ id: 'tl-many', t: `${out.length} new events on the dashboard`, b: `${out.slice(0, 3).map((e) => e.t).join('\n')}\n…`, v: 'overview' }]
+      : out;
+    for (const ev of messages) {
+      const payload = { id: ev.id, t: String(ev.t).slice(0, 200), b: String(ev.b || '').slice(0, 300), v: ev.v, o: ev.o || null };
+      const urgent = ev.k === 'alert' && ev.p <= 2;
+      const ttl = ev.k === 'meeting' ? Math.max(60, Math.round((ev.at - now) / 1000)) : 6 * 3600;
+      try {
+        const r = await sendPush(sub, payload, { keys: this.vapid, subject: this.pushSubject(), ttl, urgency: urgent ? 'high' : 'normal', topic: crypto.createHash('sha256').update(ev.id).digest('base64url').slice(0, 32), now });
+        if (r.gone) {
+          log(`Push subscription of ${sub.username} is gone (HTTP ${r.status}); forgotten`);
+          this.pushSubs.delete(sub.endpoint);
+          return;
+        }
+        if (!r.ok) log(`Push to ${sub.username} answered HTTP ${r.status}`);
+      } catch (err) {
+        log(`Push to ${sub.username} failed: ${err.message}`);
+      }
+    }
+  }
+
   /** Why this signed-in user may not see the dashboard, or '': group membership and the optional allow-list. */
   async dashboardDenied(user, accessToken) {
     const name = String(user.username).toLowerCase();
@@ -1575,6 +1768,11 @@ export class ApproveServer {
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was changed.' });
       return this.dashboardMove(req, res, session);
     }
+    if (route === '/dashboard/push') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!session) return this.json(res, 401, { status: 'failed' });
+      return this.dashboardPush(req, res, session);
+    }
     if (route === '/dashboard/approve') {
       if (method !== 'POST') return notAllowed('POST');
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was approved.' });
@@ -1588,6 +1786,7 @@ export class ApproveServer {
         this.dashSessions.delete(sha256Hex(session.sid));
         this.dashData.delete(sha256Hex(session.sid));
         this.saveDashSessions();
+        this.dropPushSubs((sub) => sub.session === sha256Hex(session.sid));
       }
       this.requestContext.getStore().user = null;
       const forget = `${WHO_COOKIE}=; Path=${this.basePath || '/'}; Max-Age=0; HttpOnly; SameSite=Strict${this.secure ? '; Secure' : ''}`;
@@ -1801,7 +2000,7 @@ export class ApproveServer {
 
   /** Everything the dashboard shows, for one visitor (their merge requests are read with their token). */
   dashboardData(session) {
-    const key = sha256Hex(session.sid);
+    const key = session.key || sha256Hex(session.sid);
     const now = this.now();
     const hit = this.dashData.get(key);
     if (hit && now - hit.at < DASH_DATA_CACHE_MS) return hit.promise;
@@ -1866,14 +2065,14 @@ export class ApproveServer {
   async dashboardPayload(session) {
     const data = await this.dashboardData(session);
     const ctx = await this.dashboardCtx(session, data);
-    return { sections: renderSections(data, ctx), counts: navCounts(data, ctx), csrf: this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`), updated: this.dashboardUpdated(data.at) };
+    return { sections: renderSections(data, ctx), counts: navCounts(data, ctx), events: notifyEvents(data, ctx), csrf: this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`), updated: this.dashboardUpdated(data.at) };
   }
 
   async showDashboard(res, session) {
     const data = await this.dashboardData(session);
     const ctx = await this.dashboardCtx(session, data);
     const csrf = this.csrf.issue(session.sid, 'dashboard', `who=${session.user.username}`);
-    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at) });
+    const body = dashboardBody({ data, ctx, csrf, filter: defaultFilter(data.mrs.items || [], session.user.username), updated: this.dashboardUpdated(data.at), pushKey: this.vapid?.publicKey || '' });
     const html = this.documentHtml({ title: 'Dashboard', kicker: 'Dashboard', shell: 'shell dashboard', main: `<main>${body}<script>${this.dashboardScript}</script></main>`, css: DASHBOARD_CSS, dashLink: false, actions: CUSTOMIZE_BUTTON, footer: false, head: `<link rel="manifest" href="${escapeHtml(`${this.dashPath}/manifest.webmanifest`)}"><meta name="theme-color" content="#1f1e24"><link rel="apple-touch-icon" href="${escapeHtml(`${this.dashPath}/icon-192.png`)}">`, menu: `<div class="menu-sep"></div><div class="menu-theme"><span>${MENU_ICONS.theme}Theme</span><span class="theme-seg" role="group" aria-label="Theme">${['auto', 'light', 'dark'].map((t) => `<button type="button" data-theme-set="${t}" aria-pressed="${(this.requestContext.getStore()?.theme || 'auto') === t}" title="${t === 'auto' ? 'Follow the system' : `${t[0].toUpperCase()}${t.slice(1)}`}">${MENU_ICONS[t]}${t[0].toUpperCase()}${t.slice(1)}</button>`).join('')}</span></div><div class="menu-sep"></div><form method="post" action="${escapeHtml(`${this.origin}${this.dashPath}/signout`)}"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}" data-csrf><button class="menu-item" type="submit">${MENU_ICONS.signout}Sign out</button></form>` });
     return this.send(res, 200, html, { script: 'dashboard', extra: { 'X-TL-Offline': '1' } });
   }

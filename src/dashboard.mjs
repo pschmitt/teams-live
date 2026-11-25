@@ -189,6 +189,8 @@ export const ICONS = {
   collapse: svg('<path d="M11 7l-5 5 5 5M18 7l-5 5 5 5"/>'),
   signout: svg('<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'),
   phone: svg('<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A16 16 0 0 1 4 5a1 1 0 0 1 1-1z"/>'),
+  bell: svg('<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/><path d="M3 7a9 9 0 0 1 2.5-3.5M21 7a9 9 0 0 0-2.5-3.5"/>'),
+  settings: svg('<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/><circle cx="12" cy="12" r="6.5"/>'),
 };
 
 
@@ -736,6 +738,95 @@ export function navCounts(data, ctx) {
   };
 }
 
+// --- desktop notifications ---
+
+// The events a visitor can be notified about: key, label and description for the settings page.
+export const NOTIFY_KINDS = [
+  ['review', 'Review requested', 'A merge request asks for your review.'],
+  ['approved', 'Approval on your merge request', 'Somebody approves one of your merge requests.'],
+  ['ready', 'Ready to merge', 'One of your merge requests can be merged.'],
+  ['pipeline', 'Pipeline failed', 'The pipeline of one of your merge requests fails.'],
+  ['assigned', 'Sprint ticket assigned', 'A ticket of the active sprint is assigned to you.'],
+  ['alert', 'New alert', 'An OpsGenie alert opens, at the priority you choose or higher.'],
+  ['meeting', 'Meeting starts soon', 'One of the next meetings starts in a few minutes.'],
+];
+
+// The settings of a browser that has not chosen yet: notifications off, every event on once they are switched on.
+export const NOTIFY_DEFAULTS = { on: false, kinds: Object.fromEntries(NOTIFY_KINDS.map(([k]) => [k, true])), prio: 'P2', lead: 5 };
+export const NOTIFY_LEADS = [1, 5, 10, 15, 30];
+
+const MEETING_HORIZON_MS = 86_400_000;
+
+/** Settings as a browser sends them, made safe: known kinds only, a priority P1-P5, a lead time from the list. */
+export function normalizeNotifySettings(s) {
+  const src = s && typeof s === 'object' ? s : {};
+  const kinds = Object.fromEntries(NOTIFY_KINDS.map(([k]) => [k, typeof src.kinds?.[k] === 'boolean' ? src.kinds[k] : NOTIFY_DEFAULTS.kinds[k]]));
+  return { kinds, prio: /^P[1-5]$/.test(src.prio) ? src.prio : NOTIFY_DEFAULTS.prio, lead: NOTIFY_LEADS.includes(src.lead) ? src.lead : NOTIFY_DEFAULTS.lead };
+}
+
+/** Whether these settings ask for this event (its kind is on; an alert at the chosen priority or higher). */
+export function wantsEvent(ev, settings) {
+  return settings.kinds[ev.k] === true && (ev.k !== 'alert' || (ev.p || 5) <= Number(settings.prio.slice(1)));
+}
+
+/**
+ * What can cause a notification now, from the same data the page shows: `{id, k, t, b, v, o?, p?, at?}` with a
+ * stable id, the kind, the title and body (plain text), the view to open, the item to open (`['mr'|'issue'|'alert',
+ * key]`), the alert priority (1-5) and a meeting's start (ms). The browser compares the ids with what it saw before
+ * and decides, with the visitor's settings, what to show; the server keeps no notification state.
+ */
+export function notifyEvents(data, ctx) {
+  const me = lower(ctx.username);
+  const events = [];
+  for (const mr of data.mrs.items || []) {
+    const key = `${mr.project}!${mr.iid}`;
+    const filters = mrFilters(mr, ctx.username);
+    const ref = `${key} · ${mr.title}`;
+    if (filters.includes('review')) events.push({ id: `review:${key}`, k: 'review', t: `Review requested by ${mr.author.name}`, b: ref, v: 'mrs', o: ['mr', key] });
+    if (!filters.includes('mine')) continue;
+    for (const u of mr.approvedBy) {
+      if (u.username !== me) events.push({ id: `approved:${key}:${u.username}`, k: 'approved', t: `${u.name} approved your merge request`, b: ref, v: 'mrs', o: ['mr', key] });
+    }
+    if (mr.mergeStatus === 'mergeable') events.push({ id: `ready:${key}`, k: 'ready', t: 'Ready to merge', b: ref, v: 'mrs', o: ['mr', key] });
+    if (mr.pipeline === 'failed') events.push({ id: `pipeline:${key}@${mr.sha}`, k: 'pipeline', t: 'Pipeline failed', b: ref, v: 'mrs', o: ['mr', key] });
+  }
+  const name = lower(ctx.name);
+  for (const [col] of SPRINT_COLUMNS) {
+    for (const t of data.sprint.data?.[col] || []) {
+      if (name && t.key && lower(t.assignee) === name) events.push({ id: `assigned:${t.key}`, k: 'assigned', t: `${t.key} is assigned to you`, b: String(t.summary || ''), v: 'sprint', o: ['issue', t.key] });
+    }
+  }
+  for (const a of data.alerts.data?.alerts || []) {
+    const id = String(a.id || a.tinyId || '');
+    if (!id || a.acknowledged) continue;
+    const p = /^P[1-5]$/.test(a.priority) ? Number(a.priority[1]) : 5;
+    events.push({ id: `alert:${id}`, k: 'alert', t: `P${p} alert${a.queue ? ` · ${a.queue}` : ''}`, b: String(a.message || 'Alert'), v: 'alerts', o: ['alert', id], p });
+  }
+  const time = (d) => new Date(d).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: ctx.timeZone });
+  for (const m of data.meetings.data || []) {
+    const at = Date.parse(m.startTime);
+    if (!Number.isFinite(at) || at <= ctx.now || at > ctx.now + MEETING_HORIZON_MS) continue;
+    events.push({ id: `meeting:${m.subject}@${m.startTime}`, k: 'meeting', t: String(m.subject || 'Meeting'), b: `Starts at ${time(at)}${m.organizer ? ` · ${m.organizer}` : ''}`, v: 'meetings', at });
+  }
+  return events;
+}
+
+/** The settings view: which events notify this browser. Drawn once; the script fills in the stored choices. */
+export function settingsSection() {
+  const prio = [1, 2, 3, 4, 5].map((n) => `<option value="P${n}"${`P${n}` === NOTIFY_DEFAULTS.prio ? ' selected' : ''}>${n === 1 ? 'P1 only' : n === 5 ? 'Any priority' : `P1 to P${n}`}</option>`).join('');
+  const lead = NOTIFY_LEADS.map((n) => `<option value="${n}"${n === NOTIFY_DEFAULTS.lead ? ' selected' : ''}>${n} min before</option>`).join('');
+  const extra = { alert: `<select class="set-sel" data-notify-prio aria-label="Lowest alert priority that notifies">${prio}</select>`, meeting: `<select class="set-sel" data-notify-lead aria-label="How long before a meeting">${lead}</select>` };
+  const rows = NOTIFY_KINDS.map(([k, label, desc]) =>
+    `<div class="set-row"><label class="set-lab" for="nk-${k}"><b>${escapeHtml(label)}</b><small>${escapeHtml(desc)}</small></label>${extra[k] || ''}<input type="checkbox" class="switch" role="switch" id="nk-${k}" data-notify-kind="${k}"${NOTIFY_DEFAULTS.kinds[k] ? ' checked' : ''}></div>`).join('');
+  return (
+    '<section class="settings" data-settings aria-labelledby="h-settings"><h2 class="set-title" id="h-settings">Settings</h2>' +
+    `<div class="set-card"><header><h3>${ICONS.bell}Desktop notifications</h3></header>` +
+    '<p class="set-note">The dashboard notifies you about new events, also when it is closed if the browser supports push messages. Each browser keeps its own choices.</p>' +
+    `<div class="set-row set-master"><label class="set-lab" for="nk-on"><b>Notifications</b><small data-notify-state>Off.</small></label><button type="button" class="btn btn-secondary btn-sm" data-notify-test disabled>Send a test</button><input type="checkbox" class="switch" role="switch" id="nk-on" data-notify-on></div>` +
+    `<div class="set-kinds" data-notify-kinds><h4>Notify me when</h4>${rows}</div></div></section>`
+  );
+}
+
 const NAV = [
   ['overview', 'Overview', 'Overview'],
   ['mrs', 'Merge requests', 'MRs'],
@@ -757,9 +848,10 @@ const SECTIONS = [
 export const DEFAULT_LAYOUT = { rows: [{ cols: [{ w: 8, cards: ['mrs', 'sprint'] }, { w: 4, cards: ['alerts', 'meetings'] }] }] };
 
 /** The body of the dashboard page (inside the common header). */
-export function dashboardBody({ data, ctx, csrf, filter, updated }) {
+export function dashboardBody({ data, ctx, csrf, filter, updated, pushKey = '' }) {
   const s = renderSections(data, ctx);
   const counts = navCounts(data, ctx);
+  const events = notifyEvents(data, ctx);
   const badge = (k) => (counts[k] ? `<span class="badge${k === 'alerts' ? ' badge-bad' : ''}" data-count="${k}">${counts[k]}</span>` : `<span class="badge" data-count="${k}" hidden></span>`);
   const nav = (short) => NAV.map(([k, label, brief]) => `<button type="button" data-view-to="${k}"${short && brief !== label ? ` aria-label="${label}"` : ''}${short ? '' : ` title="${label}"`}>${ICONS[k]}<span>${short ? brief : label}</span>${k === 'mrs' || k === 'alerts' ? badge(k) : ''}</button>`).join('');
   const box = ([k, title]) =>
@@ -771,14 +863,14 @@ export function dashboardBody({ data, ctx, csrf, filter, updated }) {
     .map((r) => `<div class="lrow">${r.cols.map((c) => `<div class="lcol" style="--w:${c.w}">${c.cards.map((k) => box(byKey[k])).join('')}</div>`).join('')}</div>`)
     .join('');
   return (
-    `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}">` +
+    `<div class="dash" id="dash" data-view="overview" data-mrf="${escapeHtml(filter)}" data-events="${escapeHtml(JSON.stringify(events))}" data-notify-defaults="${escapeHtml(JSON.stringify(NOTIFY_DEFAULTS))}"${pushKey ? ` data-push-key="${escapeHtml(pushKey)}"` : ''}>` +
     `<nav class="side" aria-label="Dashboard">${nav(false)}<div class="side-foot"><button type="button" class="sync" data-refresh title="Updated ${escapeHtml(updated)}, refreshes every minute. Click to refresh now.">${ICONS.refresh}<span id="dash-updated">${escapeHtml(updated)}</span></button><a class="side-gh" href="https://github.com/pschmitt/teams-live" target="_blank" rel="noopener noreferrer" title="teams-live on GitHub" aria-label="teams-live on GitHub">${GITHUB_MARK}</a><button type="button" class="side-toggle" data-collapse aria-expanded="true" title="Collapse sidebar" aria-label="Collapse sidebar">${ICONS.collapse}</button></div></nav>` +
     `<div class="dmain"><h1 class="sr">Dashboard</h1><div class="offline-bar" data-offline-bar hidden>${ICONS.offline}<span>You are offline. This is the dashboard as last loaded; approving and moving tickets wait until you are back online.</span></div>` +
     `<div class="stats" data-sec-body="stats">${s.stats}</div>` +
     `<div class="editbar" data-editbar><span class="hint">${ICONS.edit}Drag a card by its header: onto a card to stack it, to a card's side for a new column, onto a "New row" strip for a row of its own. Drag a card's corner or the column gaps to resize.</span><span class="hidden-bar" data-hidden-bar hidden></span><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-layout-reset disabled>Reset layout</button><button type="button" class="btn btn-sm" data-edit-done>Done</button></div>` +
-    `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div></div>` +
+    `<div class="layout" data-layout data-default="${escapeHtml(JSON.stringify(DEFAULT_LAYOUT))}">${layout}</div>${settingsSection()}</div>` +
     `<nav class="tabbar" aria-label="Dashboard sections">${nav(true)}</nav>` +
-    `<div class="palette" data-palette hidden><div class="pal-bg" data-pal-close></div><div class="pal-box" role="dialog" aria-modal="true" aria-label="Search and commands"><div class="pal-top">${ICONS.search}<input class="pal-in" data-pal-in type="text" placeholder="Search merge requests, tickets and alerts, or type a command" autocomplete="off" spellcheck="false" aria-controls="pal-list"></div><ul class="pal-list" id="pal-list" data-pal-list role="listbox"></ul><div hidden data-pal-icons>${['gitlab', 'jira', 'opsgenie'].map((k) => `<img data-ico="${k}" src="${escapeHtml(SERVICE_ICONS[k])}" width="16" height="16" alt="">`).join('')}${['overview', 'mrs', 'sprint', 'alerts', 'meetings', 'bolt', 'refresh', 'edit', 'collapse', 'hide', 'undo'].map((k) => `<span data-ico="${k}">${ICONS[k]}</span>`).join('')}</div><div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div></div></div>` +
+    `<div class="palette" data-palette hidden><div class="pal-bg" data-pal-close></div><div class="pal-box" role="dialog" aria-modal="true" aria-label="Search and commands"><div class="pal-top">${ICONS.search}<input class="pal-in" data-pal-in type="text" placeholder="Search merge requests, tickets and alerts, or type a command" autocomplete="off" spellcheck="false" aria-controls="pal-list"></div><ul class="pal-list" id="pal-list" data-pal-list role="listbox"></ul><div hidden data-pal-icons>${['gitlab', 'jira', 'opsgenie'].map((k) => `<img data-ico="${k}" src="${escapeHtml(SERVICE_ICONS[k])}" width="16" height="16" alt="">`).join('')}${['overview', 'mrs', 'sprint', 'alerts', 'meetings', 'bolt', 'refresh', 'edit', 'collapse', 'hide', 'undo', 'settings', 'bell'].map((k) => `<span data-ico="${k}">${ICONS[k]}</span>`).join('')}</div><div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div></div></div>` +
     `<div class="drawer" data-drawer hidden><div class="drawer-bg" data-drawer-close></div><aside class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><h2 id="drawer-title"></h2><a class="tool" data-drawer-link href="#" target="_blank" rel="noopener noreferrer" hidden>${ICONS.ext}</a><button type="button" class="tool" data-drawer-close aria-label="Close">${ICONS.close}</button></header><div class="drawer-body" data-drawer-body></div></aside></div>` +
     `<input type="hidden" id="dash-csrf" value="${escapeHtml(csrf)}"><div class="toasts" id="toasts" role="status" aria-live="polite"></div></div>`
   );
@@ -808,7 +900,9 @@ export function webManifest(dashPath) {
  * The service worker: the offline mode. It keeps the last signed-in dashboard page and its data (only responses
  * the server marks with X-TL-Offline, never the sign-in page) and the app icons; when the network fails it answers
  * from that copy, marked X-TL-From-Cache so the page shows that it is offline. Writes (approve, move) always go to
- * the network. A sign-out (or a 401) clears the copy.
+ * the network. A sign-out (or a 401) clears the copy. A click on a desktop notification focuses an open dashboard
+ * (which then opens the event) or opens a new one on the event's view; a push message from the server becomes such
+ * a notification, also when no dashboard is open.
  */
 export function serviceWorkerScript(dashPath) {
   const root = JSON.stringify(dashPath);
@@ -816,6 +910,8 @@ export function serviceWorkerScript(dashPath) {
 const KEEP=[ROOT,ROOT+'/data'],ASSETS=[ROOT+'/manifest.webmanifest',ROOT+'/icon-192.png',ROOT+'/icon-512.png'];
 self.addEventListener('install',function(){self.skipWaiting()});
 self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim())});
+self.addEventListener('push',function(e){var x={};try{x=e.data?e.data.json():{}}catch(err){}var v=/^(overview|mrs|sprint|alerts|meetings|settings)$/.test(x.v)?x.v:'overview';e.waitUntil(self.registration.showNotification(typeof x.t==='string'?x.t:'teams-live',{body:typeof x.b==='string'?x.b:'',tag:typeof x.id==='string'?x.id:'tl',icon:ROOT+'/icon-192.png',badge:ROOT+'/icon-192.png',data:{v:v,o:Array.isArray(x.o)?x.o:null,url:ROOT+'#'+v}}))});
+self.addEventListener('notificationclick',function(e){e.notification.close();var x=e.notification.data||{},url=typeof x.url==='string'&&x.url.indexOf(ROOT+'#')===0?x.url:ROOT;e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function(cs){for(var i=0;i<cs.length;i++){var c=cs[i];if(new URL(c.url).pathname===ROOT&&'focus' in c){c.postMessage({tl:'open',v:x.v,o:x.o});return c.focus()}}return self.clients.openWindow(url)}))});
 self.addEventListener('message',function(e){if(e.data==='forget')e.waitUntil?e.waitUntil(caches.delete(CACHE)):caches.delete(CACHE)});
 function cached(path){return caches.open(CACHE).then(function(c){return c.match(path)}).then(function(m){if(!m)return new Response('offline',{status:503,headers:{'Content-Type':'text/plain'}});var h=new Headers(m.headers);h.set('X-TL-From-Cache','1');return new Response(m.body,{status:m.status,headers:h})})}
 self.addEventListener('fetch',function(e){var r=e.request;if(r.method!=='GET')return;var u=new URL(r.url);if(u.origin!==self.location.origin)return;var p=u.pathname,page=KEEP.indexOf(p)>=0,asset=ASSETS.indexOf(p)>=0;if(!page&&!asset)return;
@@ -932,6 +1028,15 @@ export const DASHBOARD_CSS = [
   // one section at a time when a section is picked; everything on the overview
   '.dash:not([data-view=overview]) .stats{display:none}.dash[data-view=mrs] .box:not([data-sec=mrs]),.dash[data-view=sprint] .box:not([data-sec=sprint]),.dash[data-view=alerts] .box:not([data-sec=alerts]),.dash[data-view=meetings] .box:not([data-sec=meetings]){display:none}',
   '.dash:not([data-view=overview]) .box{height:auto!important}.dash:not([data-view=overview]) .lcol-rs,.dash:not([data-view=overview]) .tools,.dash:not([data-view=overview]) .rs{display:none}',
+  // the settings view: one card of rows with switches; it replaces the cards while it is open
+  '.settings{display:none;max-width:46rem}.dash[data-view=settings] .settings{display:block}.dash[data-view=settings] .layout,.dash[data-view=settings] .editbar{display:none!important}.set-title{font-size:1.25rem;margin:0 0 1rem}',
+  '.set-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;animation:tl-rise .45s var(--ease) both}.set-card>header{padding:.7rem 1rem;border-bottom:1px solid var(--line)}.set-card h3{margin:0;font-size:.98rem;display:flex;gap:.45rem;align-items:center}',
+  '.set-note{margin:0;padding:.75rem 1rem;color:var(--muted);font-size:.85rem}.set-row{display:flex;align-items:center;gap:.75rem;padding:.7rem 1rem;border-top:1px solid var(--line)}.set-lab{flex:1;min-width:0;display:flex;flex-direction:column;gap:.1rem;cursor:pointer}.set-lab small{color:var(--muted);font-size:.8rem}',
+  '.set-kinds h4{margin:0;padding:.9rem 1rem .4rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:1px solid var(--line)}.set-kinds h4+.set-row{border-top:0}.dash[data-notify=off] .set-kinds{opacity:.6}',
+  '.set-sel{font:inherit;font-size:.8rem;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.25rem .4rem}',
+  '.switch{appearance:none;-webkit-appearance:none;flex:none;width:2.4rem;height:1.35rem;border-radius:999px;background:var(--line-strong);position:relative;cursor:pointer;margin:0;transition:background .15s}.switch::after{content:"";position:absolute;top:.15rem;left:.15rem;width:1.05rem;height:1.05rem;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .18s var(--ease)}',
+  '.switch:checked{background:var(--accent)}.switch:checked::after{transform:translateX(1.05rem)}.switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}.switch:disabled{opacity:.45;cursor:not-allowed}',
+  '@media (max-width:30rem){.set-row{flex-wrap:wrap}.set-lab{flex:1 1 calc(100% - 4rem)}.set-row .set-sel,.set-row .btn{order:3}}',
     '@media (max-width:68rem){.lrow{flex-direction:column}.lcol{flex:none}.box{height:auto!important}.lcol-rs{display:none!important}.tools .grip,.rs{display:none!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}',
   '@media (max-width:48rem){.dash,.dash.collapsed{grid-template-columns:1fr;background:none}.side{display:none}.dmain{padding:1rem max(1rem,env(safe-area-inset-right,0px)) 5.5rem max(1rem,env(safe-area-inset-left,0px))}',
   '.board{grid-template-columns:repeat(3,minmax(11rem,1fr));overflow-x:auto;scroll-snap-type:x mandatory}.col{scroll-snap-align:start}.mrside .appr-badge{display:none}',
@@ -953,7 +1058,7 @@ function theme(t){var root=document.documentElement,sec=location.protocol==='htt
 function nodraft(on){d.setAttribute('data-nodraft',on?'1':'0');try{localStorage.setItem('tl-nodraft',on?'1':'0')}catch(e){}mark()}
 function mark(){document.querySelectorAll('[data-nodraft-toggle]').forEach(function(b){b.setAttribute('aria-pressed',String(d.getAttribute('data-nodraft')==='1'))});var v=d.getAttribute('data-view'),f=d.getAttribute('data-mrf');document.querySelectorAll('[data-view-to]').forEach(function(b){if(b.closest('.side,.tabbar'))b.setAttribute('aria-current',String(b.getAttribute('data-view-to')===v))});document.querySelectorAll('[data-mrf-to]').forEach(function(b){b.setAttribute('aria-pressed',String(b.getAttribute('data-mrf-to')===f))})}
 function toast(t){var r=document.getElementById('toasts');if(!r||!t)return;var e=document.createElement('div');e.className='toast';e.textContent=t;r.appendChild(e);setTimeout(function(){e.classList.add('out');setTimeout(function(){e.remove()},320)},3600)}
-function view(v){d.setAttribute('data-view',v);mark();try{sessionStorage.setItem('tl-view',v)}catch(e){}window.scrollTo({top:0,behavior:'smooth'})}
+function view(v){d.setAttribute('data-view',v);mark();document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')});try{sessionStorage.setItem('tl-view',v)}catch(e){}window.scrollTo({top:0,behavior:'smooth'})}
 var tk=null;
 function colCount(c){var n=c.querySelectorAll('.tk').length,s=c.querySelector('[data-col-count]');if(s)s.textContent=n;var ul=c.querySelector('ul'),none=ul&&ul.querySelector('.none');if(n&&none)none.remove()}
 d.addEventListener('pointerdown',function(e){if(editing()||e.button>0||tk)return;var t=e.target.closest&&e.target.closest('.tk[data-issue]');if(!t||!t.closest('[data-col]'))return;tk={t:t,x:e.clientX,y:e.clientY,on:false,pid:e.pointerId}});
@@ -1017,16 +1122,16 @@ function endRz(){if(!rz&&!cz)return;if(rz)rz.b.classList.remove('resizing');if(c
 d.addEventListener('pointerup',endRz);d.addEventListener('pointercancel',endRz);
 d.addEventListener('dblclick',function(e){if(!editing())return;var h=e.target.closest&&e.target.closest('[data-resize]');if(h){h.closest('[data-sec]').style.height='';saveL();return}var ch=e.target.closest&&e.target.closest('[data-col-resize]');if(ch){var c=ch.parentNode,cs=colsOf(c.parentNode),n=cs[cs.indexOf(c)+1];if(n){var t=wOf(c)+wOf(n);c.style.setProperty('--w',String(t/2));n.style.setProperty('--w',String(t/2));saveL()}}});
 try{if(localStorage.getItem('tl-nodraft')==='1')d.setAttribute('data-nodraft','1')}catch(e){}
-try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}if(location.hash==='#overview'){d.setAttribute('data-view','overview');try{history.replaceState(null,'',location.pathname)}catch(e){}}mark();
+try{var sv=sessionStorage.getItem('tl-view'),sf=sessionStorage.getItem('tl-mrf');if(sv)d.setAttribute('data-view',sv);if(sf)d.setAttribute('data-mrf',sf)}catch(e){}function hashView(){var m=/^#(overview|mrs|sprint|alerts|meetings|settings)$/.exec(location.hash);if(!m)return false;d.setAttribute('data-view',m[1]);try{sessionStorage.setItem('tl-view',m[1])}catch(e){}try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}return true}hashView();window.addEventListener('hashchange',function(){if(hashView()){mark();window.scrollTo(0,0)}});mark();
 document.addEventListener('click',function(e){document.querySelectorAll('[data-account-menu][open]').forEach(function(m){if(!m.contains(e.target))m.removeAttribute('open')})});document.addEventListener('keydown',function(e){if(e.key==='Escape')document.querySelectorAll('[data-account-menu][open]').forEach(function(m){m.removeAttribute('open')})});
 document.addEventListener('click',function(e){var h=e.target.closest('[data-home]');if(h){e.preventDefault();view('overview');return}var rf=e.target.closest('[data-refresh]');if(rf){refresh();return}var mrr=e.target.closest('.mrrow[data-mr]');if(mrr&&!e.target.closest('a,button')){openDetail(mrr);return}var di=e.target.closest('[data-issue],[data-alert]');if(di&&di.dataset.dragged)return;if(di&&!e.target.closest('a')){e.preventDefault();openDetail(di);return}if(e.target.closest('[data-drawer-close]')){closeDetail();return}var th=e.target.closest('[data-theme-set]');if(th){theme(th.getAttribute('data-theme-set'));return}if(e.target.closest('[data-nodraft-toggle]')){nodraft(d.getAttribute('data-nodraft')!=='1');return}if(e.target.closest('[data-edit-toggle]')){setEdit(!editing());return}if(e.target.closest('[data-edit-done]')){setEdit(false);return}var hd=e.target.closest('[data-hide]');if(hd){var hb=hd.closest('[data-sec]');hb.classList.add('is-hidden');saveL();toast('Card hidden. Show it again from the toolbar above the cards.');return}var uh=e.target.closest('[data-unhide]');if(uh){var ub=d.querySelector('[data-sec="'+uh.getAttribute('data-unhide')+'"]');if(ub)ub.classList.remove('is-hidden');saveL();return}var lr=e.target.closest('[data-layout-reset]');if(lr){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset');return}var t=e.target.closest('[data-collapse]');if(t){collapse(!d.classList.contains('collapsed'));return}var v=e.target.closest('[data-view-to]');if(v){var vf=v.getAttribute('data-mrf-set');if(vf){d.setAttribute('data-mrf',vf);try{sessionStorage.setItem('tl-mrf',vf)}catch(e){}}view(v.getAttribute('data-view-to'));return}var f=e.target.closest('[data-mrf-to]');if(f){d.setAttribute('data-mrf',f.getAttribute('data-mrf-to'));mark();try{sessionStorage.setItem('tl-mrf',f.getAttribute('data-mrf-to'))}catch(e){}return}var a=e.target.closest('[data-approve]');if(a)approve(a)});
 function pill(cls,text,title){var s=document.createElement('span');s.className='pill '+cls;s.textContent=text;if(title)s.title=title;return s}
 function approve(b){if(b.disabled)return;if(!online()){toast('You are offline. Approve again once you are back online.');return}b.disabled=true;b.setAttribute('data-busy','');busy++;var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('project',b.getAttribute('data-project'));body.set('iid',b.getAttribute('data-iid'));body.set('sha',b.getAttribute('data-sha'));
 fetch(B+'/approve',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.json().catch(function(){return {status:'unknown',text:'The answer could not be read. Check the merge request in GitLab.'}})}).then(function(r){var ok=r.status==='approved'||r.status==='already';b.replaceWith(ok?pill('pill-ok','Approved',r.text):r.status==='unknown'?pill('pill-idle','Check GitLab',r.text):pill('pill-bad','Not approved',r.text));toast(r.text)}).catch(function(){b.replaceWith(pill('pill-idle','Check GitLab'));toast('The connection was lost. Nothing is repeated automatically: check the merge request in GitLab.')}).then(function(){busy--;setTimeout(refresh,1500)})}
-function refresh(){if(document.hidden||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){net(!r.headers.get('X-TL-From-Cache')&&r.status!==503);if(r.status===401){forget();var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){net(false)}).then(function(){if(rb)rb.classList.remove('busy')})}
+function refresh(){if((document.hidden&&!(non()&&!npush))||busy)return;var rb=document.querySelector('[data-refresh]');if(rb)rb.classList.add('busy');fetch(B+'/data',{credentials:'same-origin',cache:'no-store'}).then(function(r){nc=!!r.headers.get('X-TL-From-Cache');net(!nc&&r.status!==503);if(r.status===401){forget();var u=document.getElementById('dash-updated');if(u)u.textContent='Signed out';if(rb)rb.title='Signed out. Reload the page to sign in again.';return null}return r.ok?r.json():null}).then(function(x){if(!x||busy)return;if(x.events&&!nc)nupdate(x.events);var s=x.sections||{};for(var k in s){var e=document.querySelector('[data-sec-body="'+k+'"]');if(!e||e.innerHTML===s[k])continue;var old={};e.querySelectorAll('[data-key]').forEach(function(n){old[n.getAttribute('data-key')]=1});var had=Object.keys(old).length;e.innerHTML=s[k];if(had)e.querySelectorAll('[data-key]').forEach(function(n){if(!old[n.getAttribute('data-key')])n.classList.add('tl-new')})}var c=x.counts||{};for(var n in c){document.querySelectorAll('[data-count="'+n+'"]').forEach(function(el){el.textContent=c[n];el.hidden=!c[n]})}if(x.csrf){csrf.value=x.csrf;document.querySelectorAll('[data-csrf]').forEach(function(i){i.value=x.csrf})}var u=document.getElementById('dash-updated');if(u&&x.updated){u.textContent=x.updated;if(rb)rb.title='Updated '+x.updated+', refreshes every minute. Click to refresh now.'}mark()}).catch(function(){net(false)}).then(function(){if(rb)rb.classList.remove('busy')})}
 var pal=document.querySelector('[data-palette]'),pin=pal&&pal.querySelector('[data-pal-in]'),plist=pal&&pal.querySelector('[data-pal-list]'),pall=[],pshow=[],psel=0,plast=null;
-function palItems(){var it=[];[['overview','Overview'],['mrs','Merge requests'],['sprint','Sprint'],['alerts','Alerts'],['meetings','Meetings']].forEach(function(v){it.push({g:'Go to',i:v[0],t:v[1],run:function(){view(v[0])}})});
-it.push({g:'Actions',i:'refresh',t:'Refresh now',run:function(){refresh()}});it.push({g:'Actions',i:'edit',t:editing()?'Finish customizing the layout':'Customize the layout',run:function(){setEdit(!editing())}});it.push({g:'Actions',i:'collapse',t:(d.classList.contains('collapsed')?'Expand':'Collapse')+' the sidebar',run:function(){collapse(!d.classList.contains('collapsed'))}});it.push({g:'Actions',i:'hide',t:(d.getAttribute('data-nodraft')==='1'?'Show':'Hide')+' draft merge requests',run:function(){nodraft(d.getAttribute('data-nodraft')!=='1')}});it.push({g:'Actions',i:'undo',t:'Reset the layout',run:function(){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset')}});
+function palItems(){var it=[];[['overview','Overview'],['mrs','Merge requests'],['sprint','Sprint'],['alerts','Alerts'],['meetings','Meetings'],['settings','Settings']].forEach(function(v){it.push({g:'Go to',i:v[0],t:v[1],run:function(){view(v[0])}})});
+it.push({g:'Actions',i:'refresh',t:'Refresh now',run:function(){refresh()}});it.push({g:'Actions',i:'bell',t:(non()?'Turn off':'Turn on')+' desktop notifications',run:function(){nmaster(!non())}});it.push({g:'Actions',i:'edit',t:editing()?'Finish customizing the layout':'Customize the layout',run:function(){setEdit(!editing())}});it.push({g:'Actions',i:'collapse',t:(d.classList.contains('collapsed')?'Expand':'Collapse')+' the sidebar',run:function(){collapse(!d.classList.contains('collapsed'))}});it.push({g:'Actions',i:'hide',t:(d.getAttribute('data-nodraft')==='1'?'Show':'Hide')+' draft merge requests',run:function(){nodraft(d.getAttribute('data-nodraft')!=='1')}});it.push({g:'Actions',i:'undo',t:'Reset the layout',run:function(){try{localStorage.removeItem(LK)}catch(x){}applyL(null);toast('Layout reset')}});
 d.querySelectorAll('.mrrow[data-mr]').forEach(function(r){var t=r.querySelector('.tt');it.push({g:'Merge requests',i:'gitlab',t:t?t.textContent:'',s:r.getAttribute('data-mr'),run:function(){openDetail(r)}})});
 d.querySelectorAll('.tk[data-issue]').forEach(function(r){var t=r.querySelector('.sum');it.push({g:'Sprint tickets',i:'jira',t:t?t.textContent:'',s:r.getAttribute('data-issue'),run:function(){openDetail(r)}})});
 d.querySelectorAll('.al[data-alert]').forEach(function(r){var t=r.querySelector('b');it.push({g:'Alerts',i:'opsgenie',t:t?t.textContent:'',s:(r.querySelector('.prio')||{}).textContent||'',run:function(){openDetail(r)}})});return it}
@@ -1045,5 +1150,26 @@ window.addEventListener('online',function(){net(true);refresh()});window.addEven
 if('serviceWorker' in navigator){try{navigator.serviceWorker.register(B+'/sw.js',{scope:B}).catch(function(){})}catch(e){}}
 function forget(){try{if(navigator.serviceWorker&&navigator.serviceWorker.controller)navigator.serviceWorker.controller.postMessage('forget')}catch(e){}try{if(window.caches)caches.delete('tl-dashboard')}catch(e){}}
 document.addEventListener('submit',function(e){if(e.target&&e.target.action&&e.target.action.indexOf('/signout')>=0)forget()});
+var NK='tl-notify',ND={},nseen=null,nfired={},nlast=[],nc=false,npush=false,PK=d.getAttribute('data-push-key')||'';try{ND=JSON.parse(d.getAttribute('data-notify-defaults')||'{}')}catch(e){}
+function nget(){var s=null;try{s=JSON.parse(localStorage.getItem(NK)||'null')}catch(e){}s=s&&typeof s==='object'?s:{};var o={on:s.on===true,kinds:{},prio:/^P[1-5]$/.test(s.prio)?s.prio:ND.prio,lead:typeof s.lead==='number'&&s.lead>0&&s.lead<=60?s.lead:ND.lead};for(var k in ND.kinds)o.kinds[k]=s.kinds&&typeof s.kinds[k]==='boolean'?s.kinds[k]:ND.kinds[k];return o}
+function nput(o){try{localStorage.setItem(NK,JSON.stringify(o))}catch(e){}nui();nsync()}
+function nperm(){return 'Notification' in window?Notification.permission:'unsupported'}
+function non(){return nget().on&&nperm()==='granted'}
+function nui(){var o=nget(),p=nperm(),on=o.on&&p==='granted',st=d.querySelector('[data-notify-state]'),m=d.querySelector('[data-notify-on]'),tb=d.querySelector('[data-notify-test]');d.setAttribute('data-notify',on?'on':'off');if(!st)return;st.textContent=p==='unsupported'?(window.isSecureContext===false?'Notifications need the dashboard on HTTPS.':'This browser cannot show notifications.'):p==='denied'?'Blocked by the browser. Allow notifications for this site in its site settings, then reload the page.':on?(npush?'On. Notifications arrive even when the dashboard is closed.':'On while the dashboard is open, in a tab or as an app.'):'Off.';m.checked=on;m.disabled=p==='unsupported'||p==='denied';if(tb)tb.disabled=!on;d.querySelectorAll('[data-notify-kind]').forEach(function(c){c.checked=!!o.kinds[c.getAttribute('data-notify-kind')]});var ps=d.querySelector('[data-notify-prio]');if(ps)ps.value=o.prio;var ls=d.querySelector('[data-notify-lead]');if(ls)ls.value=String(o.lead)}
+function nmaster(want){var o=nget();if(!want){o.on=false;nput(o);toast('Notifications are off');return}var p=nperm();if(p==='granted'){o.on=true;nput(o);toast('Notifications are on');return}if(p!=='default'){nui();if(p==='denied')toast('The browser blocks notifications for this site.');return}try{var q=Notification.requestPermission();if(q&&q.then)q.then(function(r){var o2=nget();o2.on=r==='granted';nput(o2);toast(r==='granted'?'Notifications are on':'The browser did not allow notifications.')})}catch(e){nui()}}
+function ngo(x){if(!x)return;view(/^(overview|mrs|sprint|alerts|meetings|settings)$/.test(x.v)?x.v:'overview');var o=x.o;if(Array.isArray(o)&&/^(mr|issue|alert)$/.test(o[0])&&typeof o[1]==='string'){var el=d.querySelector('[data-'+o[0]+'="'+(window.CSS&&CSS.escape?CSS.escape(o[1]):o[1])+'"]');if(el)openDetail(el)}}
+function nshow(ev){var opt={body:ev.b||'',tag:ev.id,icon:B+'/icon-192.png',badge:B+'/icon-192.png',data:{v:ev.v,o:ev.o||null,url:B+'#'+(ev.v||'overview')}};function plain(){try{var n=new Notification(ev.t,opt);n.onclick=function(){try{window.focus()}catch(e){}ngo(opt.data);n.close()}}catch(e){}}var sw=navigator.serviceWorker;if(sw&&sw.getRegistration)sw.getRegistration(B).then(function(r){if(r&&r.showNotification)return r.showNotification(ev.t,opt);plain()}).catch(plain);else plain()}
+function nwant(ev,o){return !!o.kinds[ev.k]&&(ev.k!=='alert'||(ev.p||5)<=+o.prio.slice(1))}
+function nupdate(evs){if(!Array.isArray(evs))return;nlast=evs;var first=nseen===null;if(first)nseen={};var o=nget(),on=non(),out=[];evs.forEach(function(ev){if(!ev||!ev.id||ev.k==='meeting'||nseen[ev.id])return;nseen[ev.id]=1;if(!first&&on&&!npush&&nwant(ev,o))out.push(ev)});if(out.length>4)nshow({id:'tl-many',t:out.length+' new events on the dashboard',b:out.slice(0,3).map(function(e){return e.t}).join('\\n')+'\\n…',v:'overview'});else out.forEach(nshow);nmeet(first)}
+function nmeet(seed){var o=nget(),now=Date.now(),lead=o.lead*60000,on=non();nlast.forEach(function(ev){if(!ev||ev.k!=='meeting'||nfired[ev.id])return;if(now>=ev.at-lead&&now<ev.at){nfired[ev.id]=1;if(!seed&&on&&!npush&&o.kinds.meeting)nshow({id:ev.id,t:ev.t,b:'In '+Math.max(1,Math.round((ev.at-now)/60000))+' min · '+ev.b,v:ev.v})}})}
+document.addEventListener('change',function(e){var t=e.target;if(!t||!t.closest||!t.closest('[data-settings]'))return;if(t.hasAttribute('data-notify-on')){nmaster(t.checked);return}var o=nget();if(t.hasAttribute('data-notify-kind'))o.kinds[t.getAttribute('data-notify-kind')]=t.checked;else if(t.hasAttribute('data-notify-prio'))o.prio=t.value;else if(t.hasAttribute('data-notify-lead'))o.lead=+t.value;else return;nput(o)});
+document.addEventListener('click',function(e){if(e.target.closest('[data-notify-test]')){if(non())nshow({id:'tl-test',t:'teams-live',b:'Notifications work. New events on the dashboard look like this.',v:'settings'});else nui()}});
+if(navigator.serviceWorker)navigator.serviceWorker.addEventListener('message',function(e){var x=e.data;if(x&&x.tl==='open')ngo(x)});
+function ub(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';var r=atob(s),a=new Uint8Array(r.length);for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);return a}
+function npost(action,sub){var body=new URLSearchParams();body.set('csrf',csrf.value);body.set('action',action);body.set('sub',JSON.stringify(sub));var o=nget();body.set('settings',JSON.stringify({kinds:o.kinds,prio:o.prio,lead:o.lead}));return fetch(B+'/push',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:body.toString()}).then(function(r){return r.ok})}
+function same(a,b){if(!a||!b)return false;a=new Uint8Array(a);if(a.length!==b.length)return false;for(var i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}
+var nsyncing=null,nagain=false;
+function nsync(){if(!PK||!('PushManager' in window)||!navigator.serviceWorker||!online())return;if(nsyncing){nagain=true;return}var want=non(),key=ub(PK);nsyncing=navigator.serviceWorker.ready.then(function(reg){return reg.pushManager.getSubscription().then(function(sub){if(!want){if(!sub)return false;return npost('remove',sub.toJSON()).catch(function(){}).then(function(){return sub.unsubscribe()}).then(function(){return false})}var old=sub&&!same(sub.options&&sub.options.applicationServerKey,key);return (old?sub.unsubscribe().then(function(){return null}):Promise.resolve(sub)).then(function(s){return s||reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key})}).then(function(s){return npost('save',s.toJSON())})})}).then(function(ok){npush=!!ok&&want}).catch(function(){npush=false}).then(function(){nsyncing=null;nui();if(nagain){nagain=false;nsync()}})}
+document.addEventListener('click',function(e){if(e.target.closest('a[data-view-to]'))e.preventDefault()});document.addEventListener('visibilitychange',nui);nui();nsync();try{nupdate(JSON.parse(d.getAttribute('data-events')||'[]'))}catch(e){}setInterval(function(){nmeet(false)},20000);
 setTimeout(refresh,1500);setInterval(refresh,60000);document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh()})})();`;
 }

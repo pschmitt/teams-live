@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { ApproveServer } from '../src/approve.mjs';
 import { liveScript } from '../src/approve-page.mjs';
 import { BATCH_APPROVAL_SCRIPT } from '../src/batch-approval-page.mjs';
-import { alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, statsSection, webLink } from '../src/dashboard.mjs';
+import { NOTIFY_DEFAULTS, NOTIFY_KINDS, normalizeNotifySettings, wantsEvent, alertsSection, dashboardScript, defaultFilter, jiraWikiToHtml, markdownToHtml, isBotMr, meetingsSection, mrFilters, mrsSection, normalizeMr, notifyEvents, serviceWorkerScript, settingsSection, statsSection, webLink } from '../src/dashboard.mjs';
 
 // The signed-in dashboard: GitLab sign-in without a card link, only for members of the configured group,
 // merge requests read with the visitor's token, the bot's sources shown next to them, inline approvals sent once.
@@ -37,7 +37,7 @@ const node = (over = {}) => ({
   ...over,
 });
 
-async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, now = Date.now } = {}, fn) {
+async function withDashboard({ member = true, nodes = [node()], sources = {}, enable = true, path = '', dashSessionFile = null, pushFile = null, now = Date.now } = {}, fn) {
   const gitlab = { host: GL, mrLink: (p, i) => `https://${GL}/${p}/-/merge_requests/${i}`, async getMr() { return {}; } };
   const server = new ApproveServer({
     gitlab,
@@ -46,6 +46,7 @@ async function withDashboard({ member = true, nodes = [node()], sources = {}, en
     oauth: { clientId: 'cid', clientSecret: 'sec', allowedUsers: [] },
     dashboard: { enable, group: 'group', sources, timeZone: 'UTC', path },
     dashSessionFile,
+    pushFile,
     now,
   });
   await server.start();
@@ -423,6 +424,7 @@ test('installable app: manifest, icons and service worker without a session; onl
     const page = await fetch(`${base}/dashboard`, { headers: { Cookie: cookie } });
     assert.equal(page.headers.get('x-tl-offline'), '1');
     assert.match(page.headers.get('content-security-policy'), /manifest-src 'self'; worker-src 'self'/);
+    assert.match(page.headers.get('content-security-policy'), /img-src data: 'self';/, 'its own app icon, for the home screen and notifications');
     const html = await page.text();
     assert.match(html, /<link rel="manifest" href="\/dashboard\/manifest\.webmanifest">/);
     assert.match(html, /data-palette/);
@@ -445,4 +447,148 @@ test('theme: the tl_theme cookie picks light or dark for every page; the account
     const gate = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: 'tl_theme=light' } })).text();
     assert.match(gate, /<html lang="en" data-theme="light">/, 'other pages follow the choice too');
   });
+});
+
+test('notification events: review requests, own merge requests, own tickets, open alerts and the next meetings', () => {
+  const now = Date.parse('2026-01-05T09:00:00Z');
+  const mine = node({ iid: '8', author: { username: 'alice', name: 'Alice Example' }, reviewers: { nodes: [] }, detailedMergeStatus: 'MERGEABLE', headPipeline: { status: 'FAILED' }, approvedBy: { nodes: [{ username: 'carol', name: 'Carol Example' }, { username: 'alice', name: 'Alice Example' }] } });
+  const data = {
+    mrs: { items: [normalizeMr(node()), normalizeMr(mine)] },
+    sprint: { data: { todo: [{ key: 'ABC-1', summary: 'Rotate keys', assignee: 'Alice Example' }, { key: 'ABC-2', summary: 'Other', assignee: 'Bob Example' }], inProgress: [], inReview: [] } },
+    alerts: { data: { alerts: [{ id: 'a1', priority: 'P1', message: 'Disk full', queue: 'On-call' }, { id: 'a2', priority: 'P3', message: 'Seen', acknowledged: true }] } },
+    meetings: { data: [{ subject: 'Standup', startTime: '2026-01-05T09:30:00Z', endTime: '2026-01-05T09:45:00Z', organizer: 'Bob Example' }, { subject: 'Past', startTime: '2026-01-05T08:00:00Z', endTime: '2026-01-05T08:30:00Z' }, { subject: 'Next week', startTime: '2026-01-12T09:00:00Z', endTime: '2026-01-12T10:00:00Z' }] },
+  };
+  const events = notifyEvents(data, { username: 'alice', name: 'Alice Example', now, timeZone: 'UTC' });
+  const byId = Object.fromEntries(events.map((e) => [e.id, e]));
+  assert.deepEqual(Object.keys(byId).sort(), ['alert:a1', 'approved:group/app!8:carol', 'assigned:ABC-1', 'meeting:Standup@2026-01-05T09:30:00Z', 'pipeline:group/app!8@' + SHA, 'ready:group/app!8', 'review:group/app!7'].sort());
+  assert.deepEqual(byId['review:group/app!7'].o, ['mr', 'group/app!7']);
+  assert.equal(byId['review:group/app!7'].v, 'mrs');
+  assert.equal(byId['alert:a1'].p, 1);
+  assert.equal(byId['meeting:Standup@2026-01-05T09:30:00Z'].at, Date.parse('2026-01-05T09:30:00Z'));
+  assert.equal(byId['meeting:Standup@2026-01-05T09:30:00Z'].b, 'Starts at 09:30 · Bob Example');
+  for (const e of events) assert.ok(NOTIFY_KINDS.some(([k]) => k === e.k), `${e.k} is a kind the settings offer`);
+  const failed = notifyEvents({ mrs: { error: 'x' }, sprint: { error: 'x' }, alerts: { error: 'x' }, meetings: { error: 'x' } }, { username: 'alice', name: 'Alice Example', now, timeZone: 'UTC' });
+  assert.deepEqual(failed, [], 'a failing source yields no events');
+});
+
+test('settings: one switch per event kind, the page carries the events, the data endpoint too', async () => {
+  const html = settingsSection();
+  for (const [k] of NOTIFY_KINDS) assert.match(html, new RegExp(`data-notify-kind="${k}"`));
+  assert.match(html, /data-notify-on/);
+  assert.match(html, /data-notify-prio/);
+  assert.match(html, /data-notify-lead/);
+  assert.match(serviceWorkerScript('/dashboard'), /notificationclick/);
+  await withDashboard({}, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const page = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(page, /data-events="\[\{&quot;id&quot;:&quot;review:group\/app!7&quot;/);
+    assert.match(page, /data-settings/);
+    assert.match(page, /href="\/approve\/dashboard#settings" data-view-to="settings"/, 'the account menu leads to the settings');
+    const data = await (await fetch(`${base}/approve/dashboard/data`, { headers: { Cookie: cookie } })).json();
+    assert.equal(data.events[0].id, 'review:group/app!7');
+  });
+});
+
+/** Opens a push message as the browser would (RFC 8291): the payload the server sent, as JSON. */
+function openPush(body, ua, auth) {
+  const salt = body.subarray(0, 16);
+  const idlen = body[20];
+  const asPublic = body.subarray(21, 21 + idlen);
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const prkKey = hmac(auth, ua.computeSecret(asPublic));
+  const ikm = hmac(prkKey, Buffer.concat([Buffer.from('WebPush: info\0'), ua.getPublicKey(), asPublic, Buffer.from([1])]));
+  const prk = hmac(salt, ikm);
+  const decipher = crypto.createDecipheriv('aes-128-gcm', hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16), hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12));
+  const data = body.subarray(21 + idlen);
+  decipher.setAuthTag(data.subarray(data.length - 16));
+  const plain = Buffer.concat([decipher.update(data.subarray(0, data.length - 16)), decipher.final()]);
+  assert.equal(plain[plain.length - 1], 2, 'one final record');
+  return JSON.parse(plain.subarray(0, plain.length - 1).toString('utf8'));
+}
+
+test('notification settings: unknown kinds and odd values fall back to the defaults', () => {
+  assert.deepEqual(normalizeNotifySettings(null), { kinds: NOTIFY_DEFAULTS.kinds, prio: 'P2', lead: 5 });
+  const s = normalizeNotifySettings({ kinds: { review: false, evil: true, alert: 'yes' }, prio: 'P9', lead: 7 });
+  assert.equal(s.kinds.review, false);
+  assert.equal(s.kinds.alert, true);
+  assert.ok(!('evil' in s.kinds));
+  assert.equal(s.prio, 'P2');
+  assert.equal(s.lead, 5);
+  assert.ok(wantsEvent({ k: 'alert', p: 2 }, s));
+  assert.ok(!wantsEvent({ k: 'alert', p: 3 }, s), 'below the chosen priority');
+  assert.ok(!wantsEvent({ k: 'review' }, s));
+});
+
+test('push: a browser subscribes with its settings, gets only what is new and asked for, and is forgotten on sign-out', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-push-'));
+  const pushFile = path.join(dir, 'dashboard-push.json');
+  const nodes = [node()];
+  const alerts = [];
+  const sources = { alerts: async () => ({ alerts, duty: [] }) };
+  let firstKey = '';
+  try {
+    await withDashboard({ nodes, sources, pushFile }, async ({ base, server }) => {
+      const { cookie } = await signIn(base);
+      const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+      const key = /data-push-key="([A-Za-z0-9_-]+)"/.exec(html)[1];
+      assert.equal(key, server.vapid.publicKey);
+      firstKey = key;
+      const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+      const ua = crypto.createECDH('prime256v1');
+      ua.generateKeys();
+      const auth = crypto.randomBytes(16);
+      const sub = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: auth.toString('base64url') } };
+      const post = (body, headers = { Origin: ORIGIN }) =>
+        fetch(`${base}/approve/dashboard/push`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, ...headers }, body: new URLSearchParams(body).toString() });
+      const settings = JSON.stringify({ kinds: { review: true, assigned: false }, prio: 'P1', lead: 5 });
+
+      assert.equal((await post({ csrf: 'x', action: 'save', sub: JSON.stringify(sub), settings })).status, 403);
+      assert.equal((await post({ csrf, action: 'save', sub: JSON.stringify(sub), settings }, { Origin: 'https://evil.example.com' })).status, 403);
+      assert.equal((await post({ csrf, action: 'save', sub: JSON.stringify({ ...sub, endpoint: 'https://evil.example.com/x' }), settings })).status, 400, 'only real push services');
+      assert.equal((await post({ csrf, action: 'save', sub: JSON.stringify(sub), settings })).status, 200);
+      assert.equal(server.pushSubs.size, 1);
+
+      const pushes = [];
+      const mock = globalThis.fetch;
+      globalThis.fetch = async (url, options = {}) => {
+        if (String(url) !== sub.endpoint) return mock(url, options);
+        pushes.push({ headers: options.headers, payload: openPush(options.body, ua, auth) });
+        return new Response('', { status: 201 });
+      };
+      try {
+        await server.pushTick();
+        assert.equal(pushes.length, 0, 'the first round only records what is there');
+        nodes.push(node({ iid: '9', title: 'New change', webUrl: `https://${GL}/group/app/-/merge_requests/9` }));
+        alerts.push({ id: 'a1', priority: 'P1', message: 'Disk full', queue: 'On-call' }, { id: 'a2', priority: 'P3', message: 'Minor' });
+        server.dashData.clear();
+        server.dashSourceCache.clear();
+        await server.pushTick();
+        assert.deepEqual(pushes.map((p) => p.payload.id).sort(), ['alert:a1', 'review:group/app!9'], 'the P3 alert is below the chosen priority');
+        const review = pushes.find((p) => p.payload.id === 'review:group/app!9');
+        assert.deepEqual(review.payload.o, ['mr', 'group/app!9']);
+        assert.equal(review.payload.v, 'mrs');
+        assert.equal(pushes.find((p) => p.payload.id === 'alert:a1').headers.Urgency, 'high');
+        await server.pushTick();
+        assert.equal(pushes.length, 2, 'nothing twice');
+      } finally {
+        globalThis.fetch = mock;
+      }
+
+      const saved = fs.readFileSync(pushFile, 'utf8');
+      assert.ok(!saved.includes('fcm.googleapis.com') && !saved.includes(server.vapid.privateKey), 'kept encrypted');
+      assert.equal((fs.statSync(pushFile).mode & 0o777).toString(8), '600');
+
+      const out = await fetch(`${base}/approve/dashboard/signout`, { method: 'POST', redirect: 'manual', headers: { ...FORM, Origin: ORIGIN, Cookie: cookie }, body: new URLSearchParams({ csrf: /name="csrf" value="([^"]+)" data-csrf/.exec(html)[1] }).toString() });
+      assert.equal(out.status, 303);
+      assert.equal(server.pushSubs.size, 0, 'the subscription ends with its session');
+    });
+    await withDashboard({ pushFile }, async ({ server }) => {
+      assert.equal(server.vapid.publicKey, firstKey, 'the key pair survives a restart');
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

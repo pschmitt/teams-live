@@ -369,6 +369,8 @@ export function loadConfig(configPath) {
       // Its own path on the base_url host (e.g. "/dashboard"); empty: `<base_url>/dashboard`. The proxy must forward it.
       path: (getString(rawApprove.dashboard?.path) || process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_PATH || '').trim(),
       time_zone: (getString(rawApprove.dashboard?.time_zone) || process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_TIME_ZONE || 'Europe/Berlin').trim(),
+      // Push notifications (Web Push) to the browsers that switch them on, also while the dashboard is closed. On by default.
+      push: (rawApprove.dashboard?.push ?? envBool(process.env.TEAMS_GITLAB_APPROVE_DASHBOARD_PUSH) ?? true) !== false,
     },
   };
   for (const removed of ['owner_users', 'owner_users_file', 'user_header', 'proxy_secret', 'proxy_secret_file', 'proxy_secret_header']) {

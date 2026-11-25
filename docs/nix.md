@@ -498,6 +498,7 @@ authentication layer. The proxy may keep the path prefix or strip it.
 | `gitlab.approve.dashboard.enable` | The signed-in [dashboard](#dashboard) at `<base_url>/dashboard` (false). Needs `oauth` and `gitlab.group`. |
 | `gitlab.approve.dashboard.path` | Serve the dashboard on its own path of the `base_url` host, for example `/dashboard` (default: `<base_url>/dashboard`). The old address then redirects there; the proxy must forward the path. |
 | `gitlab.approve.dashboard.time_zone` | Time zone of the meeting times on the dashboard (`Europe/Berlin`). |
+| `gitlab.approve.dashboard.push` | Push notifications to the browsers that switch them on in the dashboard's settings, also while the dashboard is closed (true). |
 
 #### Rebase and Merge buttons
 
@@ -576,7 +577,20 @@ merge request, ticket or alert, and runs the page's actions. The dashboard insta
 service worker scoped to the dashboard path); the worker keeps the last signed-in page and its data in the browser
 so it stays readable offline, with a notice, while approving and moving wait for the network. Signing out clears it. On a phone the sidebar becomes a bottom tab bar.
 
-The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
+**Notifications.** The account menu opens the dashboard's settings, where each browser can switch on desktop
+notifications and pick the events: a review request, an approval on one of the visitor's merge requests, one of
+them ready to merge or with a failed pipeline, a sprint ticket assigned to the visitor, a new unacknowledged alert
+(from a chosen priority up) and a meeting that starts in a few minutes. The choices are kept per browser. With
+`dashboard.push` (the default) and a browser that supports Web Push, the server sends them as push messages, so
+they also arrive while the dashboard is closed: once a minute it reads, for each session with a subscribed
+browser, what that visitor's dashboard would show (with their own GitLab token) and pushes what is new. Messages
+are encrypted for the browser (RFC 8291) and signed with the server's VAPID key (RFC 8292); only the push services
+of the common browsers (Google, Mozilla, Apple, Microsoft) are accepted as endpoints. The key pair and the
+subscriptions are kept in `dashboard-push.json` in the state directory, encrypted like the sessions; a
+subscription ends with its session (sign-out, expiry, a refused renewal). Without push the open dashboard shows
+the notifications itself.
+
+The dashboard uses the same OAuth application and callback; the proxy must forward the dashboard path and its sub-paths (`/data`, `/approve`, `/signin`, `/signout`, `/push`). With `dashboard.path = "/dashboard"` the proxy can also send `/` there, so the host itself opens the dashboard.
 
 Alternatively set `gitlab.approve.oauth.auto_setup = true`. On startup,
 teams-live creates a confidential application owned by the primary GitLab

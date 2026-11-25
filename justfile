@@ -30,6 +30,7 @@ check:
   node --check src/approve.mjs
   node --check src/approve-page.mjs
   node --check src/dashboard.mjs
+  node --check src/webpush.mjs
   node --check src/logger.mjs
   shellcheck scripts/*.sh
   nix flake check

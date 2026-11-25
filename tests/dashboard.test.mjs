@@ -767,6 +767,10 @@ test('the ticket panel header is compact: status with type and priority, people 
   assert.doesNotMatch(html, /<dt>(Type|Priority|Reporter|Updated)<\/dt>/, 'no separate rows any more');
 });
 
+test('on a narrow screen the summary tiles sit two side by side', () => {
+  assert.match(DASHBOARD_CSS, /@media \(max-width:68rem\)\{[^']*\.lrow:has\(\.box-st\):not\(:has\(\.box:not\(\.box-st\)\)\)\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

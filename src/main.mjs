@@ -66,6 +66,8 @@ function dashboardSources({ jira, opsgenie, hrworks }) {
       : null,
     issueKeys: jira.isConfigured() ? (mr) => jira.findAssociatedIssues({ title: mr.title, source_branch: mr.source, author: mr.author }).map((i) => i.key) : null,
     alert: opsgenie.isConfigured() ? (id) => opsgenie.getAlert(id) : null,
+    // Acknowledge or close an alert from the dashboard, noting who asked.
+    alertAction: opsgenie.isConfigured() ? (id, action, opts) => opsgenie.alertAction(id, action, opts) : null,
     // Moves a sprint ticket to a board column with the Jira transition that leads there: the target status's
     // category (to do, in progress) or, for review, a target status named like it. Returns the new status name.
     move: jira.isConfigured()

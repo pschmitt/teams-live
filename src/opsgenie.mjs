@@ -96,6 +96,45 @@ export class OpsGenieClient {
   /**
    * Fetches single OpsGenie alert details by ID or tinyId.
    */
+  /**
+   * Acknowledges or closes an alert: `action` is 'acknowledge' or 'close', `user` and `note` name who asked. Each
+   * queue's key is tried until one is accepted; OpsGenie then processes the request, which is followed shortly.
+   * Answers `{status: 'done'|'failed'|'pending', text}`.
+   */
+  async alertAction(identifier, action, { user = '', note = '' } = {}) {
+    if (!identifier || !['acknowledge', 'close'].includes(action)) throw new Error('invalid alert action');
+    const keys = [this.onCallKey, this.supportKey, this.edgeKey].filter(Boolean);
+    if (!keys.length) throw new Error('OpsGenie is not configured (missing API keys)');
+    let last = null;
+    for (const key of keys) {
+      const res = await fetch(`${this.baseUrl}/alerts/${encodeURIComponent(identifier)}/${action}?identifierType=id`, {
+        method: 'POST',
+        headers: { Authorization: `GenieKey ${key}`, 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': 'teams-live/1.0' },
+        body: JSON.stringify({ user: user || undefined, source: 'teams-live dashboard', note: note || undefined }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 202 || res.ok) {
+        const requestId = (await res.json().catch(() => ({})))?.requestId;
+        if (!requestId) return { status: 'pending', text: 'OpsGenie took the request.' };
+        // The request is processed asynchronously: follow it for a few seconds.
+        for (let i = 0; i < 4; i++) {
+          await new Promise((r) => setTimeout(r, 750));
+          const st = await fetch(`${this.baseUrl}/alerts/requests/${encodeURIComponent(requestId)}`, {
+            headers: { Authorization: `GenieKey ${key}`, Accept: 'application/json', 'User-Agent': 'teams-live/1.0' },
+            signal: AbortSignal.timeout(10_000),
+          }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+          const d = st?.data;
+          if (d && typeof d.success === 'boolean') return d.success ? { status: 'done', text: '' } : { status: 'failed', text: String(d.status || 'OpsGenie refused it') };
+        }
+        return { status: 'pending', text: 'OpsGenie took the request and is still processing it.' };
+      }
+      last = res.status;
+      if (res.status === 401 || res.status === 403 || res.status === 404) continue;
+      break;
+    }
+    return { status: 'failed', text: last ? `OpsGenie answered HTTP ${last}` : 'OpsGenie did not answer' };
+  }
+
   async getAlert(identifier) {
     if (!identifier) throw new Error('Alert identifier is required');
     const keys = [this.onCallKey, this.supportKey, this.edgeKey].filter(Boolean);

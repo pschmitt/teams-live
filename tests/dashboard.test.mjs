@@ -400,7 +400,7 @@ test('sprint board: an "Only mine" toggle in the card header, per-column counts 
   assert.match(html, /<li class="tk mine" data-key="ABC-1"/);
   const script = dashboardScript('/dashboard');
   assert.match(script, /tl-sprintmine/);
-  assert.match(script, /if\(k==='sprint'\)smn\(\)/, 'the header count follows a refresh');
+  assert.match(script, /if\(k==='sprint'\)\{smn\(\);tselUpdate\(\)\}/, 'the header count and the selection follow a refresh');
 });
 
 test('merge request panel: the pipeline and its stages on one row, the diff of each file below', () => {
@@ -414,8 +414,10 @@ test('merge request panel: the pipeline and its stages on one row, the diff of e
   const { html } = mrDetail({ mr, jobs: [{ stage: 'test', name: 'unit', status: 'running' }], diffs }, ctx);
   assert.match(html, /<span class="pipe-row"><span class="pipe">[\s\S]*?<\/span><span class="stages">/, 'stages sit next to the pipeline link');
   assert.match(html, /<h3 class="dsub">Changes <span class="dsum">3 files · <span class="dadd">\+2<\/span> <span class="ddel">−1<\/span>/, 'totals in the heading');
-  assert.match(html, /<select class="dsel" data-diff-sel aria-label="File"><option value="0">a\.js  \+1 −1<\/option><option value="1">big\.bin  \+0 −0<\/option><option value="2">n\.txt \(added\)  \+1 −0<\/option><\/select>/, 'one selector for the files');
+  assert.match(html, /<select class="dsel" data-diff-sel aria-label="File" hidden><option value="0">a\.js  \+1 −1<\/option><option value="1">big\.bin  \+0 −0<\/option><option value="2">n\.txt \(added\)  \+1 −0<\/option><\/select>/, 'one selector for the files');
   assert.match(html, /data-diff-step="1"/);
+  assert.match(html, /<div class="dpick" data-diff-pick><button type="button" class="dpick-btn" data-diff-open aria-haspopup="listbox" aria-expanded="false" aria-label="File"><span class="dpick-cur" data-diff-cur><span class="fn"><b>a\.js<\/b><\/span><span class="dstat"><span class="dadd">\+1<\/span> <span class="ddel">−1<\/span><\/span><\/span>/, 'a custom picker shows the current file');
+  assert.match(html, /<ul class="dpick-list" role="listbox" data-diff-list hidden><li role="option" tabindex="-1" data-diff-to="0" aria-selected="true">/);
   assert.match(html, /<div class="dpane" data-diff-pane="0"><div class="dpath">/, 'the first file is shown');
   assert.match(html, /data-diff-pane="1" hidden>/, 'the others wait');
   assert.match(html, /<tr class="dl-hunk"><td class="ln"><\/td><td class="ln"><\/td><td class="dc">@@ -1,2 \+1,2 @@<\/td><\/tr><tr class="dl-del"><td class="ln">1<\/td><td class="ln"><\/td><td class="dc"><span class="dm">−<\/span>old &lt;b&gt;<\/td><\/tr><tr class="dl-add"><td class="ln"><\/td><td class="ln">1<\/td><td class="dc"><span class="dm">\+<\/span>new<\/td><\/tr><tr class="dl-ctx"><td class="ln">2<\/td><td class="ln">2<\/td>/, 'old and new line numbers, escaped');
@@ -822,6 +824,41 @@ test('on a phone the layout editor moves cards with arrow buttons instead of dra
   const script = dashboardScript('/dashboard');
   assert.match(script, /var mvb=e\.target\.closest\('\[data-move\]'\);if\(mvb\)\{moveCard\(/);
   assert.match(script, /function moveCard\(b,dir\)\{[\s\S]*?saveL\(\)/, 'a move is saved like any other layout change');
+});
+
+test('alerts can be acknowledged and closed from the dashboard: only those it shows, with a note naming the visitor', async () => {
+  const acted = [];
+  const sources = {
+    alerts: async () => ({ alerts: [{ id: 'abc-123', tinyId: '42', message: 'Disk full', priority: 'P2', createdAt: new Date().toISOString() }], duty: [] }),
+    alertAction: async (id, action, opts) => { acted.push({ id, action, ...opts }); return { status: 'done', text: '' }; },
+  };
+  await withDashboard({ sources }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /<input type="checkbox" data-asel="abc-123"/);
+    assert.match(html, /data-abulk="acknowledge">Acknowledge<\/button><button[^>]*data-abulk="close">Close/);
+    const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
+    const post = (body) => fetch(`${base}/approve/dashboard/alert-action`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: ORIGIN }, body: new URLSearchParams(body).toString() });
+    assert.equal((await post({ csrf, id: 'other-1', action: 'close' })).status, 404, 'not on the dashboard');
+    assert.equal((await post({ csrf, id: 'abc-123', action: 'delete' })).status, 400);
+    const ok = await (await post({ csrf, id: 'abc-123', action: 'acknowledge' })).json();
+    assert.deepEqual(ok, { status: 'done', text: 'Acknowledged #42.' });
+    assert.deepEqual(acted, [{ id: 'abc-123', action: 'acknowledge', user: 'Alice Example', note: 'Acknowledged from the teams-live dashboard by Alice Example.' }]);
+  });
+  const panel = alertDetail({ id: 'abc-123', message: 'm', status: 'open', acknowledged: false }, { avatars: {} }).html;
+  assert.match(panel, /data-aact="acknowledge" data-aid="abc-123">Acknowledge<\/button><button[^>]*data-aact="close"/);
+});
+
+test('merge requests and sprint tickets can be selected for bulk actions (Shift+click for a range)', () => {
+  const ctx = { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' };
+  const mrs = mrsSection({ items: [normalizeMr(node())] }, ctx);
+  assert.match(mrs, /<div class="mrbulk" data-bulk hidden>[\s\S]*data-bulk-approve[\s\S]*data-bulk-merge[\s\S]*data-bulk-clear/);
+  assert.match(mrs, /<label class="mrsel"[^>]*><input type="checkbox" data-sel="group\/app!7"/);
+  const sprint = sprintSection({ data: { todo: [{ key: 'ABC-1', summary: 's', assignee: 'Alice' }] } }, ctx);
+  assert.match(sprint, /<div class="mrbulk" data-tbulk hidden>[\s\S]*data-tbulk-to="inProgress"/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /function bulk\(kind\)\{[\s\S]*?\(kind==='merge'\?merge:approve\)\(b,\{quiet:true\}\)/, 'one after the other through the single actions');
+  assert.match(script, /if\(tsk&&\(e\.shiftKey\|\|e\.ctrlKey\|\|e\.metaKey\)\)\{e\.preventDefault\(\);tselClick\(tsk,e\.shiftKey\)/, 'Shift or Ctrl+click selects a ticket');
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

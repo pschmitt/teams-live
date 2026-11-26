@@ -27,3 +27,23 @@ test('fetchShifts reads the final timeline, keeps users only and merges adjacent
     assert.deepEqual(await client.fetchShifts('', 'sched-1'), [], 'no key, no request');
   } finally { globalThis.fetch = original; }
 });
+
+test('alertAction acknowledges with the first key OpsGenie accepts and follows the request to its result', async () => {
+  const client = new OpsGenieClient({ on_call_key: 'k1', support_key: 'k2', base_url: 'https://api.example.com/v2' });
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), key: options.headers?.Authorization, body: options.body });
+    if (String(url).includes('/alerts/requests/')) return Response.json({ data: { success: true, status: 'Acknowledged' } });
+    if (options.headers?.Authorization === 'GenieKey k1') return new Response('{}', { status: 403 });
+    return Response.json({ requestId: 'r1' }, { status: 202 });
+  };
+  try {
+    const r = await client.alertAction('a1', 'acknowledge', { user: 'Alice Example', note: 'by Alice' });
+    assert.deepEqual(r, { status: 'done', text: '' });
+    assert.match(calls[1].url, /\/alerts\/a1\/acknowledge\?identifierType=id$/);
+    assert.equal(calls[1].key, 'GenieKey k2', 'the queue key that may act');
+    assert.deepEqual(JSON.parse(calls[1].body), { user: 'Alice Example', source: 'teams-live dashboard', note: 'by Alice' });
+    await assert.rejects(client.alertAction('a1', 'delete'), /invalid alert action/);
+  } finally { globalThis.fetch = original; }
+});

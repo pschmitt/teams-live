@@ -919,12 +919,12 @@ export class ApproveServer {
     if (this.dashboard && this.dashPath !== legacy && (pathname === legacy || pathname.startsWith(`${legacy}/`))) return '/dashboard-moved';
     if (this.dashboard && (pathname === this.dashPath || pathname.startsWith(`${this.dashPath}/`))) {
       const sub = pathname.slice(this.dashPath.length);
-      return ['', '/data', '/approve', '/merge', '/signin', '/signout', '/issue', '/alert', '/mr', '/person', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
+      return ['', '/data', '/approve', '/merge', '/alert-action', '/signin', '/signout', '/issue', '/alert', '/mr', '/person', '/move', '/push', '/sw.js', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'].includes(sub) ? `/dashboard${sub}` : null;
     }
     if (this.basePath && (pathname === this.basePath || pathname.startsWith(`${this.basePath}/`))) {
       pathname = pathname.slice(this.basePath.length) || '/';
     }
-    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/person', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/merge', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
+    return ['/', '/open', '/open/view', '/session', '/confirm', '/state', '/oauth/start', '/oauth/callback', '/dashboard', '/dashboard/data', '/dashboard/issue', '/dashboard/alert', '/dashboard/mr', '/dashboard/person', '/dashboard/move', '/dashboard/push', '/dashboard/sw.js', '/dashboard/manifest.webmanifest', '/dashboard/icon-192.png', '/dashboard/icon-512.png', '/dashboard/approve', '/dashboard/merge', '/dashboard/alert-action', '/dashboard/signin', '/dashboard/signout'].includes(pathname) ? pathname : null;
   }
 
   readForm(req) {
@@ -1823,6 +1823,11 @@ export class ApproveServer {
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was approved.' });
       return this.dashboardApprove(req, res, session);
     }
+    if (route === '/dashboard/alert-action') {
+      if (method !== 'POST') return notAllowed('POST');
+      if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was changed.' });
+      return this.dashboardAlertAction(req, res, session);
+    }
     if (route === '/dashboard/merge') {
       if (method !== 'POST') return notAllowed('POST');
       if (!session) return this.json(res, 401, { status: 'failed', text: 'Signed out. Reload the page and sign in again. Nothing was merged.' });
@@ -2430,6 +2435,43 @@ export class ApproveServer {
       return answer(outcome[0], outcome[1]);
     } catch {
       return answer('unknown', `The outcome for ${ref} is unknown. Check it in GitLab before retrying.`);
+    }
+  }
+
+  /**
+   * POST <dash>/alert-action: acknowledges or closes one OpsGenie alert of this visitor's dashboard, with the bot's
+   * OpsGenie keys and a note naming the visitor. Same checks as the other writes: Origin, CSRF, the alert must be
+   * on the dashboard. Answers `{status: done|pending|failed, text}`.
+   */
+  async dashboardAlertAction(req, res, session) {
+    const answer = (status, text, code = 200) => this.json(res, code, { status, text });
+    if (!this.originAllowed(req)) return answer('failed', 'The request did not come from the dashboard. Nothing was changed.', 403);
+    const parsed = await this.postForm(req);
+    if (!parsed.form) return answer('failed', 'The request was rejected. Nothing was changed.', parsed.status);
+    if (!this.csrf.verify(parsed.form.get('csrf'), session.sid, 'dashboard', `who=${session.user.username}`)) return answer('failed', 'The page expired. Reload it and try again. Nothing was changed.', 403);
+    const id = String(parsed.form.get('id') || '');
+    const action = String(parsed.form.get('action') || '');
+    if (!/^[A-Za-z0-9-]{1,80}$/.test(id) || !['acknowledge', 'close'].includes(action)) return answer('failed', 'The request was rejected. Nothing was changed.', 400);
+    const fn = this.dashboard.sources?.alertAction;
+    if (typeof fn !== 'function') return answer('failed', 'OpsGenie is not configured. Nothing was changed.', 409);
+    const data = await this.dashboardDataFor(session, (d) => (d.alerts.data?.alerts || []).some((a) => a.id === id));
+    if (!data) return answer('failed', 'This alert is not on the dashboard (any more). Nothing was changed.', 404);
+    const alert = (data.alerts.data?.alerts || []).find((a) => a.id === id);
+    const who = session.user.name || session.user.username;
+    const label = action === 'close' ? 'Closed' : 'Acknowledged';
+    try {
+      const r = await fn(id, action, { user: who, note: `${label} from the teams-live dashboard by ${who}.` });
+      log(`Dashboard: ${session.user.username} asked to ${action} OpsGenie alert ${alert?.tinyId || id}: ${r.status}`);
+      // The alert list changes: read it again on the next refresh.
+      this.dashSourceCache.delete('alerts');
+      this.dashSourceCache.delete(`alert:${id}`);
+      for (const k of this.dashData.keys()) this.dashData.delete(k);
+      const name = alert?.tinyId ? `#${alert.tinyId}` : 'the alert';
+      if (r.status === 'done') return answer('done', `${label} ${name}.`);
+      if (r.status === 'pending') return answer('pending', `OpsGenie took the request for ${name}; it shows shortly.`);
+      return answer('failed', `OpsGenie did not ${action} ${name}: ${r.text}.`);
+    } catch (err) {
+      return answer('failed', `OpsGenie could not be reached: ${err.message}. Nothing may have changed.`);
     }
   }
 

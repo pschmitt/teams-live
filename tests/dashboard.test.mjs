@@ -861,6 +861,20 @@ test('merge requests and sprint tickets can be selected for bulk actions (Shift+
   assert.match(script, /if\(tsk&&\(e\.shiftKey\|\|e\.ctrlKey\|\|e\.metaKey\)\)\{e\.preventDefault\(\);tselClick\(tsk,e\.shiftKey\)/, 'Shift or Ctrl+click selects a ticket');
 });
 
+test('the page script runs through its start without throwing (a fake page answers everything)', () => {
+  // Every property is a callable stand-in that answers with another stand-in, so the start-up code runs its real
+  // paths; a variable used before it is set (as a bulk selection once did in mark()) throws here.
+  const fake = () => new Proxy(function () {}, {
+    get: (target, key) => (key === Symbol.toPrimitive ? () => '' : key === 'length' ? 0 : key === Symbol.iterator ? function* () {} : fake()),
+    apply: () => fake(),
+    construct: () => fake(),
+    set: () => true,
+  });
+  const script = dashboardScript('/dashboard');
+  const run = new Function('document', 'window', 'navigator', 'localStorage', 'sessionStorage', 'location', 'history', 'matchMedia', 'requestAnimationFrame', 'requestIdleCallback', 'setTimeout', 'setInterval', 'fetch', 'Notification', 'caches', 'CSS', 'URLSearchParams', script);
+  assert.doesNotThrow(() => run(fake(), fake(), fake(), fake(), fake(), fake(), fake(), fake(), () => 0, () => 0, () => 0, () => 0, () => Promise.resolve(fake()), fake(), fake(), fake(), URLSearchParams));
+});
+
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {
   const html = jiraWikiToHtml('h2. Why\nRead it on [the docs|https://docs.example.com] in {{group/docs}}, *now*.\n* a <b>\n** b\n# one\n{code}\n<script>x</script>\n{code}\n[bad|javascript:alert(1)]');
   assert.match(html, /<h4>Why<\/h4>/);

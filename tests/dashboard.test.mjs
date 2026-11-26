@@ -789,7 +789,7 @@ test('every view has its own layout (falling back to the overview\'s) and can be
   const script = dashboardScript('/dashboard');
   assert.match(script, /function lk\(v\)\{v=v\|\|d\.getAttribute\('data-view'\)\|\|'overview';return v==='overview'\?LK:LK\+':'\+v\}/, 'one saved layout per view, the overview keeps its key');
   assert.match(script, /var base=readOwn\('overview'\);return base\?\{rows:base\.rows,height:\{\},hidden:base\.hidden\|\|\[\],inherited:true\}/, 'a view without its own starts from the overview');
-  assert.match(script, /function view\(v\)\{d\.setAttribute\('data-view',v\);if\(L&&v!=='settings'&&L\.getAttribute\('data-layout-of'\)!==v\)applyL\(readL\(v\)\)/);
+  assert.match(script, /d\.setAttribute\('data-view',v\);if\(L&&v!=='settings'&&L\.getAttribute\('data-layout-of'\)!==v\)applyL\(readL\(v\)\)/);
   assert.match(script, /if\(on&&d\.getAttribute\('data-view'\)==='settings'\)view\('overview'\)/, 'editing stays on the view');
   assert.doesNotMatch(DASHBOARD_CSS, /\.dash:not\(\[data-view=overview\]\) \.tools/);
   const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
@@ -905,6 +905,27 @@ test('ticket panels open from the cache and do not wait for their merge requests
     assert.match((await get()).title, /Second/);
     assert.ok(reads >= 2);
     releaseLinks([]);
+  });
+});
+
+test('Settings opens as a dialog over the current view instead of a view of its own', () => {
+  const body = dashboardBody({ data: { mrs: { items: [] }, sprint: { data: {} }, alerts: { data: { alerts: [] } }, meetings: { data: [] } }, ctx: { username: 'alice', name: 'Alice', host: GL, avatars: {}, now: Date.now(), timeZone: 'UTC' }, csrf: 'x', filter: 'human', updated: 'now' });
+  assert.match(body, /<dialog class="set-dlg" data-settings-dlg aria-labelledby="h-settings"><button type="button" class="tool set-close" data-settings-close[^>]*>[\s\S]*?<section class="settings" data-settings/);
+  const script = dashboardScript('/dashboard');
+  assert.match(script, /function view\(v\)\{if\(v==='settings'\)\{settingsOpen\(\);return\}/, 'the Settings links and #settings open the dialog');
+  assert.match(script, /dl\.showModal\(\)/);
+  assert.match(script, /if\(sv&&sv!=='settings'\)d\.setAttribute\('data-view',sv\)/, 'a remembered Settings view starts on the overview');
+  assert.match(DASHBOARD_CSS, /\.set-dlg::backdrop\{/);
+});
+
+test('the dashboard header shows only the brand, without "/ Dashboard"', async () => {
+  await withDashboard({}, async ({ base }) => {
+    const gate = await (await fetch(`${base}/approve/dashboard`)).text();
+    assert.doesNotMatch(gate, /class="kicker"/);
+    const { cookie } = await signIn(base);
+    const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
+    assert.match(html, /<span class="word">teams-live<\/span><\/a>/);
+    assert.doesNotMatch(html, /<span class="sep" aria-hidden="true">\/<\/span><span class="kicker">/);
   });
 });
 

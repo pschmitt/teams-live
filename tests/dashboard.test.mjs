@@ -836,8 +836,8 @@ test('alerts can be acknowledged and closed from the dashboard: only those it sh
     const { cookie } = await signIn(base);
     const html = await (await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } })).text();
     assert.match(html, /<input type="checkbox" data-asel="abc-123"/);
-    assert.match(html, /<li class="al" [^>]*data-alert="abc-123"[\s\S]*?<span class="aacts"><button[^>]*data-aact="acknowledge" data-aid="abc-123"[\s\S]*?data-aact="close"[\s\S]*?<\/li>/, 'each alert row has the buttons too');
-    assert.match(html, /data-abulk="acknowledge"><svg[\s\S]*?<\/svg>Acknowledge<\/button><button[^>]*data-abulk="close"><svg[\s\S]*?<\/svg>Close/);
+    assert.match(html, /<li class="al" [^>]*data-alert="abc-123"[\s\S]*?<span class="aacts"><button[^>]*data-aact="acknowledge" data-aid="abc-123"[^>]*>[\s\S]*?<span class="bl">ACK<\/span><\/button><\/span><\/li>/, 'each alert row has ACK, Close only in the panel');
+    assert.match(html, /data-abulk="acknowledge" title="Acknowledge"><svg[\s\S]*?<\/svg>ACK<\/button><button[^>]*data-abulk="close"><svg[\s\S]*?<\/svg>Close/);
     const csrf = /id="dash-csrf" value="([^"]+)"/.exec(html)[1];
     const post = (body) => fetch(`${base}/approve/dashboard/alert-action`, { method: 'POST', headers: { ...FORM, Accept: 'application/json', Cookie: cookie, Origin: ORIGIN }, body: new URLSearchParams(body).toString() });
     assert.equal((await post({ csrf, id: 'other-1', action: 'close' })).status, 404, 'not on the dashboard');
@@ -847,7 +847,7 @@ test('alerts can be acknowledged and closed from the dashboard: only those it sh
     assert.deepEqual(acted, [{ id: 'abc-123', action: 'acknowledge', user: 'Alice Example', note: 'Acknowledged from the teams-live dashboard by Alice Example.' }]);
   });
   const panel = alertDetail({ id: 'abc-123', message: 'm', status: 'open', acknowledged: false }, { avatars: {} }).html;
-  assert.match(panel, /<dt>Status<\/dt><dd><span class="appr-line"><span>open<\/span><span class="aacts"><button[^>]*data-aact="acknowledge" data-aid="abc-123" title="Acknowledge"><svg[\s\S]*?<\/svg><span class="bl">Acknowledge<\/span><\/button><button[^>]*data-aact="close"[^>]*><svg[\s\S]*?<\/svg><span class="bl">Close/, 'on the Status row, with icons');
+  assert.match(panel, /<dt>Status<\/dt><dd><span class="appr-line"><span>open<\/span><span class="aacts"><button[^>]*data-aact="acknowledge" data-aid="abc-123" title="Acknowledge"><svg[\s\S]*?<\/svg><span class="bl">ACK<\/span><\/button><button[^>]*data-aact="close"[^>]*><svg[\s\S]*?<\/svg><span class="bl">Close/, 'on the Status row, with icons');
   assert.doesNotMatch(alertDetail({ id: 'abc-123', message: 'm', status: 'closed' }, { avatars: {} }).html, /data-aact/, 'nothing to do on a closed alert');
 });
 

@@ -450,10 +450,10 @@ export function alertsSection(state, ctx) {
     const acked = a.acknowledged ? ' · acknowledged' : '';
     const open = /^[A-Za-z0-9-]{1,80}$/.test(String(a.id || '')) ? ` data-alert="${escapeHtml(a.id)}" role="button" tabindex="0" aria-label="${escapeHtml(`${prio} alert: ${a.message || ''}`)}"` : '';
     const sel = open ? `<label class="mrsel" title="Select (Shift+click: a range)"><input type="checkbox" data-asel="${escapeHtml(a.id)}" aria-label="${escapeHtml(`Select alert ${a.tinyId || a.id}`)}"></label>` : '<span></span>';
-    return `<li class="al${a.acknowledged ? ' acked' : ''}" data-key="${escapeHtml(a.tinyId || a.id || a.message || '')}"${open}>${sel}<span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div>${alertActions(a) || '<span></span>'}</li>`;
+    return `<li class="al${a.acknowledged ? ' acked' : ''}" data-key="${escapeHtml(a.tinyId || a.id || a.message || '')}"${open}>${sel}<span class="prio prio-${prio.toLowerCase()}">${prio}</span><div><b>${msg}</b><small>${escapeHtml(a.queue || '')}${a.count > 1 ? ` · ${escapeHtml(a.count)}×` : ''} · ${escapeHtml(ago(a.createdAt, ctx.now))}${acked}</small></div>${alertActions(a, { close: false }) || '<span></span>'}</li>`;
   });
   const more = alerts.length > 12 ? `<li class="none">${alerts.length - 12} more in OpsGenie</li>` : '';
-  const alertBar = '<div class="mrbulk" data-abulk hidden><b data-abulk-n></b><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-abulk="acknowledge">' + ICONS.check + 'Acknowledge</button><button type="button" class="btn btn-secondary btn-sm" data-abulk="close">' + ICONS.cross + 'Close</button><button type="button" class="btn btn-secondary btn-sm" data-abulk-clear>Clear</button></div>';
+  const alertBar = '<div class="mrbulk" data-abulk hidden><b data-abulk-n></b><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-abulk="acknowledge" title="Acknowledge">' + ICONS.check + 'ACK</button><button type="button" class="btn btn-secondary btn-sm" data-abulk="close">' + ICONS.cross + 'Close</button><button type="button" class="btn btn-secondary btn-sm" data-abulk-clear>Clear</button></div>';
   const list = rows.length ? `${alertBar}<ul class="alist">${rows.join('')}${more}</ul>` : `<p class="empty ok">${ICONS.check}No open alerts.</p>`;
   return list;
 }
@@ -1143,10 +1143,12 @@ export function personDetail(p, ctx) {
 }
 
 /** Acknowledge and Close for an open alert, on its Status row (like Approve on the merge request's Approvals row). */
-function alertActions(a) {
+function alertActions(a, { close = true } = {}) {
   const id = /^[A-Za-z0-9-]{1,80}$/.test(String(a.id || '')) ? a.id : '';
   if (!id || String(a.status || 'open') === 'closed') return '';
-  return `<span class="aacts">${a.acknowledged ? '' : `<button type="button" class="btn btn-secondary btn-sm" data-aact="acknowledge" data-aid="${escapeHtml(id)}" title="Acknowledge">${ICONS.check}<span class="bl">Acknowledge</span></button>`}<button type="button" class="btn btn-secondary btn-sm" data-aact="close" data-aid="${escapeHtml(id)}" title="Close">${ICONS.cross}<span class="bl">Close</span></button></span>`;
+  const ack = a.acknowledged ? '' : `<button type="button" class="btn btn-secondary btn-sm" data-aact="acknowledge" data-aid="${escapeHtml(id)}" title="Acknowledge">${ICONS.check}<span class="bl">ACK</span></button>`;
+  const shut = close ? `<button type="button" class="btn btn-secondary btn-sm" data-aact="close" data-aid="${escapeHtml(id)}" title="Close">${ICONS.cross}<span class="bl">Close</span></button>` : '';
+  return ack || shut ? `<span class="aacts">${ack}${shut}</span>` : '';
 }
 
 export function alertDetail(a, ctx) {

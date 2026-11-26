@@ -2054,17 +2054,8 @@ export class ApproveServer {
     const mrsRead = kind === 'issue' ? this.issueMrs(session, data, id) : Promise.resolve([]);
     const fn = this.dashboard.sources?.[kind];
     if (typeof fn !== 'function') return this.json(res, 404, {});
-    const cacheKey = `${kind}:${id}`;
-    const now = this.now();
-    let hit = this.dashSourceCache.get(cacheKey);
-    if (!hit || now - hit.at > DASH_SOURCE_CACHE_MS) {
-      hit = { at: now, promise: Promise.resolve().then(() => fn(id)) };
-      this.dashSourceCache.set(cacheKey, hit);
-      hit.promise.catch(() => { if (this.dashSourceCache.get(cacheKey) === hit) this.dashSourceCache.delete(cacheKey); });
-      for (const [k, v] of this.dashSourceCache) if (k.includes(':') && now - v.at > DASH_SOURCE_CACHE_MS) this.dashSourceCache.delete(k);
-    }
     try {
-      const item = await hit.promise;
+      const item = await this.detailItem(kind, id);
       const t2 = performance.now();
       const names = kind === 'issue' ? [item.assignee, item.reporter].filter(Boolean) : [];
       this.notePeopleShown(session, names);
@@ -2072,10 +2063,16 @@ export class ApproveServer {
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost };
+      const t3 = performance.now();
+      // The merge requests come from GitLab and Jira: the panel waits a moment for them, else it opens without them
+      // (marked pending, so the page asks again) while the lookup finishes into its cache.
+      const NONE = Symbol('pending');
       let timer;
-      const mrs = await Promise.race([mrsRead, new Promise((resolve) => { timer = setTimeout(() => resolve([]), 4_000); timer.unref?.(); })]).catch(() => []);
+      const mrs = await Promise.race([mrsRead, new Promise((resolve) => { timer = setTimeout(() => resolve(NONE), 300); timer.unref?.(); })]).catch(() => []);
       clearTimeout(timer);
-      return this.json(res, 200, kind === 'issue' ? issueDetail(item, ctx, mrs) : alertDetail(item, ctx), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, kind) });
+      const pending = kind === 'issue' && mrs === NONE;
+      const body = kind === 'issue' ? { ...issueDetail(item, ctx, pending ? [] : mrs, { mrsPending: pending }), pending } : alertDetail(item, ctx);
+      return this.json(res, 200, body, { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: t3 - t2, mrs: performance.now() - t3 }, kind) });
     } catch (err) {
       log(`Dashboard could not read ${kind} ${id}: ${err.message}`);
       return this.json(res, 502, {});
@@ -2146,7 +2143,7 @@ export class ApproveServer {
     const cacheKey = `issuemrs:${sha256Hex(session.sid)}:${key}`;
     const now = this.now();
     const hit = this.dashSourceCache.get(cacheKey);
-    if (hit && now - hit.at < 60_000) return hit.promise;
+    if (hit && now - hit.at < 600_000) return hit.promise;
     const promise = (async () => {
       const listed = (data.mrs.items || []).filter((mr) => (mr.issues || []).includes(key));
       const [found, links] = await Promise.all([
@@ -2169,6 +2166,62 @@ export class ApproveServer {
     this.dashSourceCache.set(cacheKey, entry);
     promise.catch(() => { if (this.dashSourceCache.get(cacheKey) === entry) this.dashSourceCache.delete(cacheKey); });
     return promise;
+  }
+
+  /**
+   * A ticket or an alert for its panel, read by the bot. The last copy is answered at once and read again in the
+   * background once it is older than a minute (kept for a day); only the first read is waited for.
+   */
+  detailItem(kind, id) {
+    const fn = this.dashboard.sources?.[kind];
+    const key = `${kind}:${id}`;
+    const now = this.now();
+    const hit = this.dashSourceCache.get(key);
+    const refresh = () => {
+      const entry = { at: this.now(), promise: Promise.resolve().then(() => fn(id)) };
+      entry.promise.then((v) => { entry.value = v; }).catch(() => {});
+      return entry;
+    };
+    if (hit && 'value' in hit) {
+      if (now - hit.at > DASH_SOURCE_CACHE_MS && !hit.refreshing) {
+        hit.refreshing = true;
+        const next = refresh();
+        next.promise.then(() => { if (this.dashSourceCache.get(key) === hit) this.dashSourceCache.set(key, next); }).catch(() => {}).finally(() => { hit.refreshing = false; });
+      }
+      return Promise.resolve(hit.value);
+    }
+    if (hit) return hit.promise;
+    const entry = refresh();
+    this.dashSourceCache.set(key, entry);
+    entry.promise.catch(() => { if (this.dashSourceCache.get(key) === entry) this.dashSourceCache.delete(key); });
+    for (const [k, v] of this.dashSourceCache) if (k.includes(':') && now - v.at > 24 * 3_600_000) this.dashSourceCache.delete(k);
+    return entry.promise;
+  }
+
+  /**
+   * Reads the visitor's sprint tickets and their merge requests in the background (at most every fifteen minutes,
+   * two at a time), so a ticket panel opens from the cache. Never waited for.
+   */
+  warmIssues(session, data) {
+    if (typeof this.dashboard.sources?.issue !== 'function') return;
+    const key = session.key || sha256Hex(session.sid);
+    this.issuesWarmedAt ||= new Map();
+    const now = this.now();
+    if (now - (this.issuesWarmedAt.get(key) || 0) < 900_000) return;
+    this.issuesWarmedAt.set(key, now);
+    const keys = [];
+    for (const c of ['inProgress', 'inReview', 'todo']) for (const t of data.sprint.data?.[c] || []) keys.push(String(t.key).toUpperCase());
+    for (const mr of data.mrs.items || []) for (const k of mr.issues || []) keys.push(k);
+    const todo = [...new Set(keys)].filter((k) => /^[A-Z][A-Z0-9]{0,15}-[1-9]\d{0,8}$/.test(k)).slice(0, 40);
+    let next = 0;
+    const worker = async () => {
+      while (next < todo.length) {
+        const k = todo[next++];
+        await this.detailItem('issue', k).catch(() => {});
+        await this.issueMrs(session, data, k).catch(() => {});
+      }
+    };
+    for (let i = 0; i < 2; i++) void worker();
   }
 
   /** Remembers the people a detail panel showed this visitor, so their names open the person panel too. */
@@ -2276,6 +2329,7 @@ export class ApproveServer {
       const data = { at: this.now(), mrs, sprint, alerts, meetings, leave };
       this.dashDataDone.set(key, data);
       this.warmPeople(data);
+      this.warmIssues(session, data);
       return data;
     })();
     const entry = { at: now, promise };

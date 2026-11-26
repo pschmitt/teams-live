@@ -971,7 +971,8 @@ export function mrDetail({ mr, approvals, jobs, diffs }, ctx, approve = '') {
 
 /** A Jira ticket for the preview drawer: `{title, html}`, everything escaped, the link to Jira at the end. */
 /** The merge requests of a ticket for its panel: state, reference and title; those on the dashboard open their panel. */
-function issueMrsSection(mrs, ctx) {
+function issueMrsSection(mrs, ctx, pending = false) {
+  if (pending) return '<h3 class="dsub">Merge requests</h3><p class="note" data-pending>Looking for merge requests…</p>';
   if (!Array.isArray(mrs) || !mrs.length) return '';
   const STATE = { opened: ['ok', 'Open'], merged: ['merged', 'Merged'], closed: ['bad', 'Closed'], locked: ['idle', 'Locked'] };
   const rows = mrs.map((mr) => {
@@ -984,7 +985,7 @@ function issueMrsSection(mrs, ctx) {
   return `<h3 class="dsub">Merge requests</h3><ul class="dmrs">${rows}</ul>`;
 }
 
-export function issueDetail(i, ctx, mrs = []) {
+export function issueDetail(i, ctx, mrs = [], { mrsPending = false } = {}) {
   const url = webLink(i.url);
   const html =
     '<div class="dmeta">' +
@@ -997,7 +998,7 @@ export function issueDetail(i, ctx, mrs = []) {
       openRow(url, 'Open in Jira', 'jira'),
     ]) +
     '</div>' +
-    issueMrsSection(mrs, ctx) +
+    issueMrsSection(mrs, ctx, mrsPending) +
     (i.description ? `<div class="dtext rich">${jiraWikiToHtml(clip(i.description, 20000))}</div>` : '<p class="note">No description.</p>');
   return { title: `${i.key} · ${i.summary}`, html, url, urlLabel: 'Open in Jira' };
 }

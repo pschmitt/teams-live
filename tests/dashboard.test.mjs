@@ -739,7 +739,6 @@ test('a ticket panel lists its merge requests: on the dashboard, found in GitLab
   };
   await withDashboard({ sources }, async ({ base, seen }) => {
     const { cookie } = await signIn(base);
-    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
     const mock = globalThis.fetch;
     globalThis.fetch = async (url, options = {}) => {
       if (String(url).includes('/api/v4/groups/group/merge_requests?')) {
@@ -752,6 +751,7 @@ test('a ticket panel lists its merge requests: on the dashboard, found in GitLab
       }
       return mock(url, options);
     };
+    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
     const d = await (await fetch(`${base}/approve/dashboard/issue?key=ABC-1`, { headers: { Cookie: cookie } })).json();
     assert.match(d.html, /<h3 class="dsub">Merge requests<\/h3><ul class="dmrs">/);
     assert.match(d.html, /<button type="button" class="dmr" data-mr="group\/app!7"[^>]*><span class="pill pill-ok">Open<\/span><code>group\/app!7<\/code>/, 'the listed one opens its panel');
@@ -875,6 +875,37 @@ test('the page script runs through its start without throwing (a fake page answe
   const script = dashboardScript('/dashboard');
   const run = new Function('document', 'window', 'navigator', 'localStorage', 'sessionStorage', 'location', 'history', 'matchMedia', 'requestAnimationFrame', 'requestIdleCallback', 'setTimeout', 'setInterval', 'fetch', 'Notification', 'caches', 'CSS', 'URLSearchParams', script);
   assert.doesNotThrow(() => run(fake(), fake(), fake(), fake(), fake(), fake(), fake(), fake(), () => 0, () => 0, () => 0, () => 0, () => Promise.resolve(fake()), fake(), fake(), fake(), URLSearchParams));
+});
+
+test('ticket panels open from the cache and do not wait for their merge requests', async () => {
+  let clock = Date.now();
+  let reads = 0;
+  let summary = 'First';
+  let releaseLinks;
+  const sources = {
+    sprint: async () => ({ todo: [{ key: 'ABC-1', summary: 'Ticket', status: 'Open', assignee: 'Alice Example' }] }),
+    issue: async (key) => { reads++; return { key, summary, status: 'Open', url: 'https://jira.example.com/browse/ABC-1' }; },
+    issueLinks: () => new Promise((resolve) => { releaseLinks = resolve; }),
+  };
+  await withDashboard({ sources, now: () => clock }, async ({ base }) => {
+    const { cookie } = await signIn(base);
+    await fetch(`${base}/approve/dashboard`, { headers: { Cookie: cookie } });
+    const get = async () => (await fetch(`${base}/approve/dashboard/issue?key=ABC-1`, { headers: { Cookie: cookie } })).json();
+    const started = Date.now();
+    const first = await get();
+    assert.ok(Date.now() - started < 2_000, 'the merge requests are not waited for');
+    assert.equal(first.pending, true);
+    assert.match(first.html, /data-pending>Looking for merge requests…/);
+    assert.match(first.title, /First/);
+    summary = 'Second';
+    clock += 120_000;
+    const stale = await get();
+    assert.match(stale.title, /First/, 'the last copy at once, refreshed in the background');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.match((await get()).title, /Second/);
+    assert.ok(reads >= 2);
+    releaseLinks([]);
+  });
 });
 
 test('Jira descriptions: wiki markup becomes HTML, everything else stays escaped text', () => {

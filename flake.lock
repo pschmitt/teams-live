@@ -10,11 +10,11 @@
         "rbw": "rbw"
       },
       "locked": {
-        "lastModified": 1795534365,
-        "narHash": "sha256-QmaL+tJMtkGqxP4FnNJyzpKxiy/JjjyoN1oDfJt2SV8=",
+        "lastModified": 1795874860,
+        "narHash": "sha256-P9SI54d4HU9ei25/4Jmb1WEyIF3bsI4CQ8EOhVAqRrQ=",
         "owner": "pschmitt",
         "repo": "browser-daemon",
-        "rev": "2f72a0763cba658396eb057c9cc5f7b5fa629f92",
+        "rev": "2fe6bef620fbdce6147868059dc846b5c196286e",
         "type": "github"
       },
       "original": {
@@ -83,11 +83,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795366757,
-        "narHash": "sha256-Tp4Kh4R7ID1f2mMCDlb2PiFQ/DZZsnXB2u2juWN+TT4=",
+        "lastModified": 1795618997,
+        "narHash": "sha256-d9Osol//t6hqeo1xlspsYMbhTJK507h6t0EmPyF5Db0=",
         "owner": "nix-community",
         "repo": "home-manager",
-        "rev": "3b8140d21fa0a70b1b38c2ed29853dfe686234a6",
+        "rev": "6a13737c0ed27c7c285f59e3be423ed972aa605f",
         "type": "github"
       },
       "original": {
@@ -98,11 +98,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1795234589,
-        "narHash": "sha256-f/VVvxf5RsQgWVhUtefoca5ktVg0DA2bnkMOcmSnozo=",
+        "lastModified": 1795546490,
+        "narHash": "sha256-fD1nLSQM8tFob51/thCOr49JIAIjoqybAY27/+hwZQI=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "2786a2a72088ecf32aea5b3ec52099e6a7cff78f",
+        "rev": "58d0d3e9d527ca7263be6a45d1f86eacdc700dab",
         "type": "github"
       },
       "original": {
@@ -125,11 +125,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1795477500,
-        "narHash": "sha256-RY11ZgPP0nglSXgbKVFzOc0C2jK4/oAv/TMSdBOWqlc=",
+        "lastModified": 1795767124,
+        "narHash": "sha256-5pHdYjjiwCgsUbEEaHYuGb/v9HDqJynU3eZ02zKkhTI=",
         "owner": "pschmitt",
         "repo": "rbw",
-        "rev": "1faa09c7846d4d7ebb8d8e76300f0448bb8f961f",
+        "rev": "3842594dc48cd4dcd4233dfdf96e0c92a706bacc",
         "type": "github"
       },
       "original": {
@@ -179,11 +179,11 @@
     "teams-auth-source": {
       "flake": false,
       "locked": {
-        "lastModified": 1795307370,
-        "narHash": "sha256-mQpNIYQMis7NRaJOjTK746fL594Y8/jcD+nXn9FlUBA=",
+        "lastModified": 1795706105,
+        "narHash": "sha256-G5tvblTLSu53bv0lEecaMFPTryN2IGarzwI1yB1GAG0=",
         "owner": "pschmitt",
         "repo": "homeassistant-msteams",
-        "rev": "60cd96deb9c481dfe0bb95de87313d6d1e8a197f",
+        "rev": "c4d90c47370f3e32417bcfac8246f5e499fe2804",
         "type": "github"
       },
       "original": {

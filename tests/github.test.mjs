@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GitHubClient, normalizePullRequest, searchQueries, toListMr } from '../src/github.mjs';
-import { mrFilters, mrsSection } from '../src/dashboard.mjs';
+import { approveControl, mrFilters, mrsSection } from '../src/dashboard.mjs';
 import { MergeRequestWatcher } from '../src/watcher.mjs';
 import { isRichMessage, messageMarkdown, setRichMessages } from '../src/teams.mjs';
 import { GITHUB_ICONS_SMALL } from '../src/github-icons-small.mjs';
@@ -90,4 +90,18 @@ test('/mrs lists pull requests as GitHub ones', async () => {
   assert.ok(card.includes(GITHUB_ICONS_SMALL['pull-request-open']));
   assert.ok(card.includes('GitHub · example-org/docs'));
   assert.doesNotMatch(card, /!7\b/);
+});
+
+test('rows that cannot be approved here get a greyed-out button and the reason', () => {
+  const ctx = { username: 'bob', host: 'gitlab.example.com', avatars: {}, now: Date.now(), merge: true };
+  const pr = normalizePullRequest(node());
+  const github = mrsSection({ items: [pr] }, ctx);
+  assert.match(github, /<button[^>]*disabled[^>]*>.*Approve<\/button>/);
+  assert.match(github, /class="appr-why">⚠️ The dashboard has read-only access to GitHub/);
+  const gitlab = { ...pr, provider: undefined, author: { username: 'alice', name: 'Alice Example' }, canApprove: false };
+  assert.match(approveControl(gitlab, 'bob').warning, /GitLab does not allow you/);
+  // Nothing to give: no button and no warning.
+  for (const mr of [{ ...pr, draft: true }, { ...pr, approvedBy: [{ username: 'bob', name: 'Bob' }] }, { ...gitlab, author: { username: 'bob' } }]) {
+    assert.equal(approveControl(mr, 'bob').warning, '');
+  }
 });

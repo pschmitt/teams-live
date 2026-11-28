@@ -200,7 +200,8 @@ services.teams-live.settings.github = {
 - Pull requests are read with this token, not the visitor's: everybody who may
   open the dashboard or use `/mrs` sees the titles of everything listed here,
   private repositories included.
-- Read only: no approving or merging, and no detail panel. A row links to GitHub.
+- Read only: no approving or merging, and no detail panel. A row links to
+  GitHub; its Approve button is greyed out and says why.
 - `orgs`, `repos` and each value can be `{ _secret = path; }` references.
 
 ### Connector alerts

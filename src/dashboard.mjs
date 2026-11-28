@@ -360,6 +360,35 @@ export function approveButton(mr, username) {
 }
 
 /**
+ * Why the dashboard cannot approve a listed merge request or pull request although it waits for an approval, as a
+ * sentence for the visitor; '' when it can, or when no approval is theirs to give (own, draft, approved by them).
+ */
+export function approveBlockedReason(mr, username) {
+  const me = lower(username);
+  if (mr.draft || lower(mr.author?.username) === me || mr.approvedBy.some((u) => u.username === me)) return '';
+  if (mr.provider === 'github') return 'The dashboard has read-only access to GitHub: approve this pull request on GitHub.';
+  if (!mr.canApprove) return 'GitLab does not allow you to approve this merge request.';
+  if (mr.pipeline === 'failed') return 'The pipeline failed: approving is off until it passes. GitLab itself may still let you approve.';
+  if (!mr.sha) return 'GitLab did not report the head commit: approve this merge request in GitLab.';
+  return '';
+}
+
+/** The Approve button greyed out, for a row that cannot be approved here (the reason is its tooltip). */
+function blockedApproveButton(reason) {
+  return `<span class="appr-off" title="${escapeHtml(reason)}"><button class="btn btn-secondary btn-sm" type="button" disabled aria-label="${escapeHtml(`Approve (unavailable): ${reason}`)}">${ICONS.thumb}Approve</button></span>`;
+}
+
+/**
+ * The approval control of a listed row: `button` (Approve, greyed out when it cannot be done here, or '') and
+ * `warning`, the reason in words (a tooltip does not exist on a phone).
+ */
+export function approveControl(mr, username) {
+  const reason = approveBlockedReason(mr, username);
+  if (!reason) return { button: approveButton(mr, username), warning: '' };
+  return { button: blockedApproveButton(reason), warning: `<span class="appr-why">⚠️ ${escapeHtml(reason)}</span>` };
+}
+
+/**
  * The inline Merge button of a listed merge request, or '' unless merging is on (`merge`) and GitLab reports
  * it as mergeable for the visitor right now. The head commit is bound to the button; the server checks again.
  */
@@ -399,7 +428,8 @@ function mrRow(mr, { username, host, avatars, now, merge, forges }) {
   const state = required > 0 ? mr.approved || given >= required : given > 0;
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
-  const action = github ? '' : approveButton(mr, username) + mergeButton(mr, { merge });
+  const { button, warning } = approveControl(mr, username);
+  const action = button + (github ? '' : mergeButton(mr, { merge }));
   // The title opens the detail panel (the row's click); the small icon next to it goes straight to GitLab.
   const open = url ? `<a class="mr-ext" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in ${noun}" aria-label="Open ${escapeHtml(key)} in ${noun}">${ICONS.ext}</a>` : '';
   // A pull request has no detail panel: its title goes to GitHub.
@@ -417,7 +447,7 @@ function mrRow(mr, { username, host, avatars, now, merge, forges }) {
   return (
     attrs +
     `${avatarImg(mr.author.name, avatars)}` +
-    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}${mark}<span>${ref}</span><span>· ${personRef(mr.author.name, avatars, { avatar: false })}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
+    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}${mark}<span>${ref}</span><span>· ${personRef(mr.author.name, avatars, { avatar: false })}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span>${warning}</div>` +
     `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
     '</li>'
   );
@@ -1509,7 +1539,7 @@ export const DASHBOARD_CSS = [
   '.mrrow{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.7rem;align-items:center;padding:.65rem 1rem;border-top:1px solid var(--line);transition:background .15s;animation:tl-rise .3s var(--ease) both}.mrrow:first-child{border-top:0}.mrrow:hover{background:var(--subtle)}',
   '.mrrow .av{margin:0;width:28px;height:28px}.mrmain{min-width:0}.mrmain .t{display:flex;align-items:center;gap:.35rem;font-weight:600;min-width:0}.mrmain .t .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.mrmain .t .pill{flex:none}.mr-ext{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:4px;color:var(--muted);opacity:.55;transition:opacity .15s,background .15s,color .15s}.mr-ext .di{width:13px;height:13px}.mrrow:hover .mr-ext,.mr-ext:focus-visible{opacity:1}.mr-ext:hover{background:var(--subtle);color:var(--accent);text-decoration:none}.mrmain .m{font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.1rem .4rem}',
   '.muted-link{color:var(--muted)}.mrside{display:flex;gap:.6rem;align-items:center}',
-  '.forge{display:inline-flex;align-items:center;gap:.25rem;padding:0 .4rem;border:1px solid var(--line);border-radius:999px;font-size:.72rem;font-weight:600}.forge svg{width:12px;height:12px}.forge-github{background:var(--subtle)}.mrmain .t a.tt{color:inherit}',
+  '.forge{display:inline-flex;align-items:center;gap:.25rem;padding:0 .4rem;border:1px solid var(--line);border-radius:999px;font-size:.72rem;font-weight:600}.forge svg{width:12px;height:12px}.forge-github{background:var(--subtle)}.appr-off{display:inline-flex;cursor:not-allowed}.appr-line .appr-off{margin-left:auto}.appr-line .appr-why{flex-basis:100%}.appr-off .btn{opacity:.5;pointer-events:none}.appr-why{display:block;margin-top:.15rem;font-size:.75rem;color:var(--muted)}.mrmain .t a.tt{color:inherit}',
   '.dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center}.dot .di{width:12px;height:12px;stroke-width:2.6}.dot-ok{background:var(--ok-bg);color:var(--ok)}.dot-bad{background:var(--closed-bg);color:var(--closed)}.dot-run{background:var(--run-bg);color:var(--run)}.dot-idle{background:var(--draft-bg);color:var(--draft)}',
   '.ci-ic{display:block;flex:none}.ci-none{width:16px;height:16px;border-radius:50%;border:1.5px dashed var(--line-strong);flex:none}.appr-badge{display:block;flex:none;height:18px;width:auto}.side [hidden]{display:none!important}',
   '.col.drop-here{background:var(--run-bg);box-shadow:inset 0 0 0 2px var(--btn)}@media (hover:hover) and (pointer:fine){.tk[data-issue]{touch-action:none}}.tk[data-issue]{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}.tk.tk-armed{transform:scale(1.03);box-shadow:var(--shadow-lg);border-color:var(--focus)}.tk.moved{animation:tl-new 1.6s var(--ease)}',

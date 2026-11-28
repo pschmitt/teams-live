@@ -71,7 +71,7 @@ const FOOTER = `<footer class="foot"><a href="https://github.com/pschmitt/teams-
 import { ICON_192, ICON_512 } from './pwa-icons.mjs';
 // The teams-live cap (the app icon) as the brand in the page header.
 const CAP_LOGO = `<img class="logo" src="data:image/png;base64,${ICON_192}" width="28" height="28" alt="">`;
-import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardPeople, personDetail, searchIssueMrs, serviceWorkerScript, webManifest, approveButton, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
+import { CUSTOMIZE_BUTTON, DASHBOARD_CSS, alertDetail, dashboardPeople, personDetail, searchIssueMrs, serviceWorkerScript, webManifest, approveControl, fetchMrDetail, mrDetail, dashboardBody, issueDetail, dashboardScript, defaultFilter, fetchGroupMrs, isGroupMember, navCounts, normalizeNotifySettings, notifyEvents, renderSections, wantsEvent } from './dashboard.mjs';
 import { generateVapidKeys, parseSubscription, sendPush, validVapidKeys } from './webpush.mjs';
 
 const FULL_WARN_INTERVAL_MS = 10 * 60 * 1000;
@@ -2313,7 +2313,8 @@ export class ApproveServer {
       const avatars = {};
       for (const n of names) { try { const u = this.avatarOf?.(n); if (u) avatars[n] = u; } catch { /* initials */ } }
       const ctx = { now: this.now(), timeZone: this.dashboard.timeZone, avatars, host: this.gitlabHost, merge: this.mergeEnabled };
-      return this.json(res, 200, mrDetail(detail, ctx, approveButton(listed, session.user.username)), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, 'merge request') });
+      const { button, warning } = approveControl(listed, session.user.username);
+      return this.json(res, 200, mrDetail(detail, ctx, button + warning), { 'Server-Timing': serverTiming({ check: t1 - t0, fetch: t2 - t1, photos: performance.now() - t2 }, 'merge request') });
     } catch (err) {
       log(`Dashboard could not read ${ref} for ${session.user.username}: ${err.message}`);
       return this.json(res, 502, {});

@@ -57,6 +57,7 @@ import {
 } from './cards.mjs';
 import { buildHelpCard, helpEntries, splitHelpCategories } from './card-help.mjs';
 import { buildMultiMrCard } from './card-multi-mr.mjs';
+import { toListMr } from './github.mjs';
 import { DICE_USAGE, buildDiceCard, formatDiceMarkdown, parseDiceArgs, pickOption, rollDice } from './card-dice.mjs';
 import { LEADERBOARD_MAX_ENTRIES, PODIUM_SIZE, buildLeaderboardCard, rankLeaderboard } from './card-leaderboard.mjs';
 import { buildLifecycleCard, chatList, gitlabHooksUrl, jiraProjectList, lifecycleMarkdown, linkedText } from './lifecycle-card.mjs';
@@ -438,7 +439,7 @@ export const COMMAND_CATEGORIES = [
       '- `/ci` (or `/pipeline`) [link]: Detailed CI pipeline status, stages, and failed jobs.',
       '- `/close [link]`: Closes the target MR.',
       '- `/merge [link]` (or `/accept`): Merges the target MR (or sets auto-merge if CI is currently running).',
-      '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests (default hides extra bot MRs; filter by user or view all/bots).',
+      '- `/mrs [all|bots|me|mine|<user>]`: Lists open merge requests and GitHub pull requests (default hides extra bot MRs; filter by user or view all/bots).',
       '- `/rebase [link]`: Triggers a GitLab rebase for the target MR (if conflict-free).',
       '- `/reopen [link]`: Reopens a closed target MR.',
       '- `/retry [link]`: Retries failed jobs on the latest GitLab pipeline for the target MR.',
@@ -1019,7 +1020,7 @@ function formatAlertsText(data, mode = 'all', { rich = false } = {}) {
 export class MergeRequestWatcher {
   constructor({
     config,
-    gitlab,
+    gitlab, github = null,
     jira,
     confluence = null,
     opsgenie,
@@ -1032,6 +1033,7 @@ export class MergeRequestWatcher {
   }) {
     this.config = config;
     this.gitlab = gitlab;
+    this.github = github;
     this.jira = jira;
     this.confluence = confluence;
     this.opsgenie = opsgenie;
@@ -5784,7 +5786,13 @@ export class MergeRequestWatcher {
 
     this.mrsCache.loading = (async () => {
       try {
-        const mrs = await this.gitlab.getGroupMrs(null, { approvals: this.richMessages });
+        const [gitlabMrs, pulls] = await Promise.all([
+          this.gitlab.getGroupMrs(null, { approvals: this.richMessages }),
+          this.github?.listPullRequests({ force }) ?? { items: [], error: null },
+        ]);
+        const mrs = pulls.items.length ? [...gitlabMrs, ...pulls.items.map(toListMr)] : gitlabMrs;
+        // Said under the list, so a missing pull request is not mistaken for none.
+        if (pulls.error) mrs.githubError = pulls.error;
         this.mrsCache.data = mrs;
         this.mrsCache.timestamp = Date.now();
         return mrs;
@@ -5824,7 +5832,8 @@ export class MergeRequestWatcher {
 
     const formatMrRow = (mr) => {
       const fullRef = mr.references?.full || mr.references?.relative || `!${mr.iid}`;
-      const displayRef = groupPrefix ? fullRef.replace(groupPrefix, '') : fullRef;
+      const github = mr.provider === 'github';
+      const displayRef = groupPrefix && !github ? fullRef.replace(groupPrefix, '') : fullRef;
       const mention = this.userDirectory.formatMention(mr.author);
       const statusEmoji = getMrStatusEmoji(mr);
       const jiraTicket = this.jira?.findAssociatedIssue ? this.jira.findAssociatedIssue(mr) : null;
@@ -5860,11 +5869,11 @@ export class MergeRequestWatcher {
         approvalText = mr.approval_summary.approved ? '👍 approved' : '⏳ not approved';
       }
 
-      const refMatch = /^(.*?)(!\d+)$/.exec(displayRef);
+      const refMatch = /^(.*?)([!#]\d+)$/.exec(displayRef);
       return {
         multiMr: {
-          iid: mr.iid, title: mr.title, url: mr.web_url,
-          fullProject: mr.references?.full?.replace(/!\d+$/, '') || '',
+          provider: mr.provider, iid: mr.iid, title: mr.title, url: mr.web_url,
+          fullProject: mr.references?.full?.replace(/[!#]\d+$/, '') || '',
           sha: mr.sha || mr.diff_refs?.head_sha || null,
           project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
           state: !mr.state || mr.state === 'opened' ? 'open' : mr.state,
@@ -5877,7 +5886,7 @@ export class MergeRequestWatcher {
           rebaseInProgress: mr.rebase_in_progress, jira: jiraTicket,
           mergeable: mr.detailed_merge_status === 'mergeable',
         },
-        line: `- ${statusEmoji} [${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`,
+        line: `- ${statusEmoji} ${github ? '🐙 ' : ''}[${displayRef}](${mr.web_url})${jiraBadge}: ${mr.title} (${mention})${approvalBadge}${rebaseBadge}${autoMergeBadge}`,
         project: refMatch ? refMatch[1].replace(/\/$/, '') : '',
         ref: refMatch ? refMatch[2] : displayRef,
         url: mr.web_url,
@@ -6074,12 +6083,14 @@ export class MergeRequestWatcher {
       }
       const markdown = this.renderMrsListing({ headline: listing.headline, sections });
       const actionRows = chunk.map(({ row }) => ({ ...row.multiMr, project: row.multiMr.fullProject }));
-      const eligible = actionRows.filter((row) => row.state === 'open' && !row.draft && row.sha);
+      // Batch actions are GitLab's: pull requests are approved and merged on GitHub.
+      const gitlabRows = actionRows.filter((row) => row.provider !== 'github');
+      const eligible = gitlabRows.filter((row) => row.state === 'open' && !row.draft && row.sha);
       const approveUrl = withActions && eligible.length && this.approveFlow?.batchLinkFor
         ? this.approveFlow.batchLinkFor(eligible, 'approve') : null;
       const openUrl = withActions && this.approveFlow?.batchLinkFor
-        ? this.approveFlow.batchLinkFor(actionRows, 'open') : null;
-      const mergeUrl = withActions ? this.batchMergeUrl(actionRows) : null;
+        && gitlabRows.length ? this.approveFlow.batchLinkFor(gitlabRows, 'open') : null;
+      const mergeUrl = withActions ? this.batchMergeUrl(gitlabRows) : null;
       const card = buildMultiMrCard(sections.flatMap((section) => section.rows.map((row, index) => ({
         ...row.multiMr, showAuthorAvatar: Boolean(avatars && row.avatarSlot),
         avatars: row.avatar && row.multiMr.author ? { [row.multiMr.author]: row.avatar } : {},
@@ -6132,6 +6143,14 @@ export class MergeRequestWatcher {
   /** Render /mrs as multi-MR cards when enabled, otherwise as markdown. */
   formatMrsMessage(mrs, parsed = {}) {
     const listing = this.collectMrsListing(mrs, { ...parsed, rich: this.richMessages });
+    if (mrs?.githubError) {
+      const warning = `⚠️ _${mrs.githubError}_`;
+      if (listing.text) listing.text = `${listing.text}\n\n${warning}`;
+      else {
+        const last = listing.sections.at(-1);
+        last.note = [last.note, warning].filter(Boolean).join('\n\n');
+      }
+    }
     const markdown = this.renderMrsListing(listing);
     if (!this.richMessages || listing.text) return markdown;
     // Heaviest form first: state glyphs and CI status icons, then the glyphs only, then emojis.

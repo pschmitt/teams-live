@@ -140,6 +140,7 @@ All keys are optional. Defaults are in [`src/config.mjs`](../src/config.mjs).
 | `teams.troll_user` | User MRI whose `/exec` gets a joke reply instead of the fake shell output. |
 | `browser_daemon.url`, `.profile`, `.secret_file` | browser-daemon used to sign in to Teams again. |
 | `gitlab.host`, `.group`, `.token_file` | GitLab instance, group for `/mrs`, primary API token. |
+| `github.token_file`, `.orgs`, `.repos`, `.users` | GitHub pull requests listed with the merge requests, see [below](#github-pull-requests). |
 | `gitlab.fallback_token_files` | Ordered list of additional token files. Requests use credentials in order and try the next only after a 404. Approval pages identify the account selected for the merge request and pin the action to that account. Each token is checked and rotated independently; rotated fallback tokens are kept in the service state directory until their configured secrets are updated. |
 | `gitlab.user_token_mappings` | List of `{ teams_mri, gitlab_username, token_index }` mappings for MR commands and reactions. Use a stable Teams MRI, the exact GitLab username, and the credential index (primary is 0, first fallback is 1). The selected account is verified before writing. Unmapped users act as the primary account. Keep identities in private runtime configuration. |
 | `gitlab.poll_interval_seconds` | MR status poll (60). |
@@ -176,6 +177,31 @@ Replies: a channel switch is reported as "requested" (the webhook only queues th
 Receiver contract (Home Assistant): every call is `POST /api/webhook/<id>` with a JSON body. Channels send `{ "action": "ard" }` (likewise `zdf`, `tagesschau`); `/tv off` sends `{ "action": "off", "scene": "brb" }`. One webhook may serve all four targets, since the action is in the body. The receiver must act only on those actions and ignore anything else. Webhooks cannot return state, so the readback is a separate entity: when the OBS scene is the source of truth, point `tv.switch.state.entity_id` at the entity that shows the current scene and map its values (`state.map.off` must list the real name of the `off` scene if it differs from `off_scene`).
 
 Cycling: `/tv next` goes ARD, ZDF, Tagesschau, ARD; `/tv prev` goes the other way. `off` (the `brb` scene) is not a channel: from off, `/tv next` switches to ARD and `/tv prev` to Tagesschau. Commands run one at a time, so two quick `/tv next` advance twice (a readback that still shows the previous channel within 5 seconds of a successful switch, i.e. Home Assistant lagging, does not repeat the switch), and a missing, failed or unrecognized readback or a failed webhook neither advances nor changes anything. `/tv tagesschau` also accepts `ts` and common typos; all controls are owner only and never show a URL, id, token or host in a reply or the log.
+
+### GitHub pull requests
+
+Open pull requests of GitHub organizations and single repositories are listed
+next to the GitLab merge requests, on the dashboard and in `/mrs`, marked as
+GitHub (`owner/repo#12`). Archived repositories are left out.
+
+```nix
+services.teams-live.settings.github = {
+  token_file = config.sops.secrets."teams-live/github-token".path;
+  orgs = [ "example-org" ];            # every repository of these organizations
+  repos = [ "other-owner/example" ];   # and these single ones
+  users."octocat" = "alice.example";   # GitHub login -> GitLab username
+};
+```
+
+- The token only needs to read: pull requests, checks (commit statuses) and, for
+  team review requests, organization members.
+- `users` is what lets the dashboard's "Mine" and "Needs my review" include
+  pull requests. Without an entry they are listed under "Human" or "Bots" only.
+- Pull requests are read with this token, not the visitor's: everybody who may
+  open the dashboard or use `/mrs` sees the titles of everything listed here,
+  private repositories included.
+- Read only: no approving or merging, and no detail panel. A row links to GitHub.
+- `orgs`, `repos` and each value can be `{ _secret = path; }` references.
 
 ### Connector alerts
 

@@ -2011,6 +2011,18 @@ export class ApproveServer {
     }
   }
 
+  /** The GitHub pull requests listed with the merge requests: `{items, error}`; empty when GitHub is not set up. */
+  async dashboardPullRequests() {
+    const fn = this.dashboard.sources?.github;
+    if (typeof fn !== 'function') return { items: [], error: null };
+    try {
+      return await fn();
+    } catch (err) {
+      log(`Dashboard could not list the GitHub pull requests: ${err.message}`);
+      return { items: [], error: 'Could not read the GitHub pull requests right now.' };
+    }
+  }
+
   /** The Jira tickets a merge request names (branch, title), as keys; [] without Jira. */
   mrIssueKeys(mr) {
     const fn = this.dashboard.sources?.issueKeys;
@@ -2153,7 +2165,10 @@ export class ApproveServer {
       const byUrl = new Map();
       const norm = (u) => String(u || '').toLowerCase().replace(/[#?].*$/, '').replace(/\/+$/, '');
       const put = (mr) => { const k = norm(mr.url); if (k && !byUrl.has(k)) byUrl.set(k, mr); };
-      for (const mr of listed) put({ ref: `${mr.project}!${mr.iid}`, project: mr.project, iid: mr.iid, title: mr.title, url: mr.url, state: 'opened', draft: mr.draft, listed: true });
+      for (const mr of listed) {
+        const github = mr.provider === 'github';
+        put({ ref: `${mr.project}${github ? '#' : '!'}${mr.iid}`, project: mr.project, iid: mr.iid, title: mr.title, url: mr.url, state: 'opened', draft: mr.draft, listed: !github, provider: mr.provider });
+      }
       for (const mr of found) put(mr);
       for (const l of links) {
         const m = /^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(l.url);
@@ -2276,7 +2291,7 @@ export class ApproveServer {
 
   /** The detail panel of a merge request the visitor's dashboard lists, read with the visitor's own token. */
   async dashboardMrDetail(ref, res, session, t0 = performance.now()) {
-    const find = (data) => (data.mrs.items || []).find((mr) => `${mr.project}!${mr.iid}` === ref);
+    const find = (data) => (data.mrs.items || []).find((mr) => mr.provider !== 'github' && `${mr.project}!${mr.iid}` === ref);
     const data = await this.dashboardDataFor(session, find);
     const listed = data && find(data);
     if (!listed) return this.json(res, 404, {});
@@ -2313,8 +2328,11 @@ export class ApproveServer {
     if (hit && now - hit.at < DASH_DATA_CACHE_MS) return hit.promise;
     const promise = (async () => {
       const [mrs, sprint, alerts, meetings, leave] = await Promise.all([
-        fetchGroupMrs(this.gitlabHost, session.accessToken, this.dashboard.group)
-          .then((items) => ({ items: items.map((mr) => ({ ...mr, issues: this.mrIssueKeys(mr) })) }))
+        Promise.all([fetchGroupMrs(this.gitlabHost, session.accessToken, this.dashboard.group), this.dashboardPullRequests()])
+          .then(([items, github]) => {
+            const all = [...items, ...github.items].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
+            return { items: all.map((mr) => ({ ...mr, issues: this.mrIssueKeys(mr) })), ...(github.error ? { warning: github.error } : {}) };
+          })
           .catch((err) => {
             log(`Dashboard could not list merge requests for ${session.user.username}: ${err.message}`);
             if (err.status === 401 && session.stored) session.stored.tokenExpiresAt = 0;

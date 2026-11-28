@@ -78,6 +78,9 @@ in
         {
           gitlab.host = "git.example.com";
           gitlab.token_file = config.sops.secrets."teams-live/gitlab-token".path;
+          github.token_file = config.sops.secrets."teams-live/github-token".path;
+          github.orgs = [ "example-org" ];
+          github.repos = [ "other-owner/example" ];
           opsgenie.on_call_key._secret = config.sops.secrets."opsgenie/key".path;
           conversations = [
             { id = "48:notes"; name = "Notes (Self)"; gitlab = true; }

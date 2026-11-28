@@ -9,7 +9,7 @@
 // Data in, HTML out, plus two small GitLab reads (membership and one GraphQL query). Every value that reaches
 // the HTML goes through `escapeHtml`, every link through `safeLink` (GitLab host) or `webLink` (http(s) only).
 
-import { GITHUB_MARK, avatarImg, escapeHtml, safeLink } from './approve-page.mjs';
+import { GITHUB_MARK, TANUKI, avatarImg, escapeHtml, safeLink } from './approve-page.mjs';
 import { approvalBadge } from './approval-badges.mjs';
 import { SERVICE_ICONS } from './card-icons.mjs';
 import { ciStatusIcon, ciStatusInfo } from './cards.mjs';
@@ -372,11 +372,24 @@ function mergeButtonHtml(project, iid, sha) {
   return `<button class="btn btn-sm" type="button" data-merge data-project="${escapeHtml(project)}" data-iid="${escapeHtml(iid)}" data-sha="${escapeHtml(sha)}" aria-label="Merge ${escapeHtml(project)}!${escapeHtml(iid)}">${ICONS.merge}Merge</button>`;
 }
 
-function mrRow(mr, { username, host, avatars, now, merge }) {
+/** The identity of a listed merge request or pull request: `group/app!12`, on GitHub `owner/repo#12`. */
+const mrKey = (mr) => `${mr.project}${mr.provider === 'github' ? '#' : '!'}${mr.iid}`;
+
+/** The mark telling which forge a row comes from, in front of its reference. */
+function forgeMark(github) {
+  return github
+    ? `<span class="forge forge-github" title="GitHub pull request">${GITHUB_MARK.replace('width="16" height="16"', 'width="13" height="13"')}GitHub</span>`
+    : `<span class="forge forge-gitlab" title="GitLab merge request">${TANUKI.replace('width="22" height="22"', 'width="13" height="13"')}GitLab</span>`;
+}
+
+function mrRow(mr, { username, host, avatars, now, merge, forges }) {
+  const github = mr.provider === 'github';
+  const noun = github ? 'GitHub' : 'GitLab';
+  const key = mrKey(mr);
   const me = lower(username);
   const filters = mrFilters(mr, username);
-  const url = safeLink(mr.url, host);
-  const projectUrl = url ? url.replace(/\/-\/merge_requests\/\d+.*$/, '') : '';
+  const url = github ? webLink(mr.url) : safeLink(mr.url, host);
+  const projectUrl = url ? url.replace(github ? /\/pull\/\d+.*$/ : /\/-\/merge_requests\/\d+.*$/, '') : '';
   const approvedByMe = mr.approvedBy.some((u) => u.username === me);
   const given = mr.approvedBy.length;
   const required = mr.required ?? 0;
@@ -386,16 +399,25 @@ function mrRow(mr, { username, host, avatars, now, merge }) {
   const state = required > 0 ? mr.approved || given >= required : given > 0;
   const badgeLabel = `${state ? 'Approved' : required > 0 ? `${given} of ${required} approvals` : 'Not approved yet'}${names.length ? ` (by ${names.join(', ')})` : ''}`;
   const badge = img(approvalBadge({ approved: state, approvalsGiven: given, approvalsRequired: required }), badgeLabel, 18, 'appr-badge');
-  const action = approveButton(mr, username) + mergeButton(mr, { merge });
+  const action = github ? '' : approveButton(mr, username) + mergeButton(mr, { merge });
   // The title opens the detail panel (the row's click); the small icon next to it goes straight to GitLab.
-  const open = url ? `<a class="mr-ext" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in GitLab" aria-label="Open ${escapeHtml(mr.project)}!${escapeHtml(mr.iid)} in GitLab">${ICONS.ext}</a>` : '';
-  const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span>' : ''}<span class="tt">${escapeHtml(mr.title)}</span>${open}`;
-  const ref = projectUrl ? `<a class="muted-link" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.project)}</a>!${escapeHtml(mr.iid)}` : `${escapeHtml(mr.project)}!${escapeHtml(mr.iid)}`;
+  const open = url ? `<a class="mr-ext" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in ${noun}" aria-label="Open ${escapeHtml(key)} in ${noun}">${ICONS.ext}</a>` : '';
+  // A pull request has no detail panel: its title goes to GitHub.
+  const text = github && url ? `<a class="tt" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.title)}</a>` : `<span class="tt">${escapeHtml(mr.title)}</span>`;
+  const title = `${mr.draft ? '<span class="pill pill-draft">Draft</span>' : ''}${text}${open}`;
+  const number = `${github ? '#' : '!'}${escapeHtml(mr.iid)}`;
+  const ref = projectUrl ? `<a class="muted-link" href="${escapeHtml(projectUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(mr.project)}</a>${number}` : `${escapeHtml(mr.project)}${number}`;
+  // With both forges in one list every row says which one it is from.
+  const mark = forges ? forgeMark(github) : '';
+  const attrs = github
+    ? `<li class="mrrow mrrow-github" data-f="${filters.join(' ')}" data-key="${escapeHtml(key)}">` +
+      '<span class="mrsel"></span>'
+    : `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(key)}" data-mr="${escapeHtml(key)}" tabindex="0" aria-label="${escapeHtml(`Details of ${key}: ${mr.title}`)}">` +
+      `<label class="mrsel" title="Select (Shift+click: a range)"><input type="checkbox" data-sel="${escapeHtml(key)}" aria-label="${escapeHtml(`Select ${key}`)}"></label>`;
   return (
-    `<li class="mrrow" data-f="${filters.join(' ')}" data-key="${escapeHtml(`${mr.project}!${mr.iid}`)}" data-mr="${escapeHtml(`${mr.project}!${mr.iid}`)}" tabindex="0" aria-label="${escapeHtml(`Details of ${mr.project}!${mr.iid}: ${mr.title}`)}">` +
-    `<label class="mrsel" title="Select (Shift+click: a range)"><input type="checkbox" data-sel="${escapeHtml(`${mr.project}!${mr.iid}`)}" aria-label="${escapeHtml(`Select ${mr.project}!${mr.iid}`)}"></label>` +
+    attrs +
     `${avatarImg(mr.author.name, avatars)}` +
-    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}<span>${ref}</span><span>· ${personRef(mr.author.name, avatars, { avatar: false })}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
+    `<div class="mrmain"><span class="t">${title}</span><span class="m">${(mr.issues || []).map((k) => `<button type="button" class="tchip" data-issue="${escapeHtml(k)}" title="Preview ${escapeHtml(k)}">${ICONS.ticket}${escapeHtml(k)}</button>`).join('')}${mark}<span>${ref}</span><span>· ${personRef(mr.author.name, avatars, { avatar: false })}</span><span>· ${escapeHtml(ago(mr.updatedAt, now))}</span></span></div>` +
     `<div class="mrside">${pipelineIcon(mr.pipeline)}${badge}${action}</div>` +
     '</li>'
   );
@@ -404,10 +426,12 @@ function mrRow(mr, { username, host, avatars, now, merge }) {
 export function mrsSection(state, ctx) {
   if (state.error) return `<p class="empty">${escapeHtml(state.error)}</p>`;
   const mrs = state.items || [];
-  const rows = mrs.map((mr) => mrRow(mr, ctx)).join('');
+  const forges = mrs.some((mr) => mr.provider === 'github');
+  const rows = mrs.map((mr) => mrRow(mr, { ...ctx, forges })).join('');
   const empties = FILTERS.map(([k]) => `<li class="empty only-${k}">${k === 'review' ? 'Nothing waits for your review.' : k === 'mine' ? 'You have no open merge requests.' : 'No open merge requests.'}</li>`).join('');
   const bulkBar = `<div class="mrbulk" data-bulk hidden><b data-bulk-n></b><span class="sp"></span><button type="button" class="btn btn-secondary btn-sm" data-bulk-approve>${ICONS.thumb}Approve <span class="n" data-bulk-c></span></button><button type="button" class="btn btn-sm" data-bulk-merge>${ICONS.merge}Merge <span class="n" data-bulk-c></span></button><button type="button" class="btn btn-secondary btn-sm" data-bulk-clear>Clear</button></div>`;
-  return `${bulkBar}<ul class="mrlist">${rows}${empties}</ul>`;
+  const warning = state.warning ? `<p class="empty">${escapeHtml(state.warning)}</p>` : '';
+  return `${bulkBar}${warning}<ul class="mrlist">${rows}${empties}</ul>`;
 }
 
 const SPRINT_COLUMNS = [
@@ -978,7 +1002,7 @@ function issueMrsSection(mrs, ctx, pending = false) {
   const rows = mrs.map((mr) => {
     const [tone, text] = mr.draft && mr.state === 'opened' ? ['draft', 'Draft'] : STATE[mr.state] || ['idle', 'Linked'];
     const label = `<span class="pill pill-${tone}">${escapeHtml(text)}</span><code>${escapeHtml(mr.ref || mr.url)}</code><span class="t">${escapeHtml(mr.title || '')}</span>`;
-    const url = safeLink(mr.url, ctx.host);
+    const url = mr.provider === 'github' ? webLink(mr.url) : safeLink(mr.url, ctx.host);
     if (mr.listed) return `<li><button type="button" class="dmr" data-mr="${escapeHtml(mr.ref)}" title="Details of ${escapeHtml(mr.ref)}">${label}</button></li>`;
     return url ? `<li><a class="dmr" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}${ICONS.ext}</a></li>` : `<li><span class="dmr">${label}</span></li>`;
   }).join('');
@@ -1269,16 +1293,18 @@ export function notifyEvents(data, ctx) {
   const me = lower(ctx.username);
   const events = [];
   for (const mr of data.mrs.items || []) {
-    const key = `${mr.project}!${mr.iid}`;
+    const key = mrKey(mr);
     const filters = mrFilters(mr, ctx.username);
+    // A pull request has no panel to open: the notification leads to the list.
+    const target = mr.provider === 'github' ? {} : { o: ['mr', key] };
     const ref = `${key} · ${mr.title}`;
-    if (filters.includes('review')) events.push({ id: `review:${key}`, k: 'review', t: `Review requested by ${mr.author.name}`, b: ref, v: 'mrs', o: ['mr', key] });
+    if (filters.includes('review')) events.push({ id: `review:${key}`, k: 'review', t: `Review requested by ${mr.author.name}`, b: ref, v: 'mrs', ...target });
     if (!filters.includes('mine')) continue;
     for (const u of mr.approvedBy) {
-      if (u.username !== me) events.push({ id: `approved:${key}:${u.username}`, k: 'approved', t: `${u.name} approved your merge request`, b: ref, v: 'mrs', o: ['mr', key] });
+      if (u.username !== me) events.push({ id: `approved:${key}:${u.username}`, k: 'approved', t: `${u.name} approved your merge request`, b: ref, v: 'mrs', ...target });
     }
-    if (mr.mergeStatus === 'mergeable') events.push({ id: `ready:${key}`, k: 'ready', t: 'Ready to merge', b: ref, v: 'mrs', o: ['mr', key] });
-    if (mr.pipeline === 'failed') events.push({ id: `pipeline:${key}@${mr.sha}`, k: 'pipeline', t: 'Pipeline failed', b: ref, v: 'mrs', o: ['mr', key] });
+    if (mr.mergeStatus === 'mergeable') events.push({ id: `ready:${key}`, k: 'ready', t: 'Ready to merge', b: ref, v: 'mrs', ...target });
+    if (mr.pipeline === 'failed') events.push({ id: `pipeline:${key}@${mr.sha}`, k: 'pipeline', t: 'Pipeline failed', b: ref, v: 'mrs', ...target });
   }
   const name = lower(ctx.name);
   for (const [col] of SPRINT_COLUMNS) {
@@ -1483,6 +1509,7 @@ export const DASHBOARD_CSS = [
   '.mrrow{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:.7rem;align-items:center;padding:.65rem 1rem;border-top:1px solid var(--line);transition:background .15s;animation:tl-rise .3s var(--ease) both}.mrrow:first-child{border-top:0}.mrrow:hover{background:var(--subtle)}',
   '.mrrow .av{margin:0;width:28px;height:28px}.mrmain{min-width:0}.mrmain .t{display:flex;align-items:center;gap:.35rem;font-weight:600;min-width:0}.mrmain .t .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.mrmain .t .pill{flex:none}.mr-ext{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:4px;color:var(--muted);opacity:.55;transition:opacity .15s,background .15s,color .15s}.mr-ext .di{width:13px;height:13px}.mrrow:hover .mr-ext,.mr-ext:focus-visible{opacity:1}.mr-ext:hover{background:var(--subtle);color:var(--accent);text-decoration:none}.mrmain .m{font-size:.8rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:.1rem .4rem}',
   '.muted-link{color:var(--muted)}.mrside{display:flex;gap:.6rem;align-items:center}',
+  '.forge{display:inline-flex;align-items:center;gap:.25rem;padding:0 .4rem;border:1px solid var(--line);border-radius:999px;font-size:.72rem;font-weight:600}.forge svg{width:12px;height:12px}.forge-github{background:var(--subtle)}.mrmain .t a.tt{color:inherit}',
   '.dot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center}.dot .di{width:12px;height:12px;stroke-width:2.6}.dot-ok{background:var(--ok-bg);color:var(--ok)}.dot-bad{background:var(--closed-bg);color:var(--closed)}.dot-run{background:var(--run-bg);color:var(--run)}.dot-idle{background:var(--draft-bg);color:var(--draft)}',
   '.ci-ic{display:block;flex:none}.ci-none{width:16px;height:16px;border-radius:50%;border:1.5px dashed var(--line-strong);flex:none}.appr-badge{display:block;flex:none;height:18px;width:auto}.side [hidden]{display:none!important}',
   '.col.drop-here{background:var(--run-bg);box-shadow:inset 0 0 0 2px var(--btn)}@media (hover:hover) and (pointer:fine){.tk[data-issue]{touch-action:none}}.tk[data-issue]{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}.tk.tk-armed{transform:scale(1.03);box-shadow:var(--shadow-lg);border-color:var(--focus)}.tk.moved{animation:tl-new 1.6s var(--ease)}',

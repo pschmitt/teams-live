@@ -12,6 +12,7 @@ check:
   node --check src/teams.mjs
   node --check src/auth.mjs
   node --check src/gitlab.mjs
+  node --check src/github.mjs
   node --check src/jira.mjs
   node --check src/confluence.mjs
   node --check src/screenshot.mjs

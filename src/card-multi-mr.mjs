@@ -1,6 +1,7 @@
 import { assembleCard, ciStatusEmoji, ciStatusIcon, ciStatusInfo, mdLink, textBlock } from './cards.mjs';
 import { approvalBadge, approvalBadgeText } from './approval-badges.mjs';
 import { fallbackAvatar, isImageDataUri, pictureItem, pillImage, planCardAvatars } from './card-user-row.mjs';
+import { GITHUB_ICONS_SMALL } from './github-icons-small.mjs';
 import { GITLAB_ICONS_SMALL } from './gitlab-icons-small.mjs';
 
 const column = (items, width = 'auto') => ({ type: 'Column', width, verticalContentAlignment: 'Center', items });
@@ -16,10 +17,18 @@ export function buildMultiMrCard(mrs, { approveUrl = null, mergeUrl = null, open
   const planned = planCardAvatars(people, 3500);
   const rows = mrs.map((mr) => {
     const stateIcon = mr.state === 'merged' ? 'merge' : mr.state === 'closed' ? 'merge-request-close' : mr.draft ? 'merge-request' : 'merge-request-open';
-    const title = textBlock(escapeText(mr.title || `Merge request !${mr.iid}`), { weight: 'Bolder', size: 'Medium', color: 'Accent' });
+    const github = mr.provider === 'github';
+    const number = `${github ? '#' : '!'}${mr.iid}`;
+    const glyph = github ? GITHUB_ICONS_SMALL[mr.draft ? 'pull-request-draft' : 'pull-request-open'] : GITLAB_ICONS_SMALL[stateIcon];
+    const title = textBlock(escapeText(mr.title || `Merge request ${number}`), { weight: 'Bolder', size: 'Medium', color: 'Accent' });
     const url = link(mr.url);
     const target = url ? { type: 'Container', selectAction: { type: 'Action.OpenUrl', url }, items: [title] } : title;
-    const metadata = [column([textBlock(mr.project, { size: 'Small', isSubtle: true })])];
+    const metadata = github
+      ? [
+        ...(images ? [column([image(GITHUB_ICONS_SMALL.mark, 'GitHub')])] : []),
+        column([textBlock(`GitHub \u00b7 ${mr.project}`, { size: 'Small', isSubtle: true })]),
+      ]
+      : [column([textBlock(mr.project, { size: 'Small', isSubtle: true })])];
     if (mr.author) {
       if (images && mr.showAuthorAvatar !== false) metadata.push(column([person(mr.author, planned, mr.profiles)]));
       metadata.push(column([textBlock(mr.author, { size: 'Small', isSubtle: true })], 'stretch'));
@@ -45,7 +54,7 @@ export function buildMultiMrCard(mrs, { approveUrl = null, mergeUrl = null, open
     if (mr.jira?.key) statuses.push(textBlock(`🎫 ${mdLink(mr.jira.key, mr.jira.url)}`, { size: 'Small' }));
     return {
       type: 'Container', separator: true, spacing: 'Medium', items: [
-        columns([column([images ? image(GITLAB_ICONS_SMALL[stateIcon], mr.draft && mr.state === 'open' ? 'Draft' : mr.state || 'open') : textBlock(mr.state === 'merged' ? '🔀' : '◉')]), column([target], 'stretch'), column([textBlock(mdLink(`!${mr.iid}`, url), { size: 'Large', weight: 'Bolder' })])]),
+        columns([column([images ? image(glyph, mr.draft && mr.state === 'open' ? 'Draft' : mr.state || 'open') : textBlock(mr.state === 'merged' ? '🔀' : '◉')]), column([target], 'stretch'), column([textBlock(mdLink(number, url), { size: 'Large', weight: 'Bolder' })])]),
         columns(metadata),
         ...(statuses.length ? [{ type: 'Container', spacing: 'Small', layouts: [{ type: 'Layout.Flow', horizontalItemsAlignment: 'Left', verticalItemsAlignment: 'Center', columnSpacing: 'Small', rowSpacing: 'Small' }], items: statuses }] : []),
       ],

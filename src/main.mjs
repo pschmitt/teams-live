@@ -6,6 +6,7 @@ import { GitLabClient } from './gitlab.mjs';
 import { JiraClient } from './jira.mjs';
 import { ConfluenceClient } from './confluence.mjs';
 import { OpsGenieClient, humanizeRecipient } from './opsgenie.mjs';
+import { GitHubClient } from './github.mjs';
 import { getCalendarView } from './teams.mjs';
 import { HRWorksClient } from './hrworks.mjs';
 import { ScreenshotClient } from './screenshot.mjs';
@@ -28,8 +29,10 @@ const log = createLogger('main');
  * What the dashboard shows besides the merge requests, read by the bot with its own accounts: the active sprint,
  * the open alerts with who is on duty, and the rest of the week's meetings (declined ones left out).
  */
-function dashboardSources({ jira, opsgenie, hrworks }) {
+function dashboardSources({ jira, opsgenie, hrworks, github }) {
   return {
+    // GitHub pull requests, listed with the merge requests (read with the bot's token).
+    github: github.isConfigured() ? () => github.listPullRequests() : null,
     sprint: jira.isConfigured() ? () => jira.getActiveSprintTasks() : null,
     // A ticket for the preview drawer, with what the sprint list leaves out (description, reporter, labels, dates).
     issue: jira.isConfigured()
@@ -245,6 +248,8 @@ async function main() {
     onSuccess: () => handleServiceSuccess('OpsGenie'),
   });
 
+  const github = new GitHubClient(config.github);
+
   let trouter = null;
   let webhookServer = null;
   let webhookReconciler = null;
@@ -271,7 +276,7 @@ async function main() {
   });
   health.start(15_000);
 
-  watcher = new MergeRequestWatcher({ config, gitlab, jira, confluence, opsgenie, hrworks, screenshot, authManager, health });
+  watcher = new MergeRequestWatcher({ config, gitlab, github, jira, confluence, opsgenie, hrworks, screenshot, authManager, health });
   const systemd = new SystemdWatchdog();
 
   const cleanup = async (signal = 'SIGTERM') => {
@@ -455,7 +460,7 @@ async function main() {
               path: apCfg.dashboard.path,
               timeZone: apCfg.dashboard.time_zone,
               push: apCfg.dashboard.push,
-              sources: dashboardSources({ jira, opsgenie, hrworks }),
+              sources: dashboardSources({ jira, opsgenie, hrworks, github }),
             }
           : null,
       });

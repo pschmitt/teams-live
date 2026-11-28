@@ -496,6 +496,36 @@ export function loadConfig(configPath) {
     confluence.token = process.env.CONFLUENCE_TOKEN.trim();
   }
 
+  // GitHub pull requests listed next to the GitLab merge requests; off without a token and an org or repository.
+  const names = (value, pattern, what) =>
+    (Array.isArray(value) ? value : []).filter((v) => {
+      const ok = typeof v === 'string' && pattern.test(v);
+      if (!ok) log.warn(`Ignoring an entry of github.${what}: not a valid name.`);
+      return ok;
+    });
+  const envList = (value) => String(value || '').split(/[\s,]+/).filter(Boolean);
+  const github = {
+    token_file: getNullableString(fileConfig.github?.token_file) || process.env.GITHUB_TOKEN_FILE || null,
+    token: null,
+    orgs: names(fileConfig.github?.orgs ?? envList(process.env.TEAMS_GITHUB_ORGS), /^[A-Za-z0-9-]+$/, 'orgs'),
+    repos: names(fileConfig.github?.repos ?? envList(process.env.TEAMS_GITHUB_REPOS), /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/, 'repos'),
+    // GitHub login -> GitLab username, for "Mine" and "Needs my review" on the dashboard.
+    users: Object.fromEntries(Object.entries(fileConfig.github?.users ?? {}).filter(([, v]) => typeof v === 'string' && v)),
+  };
+
+  if (github.token_file && fs.existsSync(github.token_file)) {
+    try {
+      github.token = fs.readFileSync(github.token_file, 'utf8').trim();
+    } catch (e) {
+      log.warn(`Could not read GitHub token file ${github.token_file}: ${e.message}`);
+    }
+  } else if (process.env.GITHUB_TOKEN) {
+    github.token = process.env.GITHUB_TOKEN.trim();
+  }
+  if ((github.orgs.length || github.repos.length) && !github.token) {
+    log.warn('GitHub organizations or repositories are configured without a token: pull requests are not listed.');
+  }
+
   const teams = {
     reconnect_interval_seconds: Number(fileConfig.teams?.reconnect_interval_seconds ?? 5),
     token_refresh_interval_minutes: Number(fileConfig.teams?.token_refresh_interval_minutes ?? 60),
@@ -568,6 +598,7 @@ export function loadConfig(configPath) {
       cluster_secret: browserDaemonSecret,
     },
     gitlab,
+    github,
     jira,
     confluence,
     opsgenie,
